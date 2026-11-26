@@ -29,6 +29,38 @@ export const RECEPTION_ENDPOINT_WORKSPACE_STYLES = `
 .reception-page[data-view] .reception-access-log :is(th, td) { padding: 10px 12px; white-space: nowrap; overflow-wrap: normal; word-break: normal; line-height: 1.5; }
 .reception-page[data-view] .reception-access-log th { background: var(--surface-sunk); font-size: 11px; }
 .reception-page[data-view] :is(.reception-access-log-scroll, .reception-detail-title):focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.reception-page[data-view="view_as_visitor"] .reception-vav { scroll-margin-block-start: var(--wc-space-md, 16px); }
+.reception-page[data-view="view_as_visitor"] .reception-vav-head { flex-wrap: wrap; }
+.reception-page[data-view="view_as_visitor"] .reception-vav-title:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+@media (min-width: 1280px) and (hover: hover) and (pointer: fine) {
+  .reception-page[data-view="view_as_visitor"] .reception-vav { gap: var(--wc-space-lg, 24px); }
+  .reception-page[data-view="view_as_visitor"] .reception-vav-top {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 22rem); align-items: center; gap: var(--wc-space-md, 16px);
+  }
+  .reception-page[data-view="view_as_visitor"] .reception-vav-head > .rx-btn { order: 0; margin-inline-start: auto; }
+  .reception-page[data-view="view_as_visitor"] .reception-vav-title { font-size: 20px; line-height: 1.3; }
+  .reception-page[data-view="view_as_visitor"] .reception-vav-workspace {
+    grid-template: "preview workflow" auto "preview review" 1fr / minmax(0, 3fr) minmax(0, 2fr);
+    align-items: start; row-gap: 0; column-gap: var(--wc-space-lg, 24px);
+  }
+  .reception-page[data-view="view_as_visitor"] .reception-vav-preview { grid-area: preview; }
+  .reception-page[data-view="view_as_visitor"] .reception-vav-workflow { grid-area: workflow; margin-block-end: 12px; }
+  .reception-page[data-view="view_as_visitor"] .reception-vav-review { grid-area: review; }
+  .reception-page[data-view="view_as_visitor"] .reception-vav-frame {
+    display: block; height: clamp(18rem, calc(100dvh - 13rem), 44rem); border-radius: var(--wc-radius, 9px);
+  }
+  .reception-page[data-view="view_as_visitor"] .reception-vav-panel {
+    display: grid; gap: var(--wc-space-md, 16px); padding: var(--wc-space-md, 16px);
+    border: 1px solid var(--border); border-radius: var(--wc-radius, 9px); background: var(--surface);
+  }
+  .reception-page[data-view="view_as_visitor"] .reception-vav-fieldsplit { display: grid; }
+  .reception-page[data-view="view_as_visitor"] .reception-vav-fieldsplit > div { min-width: 0; }
+  .reception-page[data-view="view_as_visitor"] .reception-vav-posture,
+  .reception-page[data-view="view_as_visitor"] .reception-vav-invariants { padding-block-start: 12px; border-block-start: 1px solid var(--border); }
+}
+@media (min-width: 1280px) and (min-height: 680px) and (hover: hover) and (pointer: fine) {
+  .reception-page[data-view="view_as_visitor"] .reception-vav-preview { position: sticky; inset-block-start: var(--wc-space-md, 16px); }
+}
 @media (max-width: 640px) {
   .reception-page[data-view] .reception-section { padding: 14px; }
   .reception-page[data-view] .reception-row, .reception-page[data-view] .reception-detail-section { padding: 12px; }

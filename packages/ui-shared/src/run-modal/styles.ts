@@ -22,15 +22,18 @@ export const RUN_MODAL_STYLES = `
   inset: 0;
   z-index: 140;
   display: grid;
-  place-items: start center;
-  padding: 56px 16px 16px;
+  place-items: center;
+  padding: 16px;
   background: rgba(24, 33, 36, .28);
 }
 .run-modal-panel {
   box-sizing: border-box;
   width: min(720px, 100%);
-  max-height: calc(100vh - 80px);
-  overflow: auto;
+  max-height: calc(100vh - 32px);
+  max-height: calc(100dvh - 32px);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--surface);
@@ -38,6 +41,7 @@ export const RUN_MODAL_STYLES = `
   padding: 14px;
 }
 .run-modal-header {
+  flex-shrink: 0;
   display: flex;
   min-width: 0;
   align-items: baseline;
@@ -94,8 +98,14 @@ export const RUN_MODAL_STYLES = `
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
+.run-modal-tabs { flex-shrink:0; }
+.run-modal-scroll { display:grid; gap:10px; min-height:0; overflow:auto; overscroll-behavior:contain; scroll-padding:12px; padding:2px; overflow-wrap:anywhere; }
+.run-modal-footer { flex-shrink:0; padding-top:12px; border-top:1px solid var(--border); }
 .run-modal-body {
-  display: grid;
+  min-height:0;
+  overflow:hidden;
+  display:flex;
+  flex-direction:column;
   min-width: 0;
   gap: 10px;
 }

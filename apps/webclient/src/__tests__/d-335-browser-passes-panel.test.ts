@@ -143,6 +143,18 @@ describe('D-335 slice F — the passes on the Contracts panel', () => {
     expect(text(second!)).toContain('used 1 time');
   });
 
+  // D-402 (2026-11-23) — "Allow on <site> until this job ends": a session pass whose conversation is an AI app's job.
+  it('says a pass for an AI app\'s job is for that job, until it ends at the latest', async () => {
+    const job: BrowserPassRow = { ...session, pass_id: 'pass-job', key: { ...session.key, principal: { kind: 'ai_app', contract_id: 'ct-claude' } },
+      channel_session_id: 'job:j-1', expires_at: NOW + 20 * 60_000, uses: 2 };
+    const h = mount({ passes: [job] });
+    await h.panel.whenLoaded();
+    const [card] = all(h.host, BROWSER_PASS_ATTR);
+    expect(text(card!)).toContain(`For one job of this app, until ${new Date(NOW + 20 * 60_000).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`);
+    expect(text(card!)).toContain('at the latest; used 2 times');
+    expect(text(card!)).not.toContain('In one conversation');
+  });
+
   it('D-402 slice H4d — a pass for one browser names it, one no longer paired says so, and so does a suggestion', async () => {
     const home: BrowserPassRow = { ...always, pass_id: 'pass-home', key: { ...always.key, browser: 'inst-home' },
       browser_name: 'Home', browser_paired: true };

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { browserActReadsOnly, browserActStepMayMove, parseBrowserActSteps } from '../browser-act.js';
+import { browserActReadsOnly, browserActStepMayMove, browserActStepWrites, parseBrowserActSteps } from '../browser-act.js';
 import { BROWSER_COLLECT_MAX_VIOLATIONS, parseBrowserCollectSelector } from '../browser-collect.js';
 
 const collect = { do: 'collect', items: '.item', fields: { name: '.name', link: { selector: 'a', attribute: 'href' } },
@@ -11,10 +11,15 @@ describe('bounded browser collection contract', () => {
     expect(parsed).toEqual({ ok: true, steps: [{ ...collect, fields: { name: { selector: '.name' },
       link: { selector: 'a', attribute: 'href' } }, max_items: 200, max_seconds: 60 }] });
     if (!parsed.ok) return;
+    // It may move its tab, so a step after it could not be read first; but it reads (2026-11-23, the owner: "make
+    // Collects that turn pages read too"), on one page or across its Next pages, and a change before it still asks.
     expect(browserActStepMayMove(parsed.steps[0]!)).toBe(true);
-    expect(browserActReadsOnly(parsed.steps)).toBe(false);
+    expect(browserActStepWrites(parsed.steps[0]!)).toBe(false);
+    expect(browserActReadsOnly(parsed.steps)).toBe(true);
     const single = parseBrowserActSteps([{ ...collect, max_pages: 1 }]);
     expect(single.ok && browserActReadsOnly(single.steps)).toBe(true);
+    const behindClick = parseBrowserActSteps([{ do: 'click', text: 'Show all' }, collect]);
+    expect(behindClick.ok && browserActReadsOnly(behindClick.steps)).toBe(false);
   });
 
   it('refuses actions after collection and malformed or unbounded requests before dispatch', () => {

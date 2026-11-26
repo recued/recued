@@ -35,7 +35,7 @@ export const rebindPageRef = (ref: string, act?: boolean | null)
   : { kept: true } | { rebound: true } | { stale: true } | { missing: true } | { changed: { now: string; was: string } } => {
   type Print = Record<string, string>;
   type RefMap = { next: number; byRef: Map<string, Element>; byElement: WeakMap<Element, string>;
-    seen?: WeakMap<Element, Print>; print?: (element: Element) => Print };
+    seen?: WeakMap<Element, Print>; print?: (element: Element) => Print; labelledByName?: (element: Element) => string };
   const refs = (globalThis as typeof globalThis & { recuedPageRefs?: RefMap }).recuedPageRefs;
   const old = refs?.byRef.get(ref);
   if (refs === undefined || old === undefined) return { missing: true };
@@ -99,7 +99,7 @@ export const rebindPageRef = (ref: string, act?: boolean | null)
     const seen = act === true ? refs.seen?.get(old) : undefined;
     const printOf = refs.print;
     if (seen === undefined || printOf === undefined) return { kept: true };
-    const KEYS = ['tag', 'type', 'name', 'accesskey', 'role', 'label', 'placeholder', 'title', 'text', 'value', 'href', 'form', 'row', 'links'];
+    const KEYS = ['tag', 'type', 'name', 'accesskey', 'role', 'label', 'labelledBy', 'placeholder', 'title', 'text', 'value', 'href', 'form', 'row', 'links'];
     const LOOSE = new Set(['label', 'title', 'text', 'value', 'row']);
     const loose = (text: string) => text.replace(/\d+(?:[.,:]\d+)+/g, '#');
     const alike = (a: Print, b: Print, exact: boolean) => KEYS.every((key) => {
@@ -141,10 +141,12 @@ export const rebindPageRef = (ref: string, act?: boolean | null)
     };
   };
   const was = print(old);
-  const readAccessKey = refs.seen?.get(old)?.accesskey;
+  const observed = refs.seen?.get(old);
+  const readAccessKey = observed?.accesskey;
   if (readAccessKey !== undefined && was.accesskey !== readAccessKey) return { stale: true };
   const same = (element: Element) => {
     if (element.id !== '' && old.id !== '' && element.id !== old.id) return false;
+    if (observed?.labelledBy && norm(refs.labelledByName?.(element)) !== observed.labelledBy) return false;
     const now = print(element);
     for (const key of ['tag', 'type', 'name', 'accesskey', 'role', 'label', 'placeholder', 'title', 'text', 'value', 'href'] as const) {
       if (key === 'title' ? shortcutTitle(now.title, readAccessKey) !== shortcutTitle(was.title, readAccessKey)

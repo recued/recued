@@ -31,6 +31,7 @@ import {
   type SchedulingLinkVisitorFieldRequirements,
   type VisitorReceipt,
 } from '@recued/contracts';
+import { RECEPTION_PAGE_STYLE_SRC } from '../static-assets.js';
 import { htmlEscape } from './reception-page-render.js';
 import { renderVisitorReceiptBlock } from './visitor-receipt.js';
 
@@ -73,9 +74,8 @@ export interface SchedulingLinkRenderInput {
   readonly max_lead_time_days: number;
   /** Endpoint id (URL: `/reception/scheduling/<endpoint_id>/book` POST). */
   readonly endpoint_id: string;
-  /** Per-request bearer secret — surfaces as a hidden form field so the
-   *  POST /book request carries the token (renderer pulls this from the
-   *  request URL query string). */
+  /** Verified request token carried by the duration form, availability
+   *  recheck and booking POST target. */
   readonly bearer_secret: string;
   /** Per-request form nonce (32 bytes, hex-encoded). Bound to the
    *  rendered page; POST /book validator requires it back verbatim. */
@@ -94,7 +94,7 @@ export interface SchedulingLinkRenderInput {
 // Common shell
 // ────────────────────────────────────────────────────────────────
 
-export const renderHead = (title: string): string => `<!DOCTYPE html>
+export const renderHead = (title: string, stylesheet = `${RECEPTION_PAGE_STATIC_PATH_PREFIX}style.css`): string => `<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -103,19 +103,20 @@ export const renderHead = (title: string): string => `<!DOCTYPE html>
 <meta name="robots" content="noindex,nofollow">
 <title>${htmlEscape(title)}</title>
 <link rel="icon" href="${RECEPTION_PAGE_STATIC_PATH_PREFIX}favicon.ico">
-<link rel="stylesheet" href="${RECEPTION_PAGE_STATIC_PATH_PREFIX}style.css">
+<link rel="stylesheet" href="${htmlEscape(stylesheet)}">
 </head>`;
 
 /** D-149 P12 § A.20.7 — `trust_footer` comes from `buildTrustFooter`
  *  (contracts), which html-escapes the interpolated display name. It is
  *  already HTML-safe; interpolate VERBATIM and do NOT re-escape. `null`
  *  / absent ⇒ no trust block. */
-export const renderFooter = (tz_label: string, trust_footer?: string | null): string => {
+export const renderFooter = (tz_label: string | null, trust_footer?: string | null): string => {
   const trustLine =
     typeof trust_footer === 'string' && trust_footer.length > 0
       ? `<p class="rcp-trust-footer">${trust_footer}</p>\n`
       : '';
-  return `<div class="rcp-footer">${trustLine}Powered by Recued · ${htmlEscape(tz_label)}</div>`;
+  const timezone = tz_label === null ? '' : ` · ${htmlEscape(tz_label)}`;
+  return `<div class="rcp-footer">${trustLine}Powered by Recued${timezone}</div>`;
 };
 
 // ────────────────────────────────────────────────────────────────
@@ -135,7 +136,7 @@ const renderField = (input: {
   const reqAttr = input.required ? ' required' : '';
   const labelMark = input.required ? ' <span class="rcp-required">*</span>' : '';
   if (input.type === 'textarea') {
-    return `<div class="rcp-field">
+    return `<div class="rcp-field rcp-booking-notes">
 <label for="rcp-${input.name}">${htmlEscape(input.label)}${labelMark}</label>
 <textarea id="rcp-${input.name}" name="${htmlEscape(input.name)}" maxlength="${input.maxlength}" rows="3"${reqAttr}></textarea>
 </div>`;
@@ -153,7 +154,7 @@ const renderField = (input: {
 const renderDurationSelect = (input: {
   options: ReadonlyArray<number>;
   active: number;
-  endpoint_id: string;
+  endpoint_path: string;
   bearer_secret: string;
 }): string => {
   const opts = input.options
@@ -165,16 +166,18 @@ const renderDurationSelect = (input: {
   // Visitor changes duration → GET request with the new ?duration param.
   // Because the form has form-action 'self', the GET form roundtrips
   // through the same handler + the slot table re-renders.
-  return `<form class="rcp-duration-form" method="GET" action="/reception/scheduling/${htmlEscape(input.endpoint_id)}">
+  return `<form class="rcp-duration-form" method="GET" action="${htmlEscape(input.endpoint_path)}">
 <input type="hidden" name="t" value="${htmlEscape(input.bearer_secret)}">
 <label for="rcp-duration">Slot length</label>
-<select id="rcp-duration" name="duration" onchange="">${opts}</select>
+<select id="rcp-duration" name="duration">${opts}</select>
 <button type="submit" class="rcp-button">Update</button>
 </form>`;
 };
 
 export const renderSlotPicker = (input: {
   slots: ReadonlyArray<SchedulingSlot>;
+  form_id?: string;
+  described_by?: string;
 }): string => {
   if (input.slots.length === 0) {
     return `<p class="rcp-empty">No available slots in the next look-ahead window.</p>`;
@@ -185,9 +188,11 @@ export const renderSlotPicker = (input: {
         `<option value="${s.start_at}|${s.end_at}|${s.duration_minutes}">${htmlEscape(s.display_label)}</option>`,
     )
     .join('');
+  const form = input.form_id ? ` form="${htmlEscape(input.form_id)}"` : '';
+  const description = input.described_by ? ` aria-describedby="${htmlEscape(input.described_by)}"` : '';
   return `<div class="rcp-field">
 <label for="rcp-slot">Choose a time</label>
-<select id="rcp-slot" name="slot" required>${options}</select>
+<select id="rcp-slot" name="slot"${form}${description} required>${options}</select>
 </div>`;
 };
 
@@ -277,6 +282,8 @@ ${renderFooter(tz_label)}
 };
 
 export const renderSchedulingLinkHtml = (input: SchedulingLinkRenderInput): string => {
+  const endpointPath = `/reception/scheduling/${encodeURIComponent(input.endpoint_id)}`;
+  const hasSlots = input.slots.length > 0;
   const instructionsBlock =
     input.instructions && input.instructions.length > 0
       ? `<p class="rcp-tagline">${htmlEscape(input.instructions)}</p>`
@@ -285,14 +292,29 @@ export const renderSchedulingLinkHtml = (input: SchedulingLinkRenderInput): stri
   const durationBlock = renderDurationSelect({
     options: input.duration_options,
     active: input.active_duration_minutes,
-    endpoint_id: input.endpoint_id,
+    endpoint_path: endpointPath,
     bearer_secret: input.bearer_secret,
   });
-  const slotPicker = renderSlotPicker({ slots: input.slots });
-  const visitorFields = renderVisitorFields(input.required_visitor_fields);
-  return `${renderHead(`Schedule with ${input.display_name}`)}
+  const bookingFormId = 'rcp-booking-form';
+  const timezoneId = 'rcp-booking-timezone';
+  const slotPicker = renderSlotPicker({ slots: input.slots, form_id: bookingFormId, described_by: timezoneId });
+  const retryParams = new URLSearchParams({ t: input.bearer_secret, duration: String(input.active_duration_minutes) });
+  const timeContext = hasSlots
+    ? `<p id="${timezoneId}" class="rcp-booking-timezone">Times shown in ${htmlEscape(input.tz_label)}</p>`
+    : `<a class="rcp-button rcp-booking-refresh" href="${htmlEscape(`${endpointPath}?${retryParams}`)}">Check availability again</a>`;
+  const visitorFields = hasSlots ? renderVisitorFields(input.required_visitor_fields) : '';
+  const bookingForm = hasSlots
+    ? `<form id="${bookingFormId}" class="rcp-form rcp-booking-details" method="POST" action="${htmlEscape(`${endpointPath}/book?t=${encodeURIComponent(input.bearer_secret)}`)}">
+<input type="hidden" name="form_nonce" value="${htmlEscape(input.form_nonce)}">
+<input type="hidden" name="duration" value="${input.active_duration_minutes}">
+${visitorFields ? '<h2 class="rcp-booking-details-title">Your details</h2>' : ''}
+${visitorFields}
+<button type="submit" class="rcp-button rcp-button-primary">Confirm booking</button>
+</form>`
+    : '';
+  return `${renderHead(`Schedule with ${input.display_name}`, RECEPTION_PAGE_STYLE_SRC)}
 <body>
-<div class="rcp-shell">
+<div class="rcp-shell${hasSlots ? ' rcp-booking-shell' : ''}">
 <div class="rcp-card">
 <div class="rcp-header">
 <div>
@@ -301,15 +323,17 @@ ${instructionsBlock}
 ${advanceNoticeBlock}
 </div>
 </div>
+<div class="rcp-booking-layout">
+<div class="rcp-booking-time">
 ${durationBlock}
-<form class="rcp-form" method="POST" action="/reception/scheduling/${htmlEscape(input.endpoint_id)}/book?t=${encodeURIComponent(input.bearer_secret)}">
-<input type="hidden" name="form_nonce" value="${htmlEscape(input.form_nonce)}">
-<input type="hidden" name="duration" value="${input.active_duration_minutes}">
+<div class="rcp-booking-availability">
 ${slotPicker}
-${visitorFields}
-<button type="submit" class="rcp-button rcp-button-primary">Confirm booking</button>
-</form>
-${renderFooter(input.tz_label, input.trust_footer ?? null)}
+${timeContext}
+</div>
+</div>
+${bookingForm}
+</div>
+${renderFooter(hasSlots ? null : input.tz_label, input.trust_footer ?? null)}
 </div>
 </div>
 </body>
@@ -331,7 +355,7 @@ export const renderSchedulingLinkSuccessHtml = (input: {
    *  no receipt block). */
   receipt?: VisitorReceipt | null;
 }): string => {
-  return `${renderHead(`Booked with ${input.display_name}`)}
+  return `${renderHead(`Booked with ${input.display_name}`, RECEPTION_PAGE_STYLE_SRC)}
 <body>
 <div class="rcp-shell">
 <div class="rcp-card">
@@ -406,32 +430,44 @@ export const renderManageReschedulePage = (input: {
     input.instructions && input.instructions.length > 0
       ? `<p class="rcp-tagline">${htmlEscape(input.instructions)}</p>`
       : '';
-  const currentBlock = `<p class="rcp-meta">Currently booked for ${htmlEscape(input.current_slot_label)}. Pick a new time below.</p>`;
-  const slotPicker = renderSlotPicker({ slots: input.slots });
-  const noticeBlock = input.notice ? `<p class="rcp-tagline" role="alert">${htmlEscape(input.notice)}</p>` : '';
+  const timezoneId = 'rcp-reschedule-timezone';
+  const noticeId = 'rcp-reschedule-notice';
+  const noticeBlock = input.notice
+    ? `<p id="${noticeId}" class="rcp-error-summary" role="alert">${htmlEscape(input.notice)}</p>`
+    : '';
+  const slotPicker = renderSlotPicker({
+    slots: input.slots,
+    described_by: input.notice ? `${noticeId} ${timezoneId}` : timezoneId,
+  });
   const submitAction = input.slots.length > 0
     ? '<button type="submit" class="rcp-button rcp-button-primary">Request new time</button>'
     : `<a class="rcp-button rcp-button-primary" href="${htmlEscape(input.post_action)}">Check availability again</a>`;
-  return `${renderHead(`Reschedule with ${input.display_name}`)}
+  return `${renderHead(`Reschedule with ${input.display_name}`, RECEPTION_PAGE_STYLE_SRC)}
 <body>
-<div class="rcp-shell">
+<main class="rcp-shell rcp-booking-shell">
 <div class="rcp-card">
 <div class="rcp-header">
 <div>
 <h1 class="rcp-name">Reschedule your booking</h1>
 ${instructionsBlock}
-${currentBlock}
-${noticeBlock}
 </div>
 </div>
-<form class="rcp-form" method="POST" action="${htmlEscape(input.post_action)}">
+<div class="rcp-booking-layout">
+<section class="rcp-reschedule-current" aria-labelledby="rcp-current-booking">
+<h2 id="rcp-current-booking">Current booking</h2>
+<p>${htmlEscape(input.current_slot_label)}</p>
+<p id="${timezoneId}" class="rcp-booking-timezone">Times shown in ${htmlEscape(input.tz_label)}</p>
+</section>
+<form class="rcp-form rcp-reschedule-form" method="POST" action="${htmlEscape(input.post_action)}">
 <input type="hidden" name="form_nonce" value="${htmlEscape(input.form_nonce)}">
+${noticeBlock}
 ${slotPicker}
 ${submitAction}
 </form>
-${renderFooter(input.tz_label)}
 </div>
+${renderFooter(null)}
 </div>
+</main>
 </body>
 </html>
 `;

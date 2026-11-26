@@ -19,6 +19,10 @@ import {
   writeStagedSig,
   SIG_SIDECAR_SUFFIX,
   UpdateArtifactTooLargeError,
+  UpdateDownloadStalledError,
+  UpdateDownloadTooSlowError,
+  UPDATE_DOWNLOAD_STALL_MS,
+  UPDATE_DOWNLOAD_TIMEOUT_MS,
   reconcileInterruptedPairSwap,
   reconcileSnapshotReceiptEpochBeforeOpen,
   restoreWebclientBundle,
@@ -69,7 +73,20 @@ describe('defaultDownload transport boundaries', () => {
     discardStaged(staged);
   });
 
-  it('keeps the deadline active while the artifact body stalls', async () => {
+  /** A body that sends nothing until it is aborted, as a hung connection does. */
+  const silentBody = (signal: AbortSignal | undefined): ReadableStream<Uint8Array> => new ReadableStream<Uint8Array>({
+    start(controller) {
+      const abort = (): void => {
+        const error = new Error('aborted');
+        error.name = 'AbortError';
+        controller.error(error);
+      };
+      if (signal?.aborted) abort();
+      else signal?.addEventListener('abort', abort, { once: true });
+    },
+  });
+
+  it('gives up a body that stops sending, after the stall limit, and says how much arrived', async () => {
     vi.useFakeTimers();
     try {
       let observedSignal: AbortSignal | undefined;
@@ -78,33 +95,103 @@ describe('defaultDownload transport boundaries', () => {
         'https://releases.recued.com/recued',
         staged,
         {
-          timeoutMs: 20,
+          stallMs: 20,
           fetchImpl: async (_input, init) => {
             observedSignal = init?.signal ?? undefined;
-            const body = new ReadableStream<Uint8Array>({
-              start(controller) {
-                const abort = (): void => {
-                  const error = new Error('aborted');
-                  error.name = 'AbortError';
-                  controller.error(error);
-                };
-                if (observedSignal?.aborted) abort();
-                else observedSignal?.addEventListener('abort', abort, { once: true });
-              },
-            });
-            return new Response(body);
+            return new Response(silentBody(observedSignal), { headers: { 'content-length': '150000000' } });
           },
         },
       );
-      const rejected = expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+      const rejected = expect(pending).rejects.toMatchObject({
+        name: 'UpdateDownloadStalledError',
+        code: 'download_stalled',
+        stallMs: 20,
+        receivedBytes: 0,
+        totalBytes: 150_000_000,
+      });
 
       await vi.advanceTimersByTimeAsync(20);
       await rejected;
       expect(observedSignal?.aborted).toBe(true);
+      await expect(pending).rejects.toThrow('no data arrived for 0.02 s, with 0.0 MB of 150.0 MB received');
       discardStaged(staged);
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('counts a server that never answers as stalled', async () => {
+    vi.useFakeTimers();
+    try {
+      const staged = join(dir(), 'recued.staged');
+      const pending = defaultDownload('https://releases.recued.com/recued', staged, {
+        stallMs: 20,
+        fetchImpl: (_input, init) => new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () => {
+            const error = new Error('aborted');
+            error.name = 'AbortError';
+            reject(error);
+          }, { once: true });
+        }),
+      });
+      const rejected = expect(pending).rejects.toBeInstanceOf(UpdateDownloadStalledError);
+      await vi.advanceTimersByTimeAsync(20);
+      await rejected;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  /** A body that sends `chunks` chunks of `size` bytes, one every `gapMs`, on real
+   *  timers: the bytes go through a real file write, which fake timers do not
+   *  advance. ⚠ The gaps are a fifth of the stall limit, so only an event loop
+   *  stopped for a whole stall limit could fail them. */
+  const tricklingBody = (chunks: number, size: number, gapMs: number): ReadableStream<Uint8Array> => {
+    let sent = 0;
+    return new ReadableStream<Uint8Array>({
+      async pull(controller) {
+        if (sent === chunks) { controller.close(); return; }
+        await new Promise((resolve) => setTimeout(resolve, gapMs));
+        sent += 1;
+        controller.enqueue(new Uint8Array(size).fill(sent % 256));
+      },
+    });
+  };
+
+  it('lets a slow but steady download finish, however long past the stall limit it runs', async () => {
+    const staged = join(dir(), 'recued.staged');
+    // Ten chunks 60 ms apart: 600 ms in all, twice the 300 ms stall limit, and no gap near it.
+    await defaultDownload('https://releases.recued.com/recued', staged, {
+      stallMs: 300,
+      timeoutMs: 60_000,
+      fetchImpl: async () => new Response(tricklingBody(10, 1000, 60)),
+    });
+    expect(readFileSync(staged).byteLength).toBe(10_000);
+    discardStaged(staged);
+  });
+
+  it('gives up a download still moving when the overall ceiling runs out', async () => {
+    const staged = join(dir(), 'recued.staged');
+    let observedSignal: AbortSignal | undefined;
+    const error = await defaultDownload('https://releases.recued.com/recued', staged, {
+      stallMs: 300,
+      timeoutMs: 400,
+      fetchImpl: async (_input, init) => {
+        observedSignal = init?.signal ?? undefined;
+        return new Response(tricklingBody(1_000, 1000, 60));
+      },
+    }).then(() => null, (e: unknown) => e);
+    expect(error).toBeInstanceOf(UpdateDownloadTooSlowError);
+    expect(error).toMatchObject({ code: 'download_too_slow', timeoutMs: 400 });
+    // It was moving: bytes arrived before the ceiling, which is what tells it from a stall.
+    expect((error as UpdateDownloadTooSlowError).receivedBytes).toBeGreaterThan(0);
+    expect(observedSignal?.aborted).toBe(true);
+    discardStaged(staged);
+  });
+
+  it('keeps a stall limit and a ceiling by default: a minute, and six hours', () => {
+    expect(UPDATE_DOWNLOAD_STALL_MS).toBe(60_000);
+    expect(UPDATE_DOWNLOAD_TIMEOUT_MS).toBe(6 * 60 * 60 * 1000);
   });
 });
 

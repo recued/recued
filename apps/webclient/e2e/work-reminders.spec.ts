@@ -33,6 +33,69 @@ const reference = (record: Task | Commitment): ReminderRecordReference => ({
 const linked = (page: Page) => reader(page).locator('[data-work-linked-reminders]');
 const linkedRow = (page: Page, id: string) => linked(page).locator(`[data-record-reminder-row="${id}"]`);
 
+test('the desktop Reminders pane restores the filtered list and keyboard position after a linked task', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 768 });
+  const f = await installTaskReaderFixture(page, { reminders: true });
+  try {
+    const text = 'Review schedule 52';
+    const ids = Array.from({ length: 64 }, (_, index) => f.seedReminder({
+      text: `Review schedule ${index}`,
+      at: Date.parse('2026-11-02T12:00:00Z') + index * 60_000,
+      ...(index === 52 ? { record_ref: reference(f.task()) } : {}),
+    }));
+    await page.goto(`${HARNESS_URL}?journey=verification&server_profiles=multiple#data/reminder`);
+    await page.waitForFunction(() => window.__app?.ready === true);
+    const host = page.locator('[data-recued-reminders]');
+    const search = host.getByRole('searchbox', { name: 'Search reminders' });
+    const status = host.getByRole('combobox', { name: 'Status' });
+    const dates = host.getByRole('combobox', { name: 'Dates' });
+    await search.fill('Review schedule');
+    await status.selectOption('all');
+    await dates.selectOption('custom');
+    await host.getByLabel('From', { exact: true }).fill('2026-11-02');
+    await host.getByLabel('Through', { exact: true }).fill('2026-11-02');
+    await host.getByRole('button', { name: 'Apply filters', exact: true }).click();
+    const rows = host.getByRole('list', { name: 'Matching reminders' }).getByRole('listitem');
+    await expect(rows).toHaveCount(50);
+    await host.getByRole('button', { name: 'Load more', exact: true }).click();
+    await expect(rows).toHaveCount(ids.length);
+
+    const selected = host.getByRole('button', { name: 'Open reminder: ' + text, exact: true });
+    await selected.click();
+    const pane = host.getByRole('region', { name: text, exact: true });
+    await expect(pane.getByRole('heading', { name: text, exact: true })).toBeFocused();
+    await expect(selected).toHaveAttribute('aria-current', 'true');
+    await expect(selected).toBeInViewport();
+    const listBox = (await selected.boundingBox())!, paneBox = (await pane.boundingBox())!;
+    expect(listBox.x + listBox.width).toBeLessThan(paneBox.x);
+    await expect(pane).toContainText('America/Los_Angeles');
+    const source = pane.getByRole('button', { name: 'Open task', exact: true });
+    await source.scrollIntoViewIfNeeded();
+    const scrollTop = () => page.locator('[data-recued-webclient-content]').evaluate(node => node.scrollTop);
+    const savedTop = await scrollTop();
+    expect(savedTop).toBeGreaterThan(0);
+    await source.press('Enter');
+    await expect(reader(page).getByRole('button', { name: 'Back to reminder', exact: true })).toBeVisible();
+    await page.goBack();
+    await expect(source).toBeFocused();
+    await expect(selected).toHaveAttribute('aria-current', 'true');
+    await expect(rows).toHaveCount(ids.length);
+    await expect(search).toHaveValue('Review schedule');
+    await expect(status).toHaveValue('all');
+    await expect(dates).toHaveValue('custom');
+    await expect.poll(async () => Math.abs(await scrollTop() - savedTop)).toBeLessThan(3);
+
+    await page.goBack();
+    await expect(pane).toHaveCount(0);
+    await expect(selected).toBeFocused();
+    await page.evaluate(hash => window.__app.setHash(hash), reminderDetailLink(ids[52]!));
+    await expect(host.getByRole('button', { name: 'Back to reminders', exact: true })).toBeVisible();
+    await expect(host.locator('.reminders-detail')).toContainText(text);
+    await expect(search).toHaveCount(0);
+    expect(f.reminderWrites).toEqual([]);
+  } finally { f.dispose(); }
+});
+
 for (const kind of ['task', 'commitment'] as const) test(`${kind} reminder recovery keeps its exact source through refresh and Universal Search`, async ({ page }) => {
   const f = await boot(page, kind);
   try {

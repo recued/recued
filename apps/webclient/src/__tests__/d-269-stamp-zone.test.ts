@@ -87,6 +87,9 @@ describe('D-269 — the browser-zone idiom is accounted for, file by file', () =
     //  · the Body's send (D-339 slice 13, `yours/body-chat.ts`) — a chat turn sent from a Body's
     //    page, so D-193's per-turn `time_zone`, the same reading as the chat route's, for the
     //    same reason: "this week" in the answer is the owner's week where they are.
+    //  · the Yours Due queue (desktop, `yours/bootstrap-yours-route.ts`) — groups the visible due items into
+    //    the viewer's days for display, as the rest of Yours shows times in the browser's zone. The grouping
+    //    only orders rows on screen; it stamps no saved alert, mail send or schedule (reviewed 26.11.26 cut).
     //  · two-clock.ts — the fallback implementations themselves (`stampZone`
     //    and the preview's own client-zone default). This is where the reading
     //    is supposed to live, exactly once.
@@ -96,6 +99,7 @@ describe('D-269 — the browser-zone idiom is accounted for, file by file', () =
       'apps/webclient/src/data/bootstrap-data-route.ts',
       'apps/webclient/src/data/collection-explorer.ts',
       'apps/webclient/src/yours/body-chat.ts',
+      'apps/webclient/src/yours/bootstrap-yours-route.ts',
       'packages/ui-shared/src/two-clock.ts',
       'packages/ui-shared/src/work-entity-page/project-overview.ts',
     ]);

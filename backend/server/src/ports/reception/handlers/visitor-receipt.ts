@@ -106,17 +106,20 @@ export const renderVisitorReceiptBlock = (
   receipt: VisitorReceipt | null | undefined,
 ): string => {
   if (!receipt) return '';
-  const submittedIso = new Date(receipt.submitted_at).toISOString();
+  const submittedIso = htmlEscape(new Date(receipt.submitted_at).toISOString());
   const fieldsBlock =
     receipt.fields_echo.length > 0
-      ? `<dl class="rcp-receipt-fields">
+      ? `<div class="rcp-receipt-answers">
+<h3 class="rcp-section-title">What you shared</h3>
+<dl class="rcp-receipt-fields">
 ${receipt.fields_echo
   .map(
     (f) =>
       `<dt>${htmlEscape(f.label)}</dt><dd>${htmlEscape(f.value)}</dd>`,
   )
   .join('\n')}
-</dl>`
+</dl>
+</div>`
       : '';
   const footerBlock =
     typeof receipt.privacy_footer === 'string' && receipt.privacy_footer.length > 0
@@ -134,13 +137,20 @@ ${receipt.fields_echo
   // validation.
   const lookupBlock =
     typeof receipt.lookup_path === 'string' && receipt.lookup_path.length > 0
-      ? `\n<p class="rcp-receipt-lookup">Check on this later: `
-        + `<a href="${htmlEscape(receipt.lookup_path)}">${htmlEscape(receipt.lookup_path)}</a></p>`
+      ? `<div class="rcp-receipt-lookup">
+<a class="rcp-button" href="${htmlEscape(receipt.lookup_path)}" aria-describedby="rcp-receipt-lookup-hint">Check request status</a>
+<p class="rcp-meta" id="rcp-receipt-lookup-hint">Save this link to check again later.</p>
+</div>`
       : '';
-  return `<div class="rcp-section rcp-receipt">
-<p class="rcp-section-title">Your receipt</p>
+  return `<section class="rcp-section rcp-receipt" aria-labelledby="rcp-receipt-heading">
+<h2 class="rcp-receipt-heading" id="rcp-receipt-heading">Your receipt</h2>
+<div class="rcp-receipt-body">
+<div class="rcp-receipt-summary">
 <p class="rcp-receipt-ref">Reference ID: <code>${htmlEscape(receipt.reference_id)}</code></p>
-<p class="rcp-receipt-meta">Submitted ${htmlEscape(submittedIso)}</p>${lookupBlock}
-${fieldsBlock}${footerBlock}
-</div>`;
+<p class="rcp-receipt-meta">Submitted <time datetime="${submittedIso}">${submittedIso}</time></p>
+${lookupBlock}
+</div>
+${fieldsBlock}
+</div>${footerBlock}
+</section>`;
 };

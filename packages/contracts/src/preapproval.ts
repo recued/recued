@@ -42,7 +42,7 @@ export interface PreparePreapproval {
   idempotency_key: string;
   subject:
     | { kind: 'recipe'; recipe_id: string; publisher_id: string; config: Record<string, PreapprovalJson> }
-    | { kind: 'mail_draft'; draft_id: string; draft_revision: number };
+    | { kind: 'mail_draft'; draft_id: string; draft_revision: number; send_if_no_reply?: true };
   activation: PreapprovalActivation;
   decision_deadline: number;
   dispatch_deadline: number;
@@ -204,6 +204,7 @@ export interface PreapprovalMemberOutcome {
   /** Present only for retained, supported private attempts on this server. */
   provider_verification?: 'mail';
   local_receipt?: import('./resource-review.js').LocalMutationReceiptSummary;
+  mail_follow_up_stop?: PreapprovalMailFollowUpStop;
   member_id: string;
   parent_member_id: string | null;
   op_id: string;
@@ -215,6 +216,9 @@ export interface PreapprovalMemberOutcome {
   status_message: string | null;
   reconciled_outcome: 'succeeded' | 'failed' | null;
 }
+export type PreapprovalMailFollowUpStop =
+  | { kind: 'reply'; reply_ref: import('./reminder.js').ReminderMailReference }
+  | { kind: 'review' };
 /** A locator only. Outcomes and provider evidence are always host-derived. */
 export interface PreapprovalReconcileRequest { proposal_id: string; member_id: string }
 export interface PreapprovalReconcileResult {
@@ -333,8 +337,10 @@ export const parsePreparePreapproval = (value: unknown): PreparePreapproval => {
     if (new TextEncoder().encode(JSON.stringify(config)).byteLength > PREAPPROVAL_LIMITS.plan_bytes) return bad();
     parsedSubject = { kind: 'recipe', recipe_id: string(subject.recipe_id), publisher_id: string(subject.publisher_id), config };
   } else if (subject.kind === 'mail_draft') {
-    closed(subject, ['kind', 'draft_id', 'draft_revision']);
-    parsedSubject = { kind: 'mail_draft', draft_id: string(subject.draft_id), draft_revision: integer(subject.draft_revision) };
+    closed(subject, ['kind', 'draft_id', 'draft_revision'], ['send_if_no_reply']);
+    if (subject.send_if_no_reply !== undefined && subject.send_if_no_reply !== true) return bad();
+    parsedSubject = { kind: 'mail_draft', draft_id: string(subject.draft_id), draft_revision: integer(subject.draft_revision),
+      ...(subject.send_if_no_reply === true ? { send_if_no_reply: true } : {}) };
   } else return bad();
   const decision_deadline = integer(row.decision_deadline);
   const dispatch_deadline = integer(row.dispatch_deadline);

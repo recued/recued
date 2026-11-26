@@ -170,7 +170,10 @@ describe('D-169 P2 Slice 2 composeNotificationBlock notification persistence', (
     expect(log.logActivity).toHaveBeenCalledTimes(1);
     expect(log.logActivity.mock.calls[0]?.[0]).toMatchObject({ activity_id: expect.stringMatching(/^saved-view-alert:/),
       action: 'notification_fired', target: view.id });
+    // The delivered alert names the activity it persisted (11-23: notifications carry `activity_id`, so the web
+    // app's catch-up and toasts can tell an alert they already showed from a new one).
+    const persisted = (log.logActivity.mock.calls[0]?.[0] as { activity_id?: string } | undefined)?.activity_id;
     expect(bus.emit).toHaveBeenCalledExactlyOnceWith({ kind: 'notification.notify', title: 'New task in “Overdue”',
-      text: expect.stringContaining('New invoice'), link_url: `#views/${view.id}` });
+      text: expect.stringContaining('New invoice'), link_url: `#views/${view.id}`, activity_id: persisted });
   });
 });

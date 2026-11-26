@@ -40,6 +40,8 @@ export type TodayCallers = Pick<BootstrapDataRouteOptions,
   | 'workEntitySourceListCaller' | 'workEntityGetCaller' | 'taskMarkDoneCaller'
   | 'workEntityUpsertCaller' | 'commitmentCloseCaller' | 'reminderCallers'>
   & {
+    followUpListCaller?: import('../mail/mail-follow-up-search.js').MailFollowUpListCaller;
+    taskReplyWatchListCaller?: NonNullable<import('../mail/mail-follow-up-surface.js').MailFollowUpCallers['tasks']>['list'];
     /** D-267 — the shell's shared Create opener, the same modal the chat
      *  composer chip and the drawer seat open. Wired → Today's zero-state
      *  offers a capture button; absent → it renders nothing at all rather than

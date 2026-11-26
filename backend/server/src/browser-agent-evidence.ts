@@ -1,5 +1,5 @@
 import { BROWSER_DATA_REF, BRIDGE_PAGE_CHANGED_MESSAGE, BRIDGE_PAGE_GONE_MESSAGE, isBrowserReadState, isBrowserSourceIssues, isBrowserPostActionState, parseBrowserActSteps, readBrowserFailure,
-  type BrowserPostActionState, type BrowserConditionFailure, type BrowserReadinessFailure, type BrowserFailureObservation, type BrowserControlCorrection } from '@recued/contracts';
+  type BrowserPostActionState, type BrowserConditionFailure, type BrowserReadinessFailure, type BrowserFailureObservation, type BrowserControlCorrection, BROWSER_TOOLKIT_RECIPE_SLUGS } from '@recued/contracts';
 import { browserAgentGuidance } from './browser-agent-guidance.js';
 
 const object = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -62,9 +62,7 @@ const factualFailures = <T extends Record<string, unknown>>(result: T): T => {
  * The original run and its audit are not mutated. */
 export const projectBrowserAgentEvidence = <T>(input: T): T => {
   if (!object(input) || typeof input.recipe_id !== 'string'
-    || !['act-on-web-page', 'inspect-web-page', 'read-web-text', 'read-web-element', 'read-web-table', 'type-into-web-page',
-      'click-web-element', 'press-on-web-page', 'scroll-web-page', 'wait-for-web-element', 'open-web-page', 'list-browser-tabs',
-      'list-browser-bridges', 'save-web-file', 'screenshot-web-page', 'ask-web-page'].includes(input.recipe_id)) return input;
+    || !BROWSER_TOOLKIT_RECIPE_SLUGS.has(input.recipe_id)) return input;
   const result = factualFailures(input);
   const guidance = browserAgentGuidance(result);
   let attention: Record<string, unknown> | undefined;

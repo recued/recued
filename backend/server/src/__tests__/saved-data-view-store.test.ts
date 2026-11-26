@@ -24,6 +24,8 @@ const definitions: SavedDataViewDefinition[] = [
   { tab: 'memory', origin: 'user_self' },
   { tab: 'annotation' },
   { tab: 'today' },
+  { tab: 'search', query: 'Customer follow-up', result_type: 'run' },
+  { tab: 'search', query: 'work account', result_type: 'connection' },
 ];
 const databases: Database.Database[] = [];
 const dirs: string[] = [];
@@ -34,6 +36,18 @@ afterEach(() => {
 });
 
 describe('saved Data view persistence', () => {
+  it('persists relative Runs filters through reopen and protects newer settings from a stale update', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'saved-run-filters-')); dirs.push(dir);
+    const path = join(dir, 'realm.db'), db = open(path), store = createSavedDataViewStore(db);
+    const definition = { tab: 'search' as const, query: 'invoice', result_type: 'run' as const,
+      run_filters: { outcome: 'partial' as const, time_range: '7d' as const } };
+    const saved = store.create({ name: 'Invoice item errors', definition }); db.close();
+    const reopened = createSavedDataViewStore(open(path)); expect(reopened.get(saved.id)?.definition).toEqual(definition);
+    const next = { ...definition, run_filters: { outcome: 'failed' as const, time_range: '30d' as const } };
+    const updated = reopened.update({ id: saved.id, expected_revision: saved.revision, definition: next });
+    expect(() => reopened.update({ id: saved.id, expected_revision: saved.revision, definition })).toThrow(/another browser/);
+    expect(reopened.get(saved.id)).toEqual(updated); expect(updated.definition).toEqual(next);
+  });
   it('persists reminder date settings and protects a newer window from a stale update', () => {
     const dir = mkdtempSync(join(tmpdir(), 'saved-reminder-dates-')); dirs.push(dir);
     const path = join(dir, 'realm.db'), db = open(path), store = createSavedDataViewStore(db);
@@ -46,7 +60,7 @@ describe('saved Data view persistence', () => {
     expect(() => reopened.update({ id: saved.id, expected_revision: saved.revision, definition })).toThrow(/another browser/);
     expect(reopened.get(saved.id)).toEqual(updated);expect(updated.definition).toEqual(custom);
   });
-  it.each(['mail', 'decision'] as const)('keeps search type %s across reopening and updates it through the existing revision guard', resultType => {
+  it.each(['mail', 'decision', 'connection', 'saved_view', 'setting'] as const)('keeps search type %s across reopening and updates it through the existing revision guard', resultType => {
     const dir = mkdtempSync(join(tmpdir(), 'saved-search-type-')); dirs.push(dir);
     const path = join(dir, 'realm.db'), db = open(path);
     const store = createSavedDataViewStore(db);

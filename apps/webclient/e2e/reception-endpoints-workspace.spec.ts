@@ -7,6 +7,10 @@ const action = (page: Page, name: string, id = CONSULTATION) => endpointRow(page
 const refresh = (page: Page) => endpointPage(page).getByRole('button', { name: 'Refresh', exact: true });
 const promptSubmit = (page: Page) => endpointPrompt(page).locator('[data-action="reception-prompt-submit"]');
 const pending = (page: Page, method: string) => expect.poll(() => page.evaluate(method => (window as any).__endpoints.pending(method), method)).toBe(1);
+const visitorPreview = (page: Page) => endpointPage(page).locator('.reception-vav');
+const visitorFrame = (page: Page) => visitorPreview(page).getByTitle('Reception visitor preview');
+const visitorFields = (page: Page) => visitorPreview(page).getByRole('heading', { name: /^Visitor sees/ });
+const closeVisitorPreview = (page: Page) => visitorPreview(page).getByRole('button', { name: '← Back to Reception', exact: true });
 async function focusAccount(page: Page) {
   await page.locator('[data-recued-account-menu-trigger]').click();
   const close = page.locator('[data-recued-account-menu-close]'); await close.focus(); return close;
@@ -63,6 +67,97 @@ test('a failed detail read retries the same endpoint rather than only refreshing
   await expect(endpointPage(page).getByRole('alert')).toBeVisible(); await failEndpoint(page);
   await refresh(page).click(); await expect(endpointPage(page).locator('.reception-detail-title')).toHaveText(CONSULTATION);
   expect(await page.evaluate(() => (window as any).__endpoints.calls.filter((c: any) => c.method === 'reception.endpoint.access_log').map((c: any) => c.args))).toEqual([{ endpoint_id: CONSULTATION }, { endpoint_id: CONSULTATION }]);
+});
+
+test('desktop visitor review shows the page beside its field checklist and returns to the same endpoint', async ({ page, browserName }) => {
+  await page.setViewportSize({ width: 1280, height: 768 });
+  await loadedEndpoints(page);
+  const opener = action(page, 'preview-as-visitor');
+  const scroller = page.locator('[data-recued-webclient-content]');
+  await opener.scrollIntoViewIfNeeded();
+  const scrollTop = () => scroller.evaluate(element => element.scrollTop);
+  const originalScroll = await scrollTop();
+  expect(originalScroll).toBeGreaterThan(0);
+  await opener.press('Enter');
+
+  const heading = visitorPreview(page).getByRole('heading', { name: 'View as visitor', exact: true });
+  await expect(heading).toBeFocused();
+  await expect(closeVisitorPreview(page)).toBeInViewport();
+  await expect(visitorPreview(page).getByText(/^Preview good for/)).toBeInViewport();
+  await expect(visitorFields(page)).toBeInViewport();
+  await expect(visitorFrame(page)).toHaveAttribute('sandbox', '');
+  await expect(visitorFrame(page).contentFrame().getByRole('heading', { name: 'Customer consultation' })).toBeVisible();
+  const frameBox = (await visitorFrame(page).boundingBox())!;
+  const fieldsBox = (await visitorFields(page).boundingBox())!;
+  expect(frameBox.x + frameBox.width).toBeLessThan(fieldsBox.x);
+  expect(fieldsBox.y).toBeLessThan(frameBox.y + frameBox.height);
+
+  await page.keyboard.press(browserName === 'webkit' && process.platform === 'darwin' ? 'Alt+Tab' : 'Tab');
+  await expect(closeVisitorPreview(page)).toBeFocused();
+  await page.keyboard.press('Enter');
+  await expect(visitorPreview(page)).toHaveCount(0);
+  await expect(opener).toBeFocused();
+  await expect(opener).toBeInViewport();
+  await expect.poll(async () => Math.abs(await scrollTop() - originalScroll)).toBeLessThan(3);
+});
+
+test.describe('visitor review on touch screens', () => {
+  test.use({ hasTouch: true, viewport: { width: 1440, height: 800 } });
+
+  test('stacks the checklist below the frame on wide touch and phones and returns to detail', async ({ page }) => {
+    await goEndpoints(page, '', CONSULTATION);
+    const opener = endpointPage(page).locator('.reception-detail [data-action="reception-preview-as-visitor"]');
+    await opener.tap();
+    for (const width of [1440, 390]) {
+      await page.setViewportSize({ width, height: 800 });
+      await expect(visitorFrame(page)).toBeVisible();
+      const frameBox = (await visitorFrame(page).boundingBox())!;
+      const fieldsBox = (await visitorFields(page).boundingBox())!;
+      expect(frameBox.y + frameBox.height).toBeLessThan(fieldsBox.y);
+    }
+    await closeVisitorPreview(page).tap();
+    await expect(opener).toBeFocused();
+    await expect(endpointPage(page).locator('.reception-detail-title')).toHaveText(CONSULTATION);
+  });
+});
+
+test('a pending visitor preview runs once, restores its failed opener and respects later Account focus', async ({ page }) => {
+  await loadedEndpoints(page);
+  const method = 'reception.endpoint.preview_draft';
+  const opener = action(page, 'preview-as-visitor');
+  await holdEndpoint(page, method);
+  await opener.press('Enter');
+  await pending(page, method);
+  await expect(opener).toHaveAttribute('aria-busy', 'true');
+  await expect(opener).toBeFocused();
+  await page.keyboard.press('Enter');
+  expect(await endpointCount(page, method)).toBe(1);
+  await releaseEndpoint(page, method, true);
+  await expect(endpointPage(page).getByRole('alert')).toBeVisible();
+  await expect(opener).toBeFocused();
+  await expect(opener).not.toHaveAttribute('aria-busy');
+
+  await holdEndpoint(page, method);
+  await opener.press('Enter');
+  await pending(page, method);
+  const accountClose = await focusAccount(page);
+  await releaseEndpoint(page, method);
+  await expect(visitorFrame(page)).toBeVisible();
+  await expect(accountClose).toBeFocused();
+});
+
+test('a late visitor preview leaves the selected endpoint detail in view', async ({ page }) => {
+  await loadedEndpoints(page);
+  const method = 'reception.endpoint.preview_draft';
+  await holdEndpoint(page, method);
+  await action(page, 'preview-as-visitor').press('Enter');
+  await pending(page, method);
+  await action(page, 'open-detail').click();
+  await expect(endpointPage(page).locator('.reception-detail-title')).toHaveText(CONSULTATION);
+  await releaseEndpoint(page, method);
+  await expect(endpointPage(page).getByRole('status', { name: 'Working…' })).toHaveCount(0);
+  await expect(visitorPreview(page)).toHaveCount(0);
+  await expect(endpointPage(page).locator('.reception-detail-title')).toHaveText(CONSULTATION);
 });
 
 test('lifecycle prompts announce their purpose, cycle Tab and return focus on Escape', async ({ page }) => {

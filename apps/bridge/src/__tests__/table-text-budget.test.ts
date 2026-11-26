@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { PAGE_TABLE_LIMITS, readPageTable, type PageTableLimits } from '../actions/page-table.js';
+import { PAGE_TABLE_LIMITS, readPageTable, tableOutcome, type PageTableLimits } from '../actions/page-table.js';
 
 afterEach(() => { vi.unstubAllGlobals(); });
 
@@ -48,6 +48,16 @@ const bounded = (out: ReturnType<typeof table>, max = PAGE_TABLE_LIMITS.max_char
   expect(chars).toBeLessThanOrEqual(max);
   expect(out.rows.every(row => row.length === out.columns.length)).toBe(true);
 };
+
+it('keeps a sorted table readable by callers that request the legacy output keys', () => {
+  const outputs = table([[{ text: 'Queue', attrs: { 'aria-sort': 'descending' } }]], [['Ready']]);
+  const document = { tab_id: 1, document_id: 'fixture' };
+  const older = tableOutcome({ outputs }, document, {});
+  expect(older).toMatchObject({ status: 'ok', outputs: { columns: ['Queue'], rows: [['Ready']] } });
+  expect(older.outputs).not.toHaveProperty('sort');
+  expect(tableOutcome({ outputs }, document, { sort: true }).outputs?.sort)
+    .toEqual({ header: 'Queue', direction: 'descending' });
+});
 
 describe('table column labels and cells share one text budget', () => {
   it('bounds header-heavy output and marks omitted columns and rows', () => {

@@ -136,7 +136,10 @@ export const createFileBatchActions = (deps: {
     } finally { running = false; if (current(token)) paint('heading'); }
   };
   const focusAttr = (key: string): string => `${FILE_BATCH_FOCUS}="${e(key)}"`;
-  const button = (key: string, label: string, disabled = false, primary = false): string => `<button type="button" class="data-button${primary ? ' data-button--primary' : ''}" data-action="${FILE_BATCH_ACTION}${key}" ${focusAttr(key)}${disabled ? ' disabled' : ''}>${e(label)}</button>`;
+  const button = (key: string, label: string, disabled = false, primary = false, description?: string): string => {
+    const hint = description ? ` title="${e(description)}" aria-description="${e(description)}"` : '';
+    return `<button type="button" class="data-button${primary ? ' data-button--primary' : ''}" data-action="${FILE_BATCH_ACTION}${key}" ${focusAttr(key)}${disabled ? ' disabled' : ''}${hint}>${e(label)}</button>`;
+  };
   const handleAction = (value: string): boolean => {
     if (!value.startsWith(FILE_BATCH_ACTION)) return false;
     if (disposed) return true;
@@ -154,14 +157,21 @@ export const createFileBatchActions = (deps: {
     }
     return true;
   };
-  const render = (): string => {
+  const render = (compact = false): string => {
     if (!enabled()) return '';
     prune();
-    if (phase === 'selection') return `<section class="file-batch" aria-label="File selection">
-      <div class="file-batch-heading"><strong role="status" aria-live="polite">${selected.size} file${selected.size === 1 ? '' : 's'} selected</strong>
-        <div class="file-batch-buttons">${button('all', 'Select shown', !deps.ready() || !deps.files().length)}${selected.size ? button('reset', 'Clear selection') : ''}</div></div>
-      <p>Select from the files shown here. Up to ${FILE_BATCH_LIMIT} per batch.</p>
-      ${selected.size ? button('review', deps.archived() ? 'Review restore' : 'Review archive', !deps.ready(), true) : ''}${error ? `<p role="alert">${e(error)}</p>` : ''}</section>`;
+    if (phase === 'selection') {
+      const shown = deps.files().length;
+      const limitHint = compact && shown > FILE_BATCH_LIMIT ? `Select up to ${FILE_BATCH_LIMIT} files per batch.` : undefined;
+      const selectShown = button('all', 'Select shown', !deps.ready() || !shown, false, limitHint);
+      if (compact && !selected.size && !error) return `<div class="file-batch-select-shown">${selectShown}</div>`;
+      const review = selected.size ? button('review', deps.archived() ? 'Review restore' : 'Review archive', !deps.ready(), true) : '';
+      return `<section class="file-batch${compact ? ' file-batch--compact' : ''}" aria-label="File selection">
+        <div class="file-batch-heading"><strong role="status" aria-live="polite">${selected.size} file${selected.size === 1 ? '' : 's'} selected</strong>
+          <div class="file-batch-buttons">${selectShown}${selected.size ? button('reset', 'Clear selection') : ''}</div></div>
+        ${compact ? (limitHint ? `<p>${e(limitHint)}</p>` : '') : `<p>Select from the files shown here. Up to ${FILE_BATCH_LIMIT} per batch.</p>`}
+        ${review}${error ? `<p role="alert">${e(error)}</p>` : ''}</section>`;
+    }
     const ready = results.filter(row => row.state === 'ready').length;
     const confirmed = results.filter(row => row.state === 'confirmed').length;
     const unconfirmed = results.filter(row => row.state === 'unconfirmed').length;

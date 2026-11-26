@@ -742,3 +742,102 @@ describe('D-406 follow-up: a contact the owner picked settles its own name in th
       .toEqual(['lumen-birthday ambiguous', 'northgate-birthday ambiguous']);
   });
 });
+
+describe('D-406 follow-up: a task or note the owner picked settles its own name in the lookup', () => {
+  // Both, each `ambiguous`, under "ask which one before acting": what a task or note added in "Add records" brought
+  // beside one of the same title, measured live 2026-11-22 (about 30% more reasoning and 3 s a turn than beside none).
+  const record = (collection: string, id: string, title: string, patch: Partial<SituationFact> = {}): SituationFact => ({ ref: { collection, id },
+    title, kind: collection, basis: 'declared', people: [], subjects: [], related: [], evidence: [{ collection, id }], updated_at: at, consequence: 'routine', ...patch });
+  const id = (n: number): string => `${String(n).padStart(8, '0')}-e827-4bc6-ae61-688aaf92f647`;
+  const seed = (make: (contact: (name: string) => string) => SituationFact[]) => {
+    const store = createContactStore(db);
+    const facts = make(name => store.upsertManual({ email: `${name.toLowerCase().replace(/\W+/gu, '.')}@example.test`, name }, at).contact_id!);
+    const query = createSituationQuery({ now: () => at, namedPeople: createSituationNamedPeople(store),
+      sources: ['task', 'note', 'calendar'].map(collection => ({ id: collection, collection, verb_op: 'core.work-entity.read',
+        read: () => facts.filter(item => item.ref.collection === collection) })),
+      sourceForCollection: collection => ({ verb_op: 'core.work-entity.read', collection }) });
+    const access = createSituationAccess({ contracts, query, now: () => at, isVaultUnlocked: () => true });
+    // The chat's own list, so the settlement is the one the chat wires, its people's names included.
+    const lookup = createChatStreamMiddlewares({ getSituationAccess: () => access, getContactStore: () => store } as unknown as ChatStreamMiddlewareDeps)
+      .find(middleware => middleware.id === SITUATION_PREFETCH_MIDDLEWARE_ID)!;
+    return async (text: string) => {
+      const result = context(text); await clockStill(() => lookup.prompt!(result.ctx));
+      const rows = result.parts.flatMap(part => part.payload) as Array<{ ref: { id: string }; ambiguous?: boolean }>;
+      return { rows: rows.map(row => `${row.ref.id.slice(0, 8)}${row.ambiguous === true ? ' ambiguous' : ''}`).sort(),
+        block: result.parts.map(part => part.render(part.payload)).join('\n') };
+    };
+  };
+  // As the webclient sends it (`apps/webclient/src/chat/record-context.ts`), its words cut to a sentence.
+  const addRecords = (question: string, ...records: Array<{ kind: string; id: string; title: string }>): string => `${question}\n\nUse the exact `
+    + `owner-selected saved-record references below as context.\n${JSON.stringify({ kind: 'recued.records_question', version: 1,
+      records: records.map(({ kind, id: recordId, title }) => ({ record: { kind, id: recordId, source_id: `recued.${kind}`, source_record_id: null,
+        created_at: at }, title })) })}`;
+  const task = (n: number) => ({ kind: 'task', id: id(n), title: 'Studio move checklist' });
+
+  it('the title alone brings both, each ambiguous, as before', async () => {
+    const ask = seed(() => [record('task', id(1), 'Studio move checklist'), record('task', id(2), 'Studio move checklist')]);
+    expect((await ask('What is left on the studio move checklist?')).rows).toEqual(['00000001 ambiguous', '00000002 ambiguous']);
+  });
+
+  it('a task or a note added in "Add records" brings itself alone, not ambiguous, counted as all there is', async () => {
+    const ask = seed(() => [record('task', id(1), 'Studio move checklist'), record('task', id(2), 'Studio move checklist'),
+      record('note', id(3), 'Supplier call'), record('note', id(4), 'Supplier call')]);
+    const picked = await ask(addRecords('What is left on this?', task(1)));
+    expect(picked.rows).toEqual(['00000001']);
+    expect(picked.block).not.toContain('Shown here');
+    expect((await ask(addRecords('What is left on this?', task(2)))).rows).toEqual(['00000002']);
+    expect((await ask(addRecords('What did I note here?', { kind: 'note', id: id(4), title: 'Supplier call' }))).rows).toEqual(['00000004']);
+  });
+
+  // Three of one title, where the chat's lookup brings two groups: `first` are changed later, so it brings them.
+  const three = (first: number[]) => seed(() => [1, 2, 3].map(n => record('task', id(n), 'Studio move checklist', first.includes(n) ? { updated_at: at + 1 } : {})));
+
+  it('records the owner picked are no ambiguity among themselves, and a third of their title is left out', async () => {
+    const ask = three([1, 3]);
+    const picked = await ask(addRecords('Compare these two.', task(1), task(3)));
+    expect(picked.rows).toEqual(['00000001', '00000003']);
+    expect(picked.block).not.toContain('Shown here');
+  });
+
+  it('a namesake the lookup did not bring is left out of the count and the ambiguity too', async () => {
+    const ask = three([1]);
+    expect((await ask('What is left on the studio move checklist?')).block).toContain('Shown here: 2 of the 3 matching items on file.');
+    const picked = await ask(addRecords('What is left on this?', task(1)));
+    expect(picked.rows).toEqual(['00000001']);
+    expect(picked.block).not.toContain('Shown here');
+  });
+
+  it('a pick the lookup did not bring still settles its title: its namesakes are not shown in its place', async () => {
+    const ask = three([1, 2]);
+    expect((await ask(addRecords('What is left on this?', task(3)))).rows).toEqual([]);
+  });
+
+  it('a namesake stays when the owner\'s own words reach it another way: a person or a place on it', async () => {
+    const people = seed(contact => [record('task', id(1), 'Studio move checklist'),
+      record('task', id(2), 'Studio move checklist', { people: [contact('Jonas Weber')] })]);
+    expect((await people(addRecords('What is left on this, and on the one Jonas has?', task(1)))).rows).toEqual(['00000001 ambiguous', '00000002 ambiguous']);
+    // A word of its title is no other way.
+    expect((await people(addRecords('What is left on this studio move?', task(1)))).rows).toEqual(['00000001']);
+    // A record of another kind with the title is a namesake as well.
+    const place = seed(() => [record('task', id(1), 'Studio move checklist'),
+      record('calendar', id(3), 'Studio move checklist', { place: { key: 'label:harbour lofts', name: 'Harbour Lofts' } })]);
+    expect((await place(addRecords('What is left on this, and at Harbour Lofts?', task(1)))).rows).toEqual(['00000001 ambiguous', '00000003 ambiguous']);
+    expect((await place(addRecords('What is left on this?', task(1)))).rows).toEqual(['00000001']);
+  });
+
+  it('an ambiguity between the people a message named is no title: a pick among its choices leaves none of them out', async () => {
+    // The pick's title names two Martas. The lookup brings the two records changed later, not the pick.
+    const ask = seed(contact => {
+      const lind = contact('Marta Lind'); const berg = contact('Marta Berg');
+      return [record('task', id(1), 'Call Marta', { people: [lind] }), record('task', id(2), 'Call Marta', { people: [berg], updated_at: at + 1 }),
+        record('note', id(3), 'Marta Berg birthday', { people: [berg], updated_at: at + 1 })];
+    });
+    expect((await ask(addRecords('When should I do this?', { kind: 'task', id: id(1), title: 'Call Marta' }))).rows).toEqual(['00000003 ambiguous']);
+  });
+
+  it('an id no record holds, or one the owner typed, changes nothing', async () => {
+    const ask = seed(() => [record('task', id(1), 'Studio move checklist'), record('task', id(2), 'Studio move checklist')]);
+    expect((await ask(addRecords('What is left on this?', task(9)))).rows).toEqual(['00000001 ambiguous', '00000002 ambiguous']);
+    expect((await ask(`What is left on the studio move checklist ${id(1)}?`)).rows).toEqual(['00000001 ambiguous', '00000002 ambiguous']);
+  });
+});

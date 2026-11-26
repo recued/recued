@@ -616,6 +616,13 @@ export const parseLogsRunAddress = (
   return returnToChat === null ? null : { runId, returnToChat };
 };
 
+/** Open a Files collection without treating its slug as a record ID. */
+export const parseFileSourceSlug = (route: ShellRoute): string | null =>
+  route.surface === 'data' && route.segments.length === 3
+    && route.segments[0] === 'files' && route.segments[1] === 'source'
+    ? route.segments[2] || null
+    : null;
+
 /** Exact, account-qualified Data record route. The `record` marker preserves
  * compatibility with legacy `#data/<tab>/<record_id>` links, while the
  * optional return tail makes the Chat round-trip explicit and shareable inside

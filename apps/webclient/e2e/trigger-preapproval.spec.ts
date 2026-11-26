@@ -6,6 +6,7 @@ import { HARNESS_URL } from './helpers/full-app.js';
  *  its mounts are the real ones; its owner rpcs answer from `harness/trigger-preapproval.ts`. */
 
 const WEBHOOK = 'whi_browserdemo0123456789abcdef012345';
+const WEBHOOK_DETAIL = `#connections/webhooks/webhook/${WEBHOOK}`;
 const PANEL = '[data-recued-trigger-preapproval-panel]';
 const SUMMARY = 'What it may do without asking';
 
@@ -69,7 +70,7 @@ test('a webhook\'s card grants what its recipe may do without asking, and ends i
 });
 
 test('a webhook card\'s panel stays as the owner left it when the webhooks list repaints its cards', async ({ page }) => {
-  const errors = await open(page, 'connection=webhooks&trigger_preapproval=1#connections/webhooks');
+  const errors = await open(page, `connection=webhooks&trigger_preapproval=1${WEBHOOK_DETAIL}`);
   const card = page.locator(`[data-recued-webhooks-card="${WEBHOOK}"]`);
   await card.getByText(SUMMARY, { exact: true }).click();
   const uses = card.locator(PANEL).getByLabel('Times a run');
@@ -301,7 +302,7 @@ test('a server from before pre-approvals shows no "What it may do without asking
   // each panel of sections asks once as it shows one (a page can hold two: a schedule's page also lists
   // the scheduled prompts), and takes them away when the server knows no such method.
   const pages: ReadonlyArray<readonly [string, string | null]> = [
-    ['connection=webhooks&trigger_preapproval=older#connections/webhooks', `[data-recued-webhooks-card="${WEBHOOK}"]`],
+    [`connection=webhooks&trigger_preapproval=older${WEBHOOK_DETAIL}`, `[data-recued-webhooks-card="${WEBHOOK}"]`],
     ['automation=rules&trigger_preapproval=older#automation/schedules/schedule-e2e-1', null],
     ['automation=rules&trigger_preapproval=older#automation/triggers/trg-e2e-ai', null],
     ['automation=rules&trigger_preapproval=older#automation/auto-run/dsh_e2e_timer', null],
@@ -357,7 +358,7 @@ test('D-402: every page listing triggers\' pre-approvals reads them again when o
     await expect(page.locator(PANEL).locator('h4').first()).toBeVisible();
   };
 
-  await openPanel('connection=webhooks&trigger_preapproval=1#connections/webhooks', page.locator(`[data-recued-webhooks-card="${WEBHOOK}"]`));
+  await openPanel(`connection=webhooks&trigger_preapproval=1${WEBHOOK_DETAIL}`, page.locator(`[data-recued-webhooks-card="${WEBHOOK}"]`));
   await readsAgain('triggerPreapprovalChoices');
   await openPanel('automation=rules&trigger_preapproval=1#automation/schedules/schedule-e2e-1');
   await readsAgain('triggerPreapprovalChoices');

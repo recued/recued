@@ -16,6 +16,7 @@ export interface WorkEntityTaskView {
   find?: { open: boolean; query: string; can_search_everywhere?: boolean };
   navigation_html?: string;
   reminder_html?: string;
+  reply_watch_html?: string;
   copy?: WorkReaderCopyView;
   related?: { records: readonly NoteRelatedRecordView[]; more: boolean };
   dependency_summary?: string;
@@ -37,6 +38,7 @@ export const taskReaderWarning = (task: Pick<Task, 'pending_write' | 'deleted_at
 export const renderTaskReader = (view: WorkEntityTaskView, context: {
   source_label: string; busy?: boolean; error?: string; history_html?: string; close_label?: string;
   completion?: { can_change: boolean; notice?: string }; duplicate?: WorkEntityDuplicateView;
+  inline?: boolean;
 }): string => {
   const task = view.entity;
   const blocked = context.busy || view.opening ? ' aria-disabled="true" aria-busy="true"' : '';
@@ -44,9 +46,7 @@ export const renderTaskReader = (view: WorkEntityTaskView, context: {
   const meta = (label: string, value: string) => `<div><dt>${e(label)}</dt><dd>${e(value)}</dd></div>`;
   const records = view.related?.records.filter(record => record.kind !== 'task') ?? [];
   const dependencies = view.related?.records.filter(record => record.kind === 'task') ?? [];
-  return `<div class="work-entity-dialog-backdrop" data-action="close-work-entity-dialog-on-backdrop" data-mode="read">
-    <div class="work-entity-dialog work-entity-task-reader" role="dialog" aria-modal="true" aria-labelledby="work-entity-dialog-title"
-      data-kind="task" data-mode="read" data-task-id="${e(task.id)}">
+  const body = `
       <header class="work-entity-dialog-header">
         <h2 class="work-entity-dialog-title" id="work-entity-dialog-title" data-task-find-title tabindex="-1">${e(task.title.trim() || 'Task')}</h2>
         <button type="button" class="work-entity-dialog-close" data-action="close-work-entity-dialog" aria-label="Close"${blocked}>×</button>
@@ -75,6 +75,7 @@ export const renderTaskReader = (view: WorkEntityTaskView, context: {
         <dl class="work-entity-task-meta">${meta('Due date', taskDeadlineLabel(task))}${meta('Priority', task.priority ? task.priority[0]!.toUpperCase() + task.priority.slice(1) : 'Not set')}${meta('Source', context.source_label)}</dl>
         ${renderReaderCopyFallback(view.copy, 'task')}
         ${view.reminder_html ?? ''}
+        ${view.reply_watch_html ?? ''}
         ${view.can_edit ? `<section aria-label="Change task due date">${renderTaskDueActions({ actionAttr: 'data-action', prefix: 'work-entity-task-due', hasDue: task.due_at != null, disabled: Boolean(context.busy || view.opening) })}<p class="work-entity-task-date-hint">Review and save date changes in the editor.</p></section>` : ''}
         ${records.length ? `<section aria-label="Related records"><h3>Related records</h3><ul class="work-entity-note-related">${records.map(record => `<li>
           ${record.state === 'ready' ? `<button type="button" class="work-entity-dialog-cancel" data-action="open-task-related" data-task-related-key="${e(record.key)}" data-task-focus="related-${e(record.key)}" aria-label="Open ${record.kind} ${e(record.label)}"${record.opening || context.busy || view.opening ? ' disabled' : ''}>${e(record.label)}${record.opening ? ' — Opening…' : ''}</button>` : `<span>${e(record.label)}</span>`}
@@ -102,12 +103,18 @@ export const renderTaskReader = (view: WorkEntityTaskView, context: {
       </div>
       <footer class="work-entity-dialog-actions">
         ${view.copy?.notice ? `<p class="work-entity-note-notice" data-work-copy-notice role="${view.copy.notice.kind === 'error' ? 'alert' : 'status'}">${e(view.copy.notice.text)}</p>` : ''}
-        <button type="button" class="work-entity-dialog-cancel" data-action="close-work-entity-dialog"${blocked}>${e(context.close_label ?? 'Back to tasks')}</button>
+        <button type="button" class="work-entity-dialog-cancel" data-action="close-work-entity-dialog"${blocked}>${e(context.close_label ?? (context.inline ? 'Close task' : 'Back to tasks'))}</button>
         ${context.duplicate?.can_duplicate ? `<button type="button" class="work-entity-dialog-cancel" data-action="duplicate-work-entity"${blocked}${context.duplicate.busy ? ' disabled aria-busy="true"' : ''}>${context.duplicate.busy ? 'Opening copy…' : 'Duplicate task'}</button>` : ''}
         ${view.calendar?.available ? `<button type="button" class="work-entity-dialog-cancel" data-action="schedule-task-calendar" data-task-focus="schedule"${blocked}${view.calendar.busy ? ' disabled aria-busy="true"' : ''}>${view.calendar.busy ? 'Checking task…' : 'Schedule time'}</button>` : ''}
         ${view.can_edit ? `<button type="button" class="work-entity-dialog-cancel" data-action="edit-task"${blocked}>${view.opening ? 'Opening…' : 'Edit'}</button>` : ''}
         ${context.completion?.can_change ? `<button type="button" class="work-entity-dialog-submit" data-action="${task.done ? 'reopen' : 'complete'}-work-entity-task"${blocked}>${context.busy ? (task.done ? 'Reopening…' : 'Completing…') : task.done ? 'Reopen' : 'Complete'}</button>` : ''}
       </footer>
-    </div>
+  `;
+  const identity = `aria-labelledby="work-entity-dialog-title" data-kind="task" data-mode="read" data-task-id="${e(task.id)}"`;
+  if (context.inline) {
+    return `<section class="work-entity-dialog work-entity-task-reader work-entity-reader--inline" ${identity}>${body}</section>`;
+  }
+  return `<div class="work-entity-dialog-backdrop" data-action="close-work-entity-dialog-on-backdrop" data-mode="read">
+    <div class="work-entity-dialog work-entity-task-reader" role="dialog" aria-modal="true" ${identity}>${body}</div>
   </div>`;
 };

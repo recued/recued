@@ -122,6 +122,7 @@ import type {
   ReceptionPageShellState,
 } from './page-shell.js';
 import { classifyRpcError } from '../shell/rpc-error-copy.js';
+import { reconcileNativeField } from '../shell/reconcile-native-field.js';
 import { trackCustomerWorkspaceFocus } from './customer-workspace-focus.js';
 import { RECEPTION_ENDPOINT_WORKSPACE_STYLES } from './endpoint-workspace-styles.js';
 
@@ -944,38 +945,38 @@ export const renderViewAsVisitorView = (vav: ViewAsVisitorModel, closeAction = '
   const freshnessTone = vav.preview_is_fresh ? 'info' : 'warn';
   return `
     <div class="reception-vav">
-      <div class="reception-vav-head">
-        ${button({
-          label: closeLabel,
-          size: 'xs',
-          action: closeAction,
+      <div class="reception-vav-top">
+        <div class="reception-vav-head">
+          <h3 class="reception-vav-title" tabindex="-1">View as visitor</h3>
+          <span class="reception-vav-synthetic">synthetic preview — no access-log entry</span>
+          ${button({ label: closeLabel, size: 'xs', action: closeAction })}
+        </div>
+        ${panel({
+          tone: freshnessTone,
+          compact: true,
+          body: `<p class="reception-row-meta">${e(vav.preview_freshness_label)}</p>`,
         })}
-        <span class="reception-vav-title">View as visitor</span>
-        <span class="reception-vav-synthetic">synthetic preview — no access-log entry</span>
       </div>
-      ${panel({
-        tone: freshnessTone,
-        compact: true,
-        body: `<p class="reception-row-meta">${e(vav.preview_freshness_label)}</p>`,
-      })}
-      ${vav.approval_workflow_summary ? panel({
-        title: 'Work after your review',
-        body: `<p class="reception-row-meta" style="white-space: pre-wrap">${e(vav.approval_workflow_summary)}</p>`,
-      }) : ''}
-      <div class="reception-vav-preview">
-        <h4 class="reception-subhead">Server-rendered visitor page</h4>
-        <iframe
-          class="reception-vav-frame"
-          sandbox=""
-          title="Reception visitor preview"
-          srcdoc="${e(vav.rendered_html)}"
-        ></iframe>
+      <div class="reception-vav-workspace">
+        ${vav.approval_workflow_summary ? `<div class="reception-vav-workflow">${panel({
+          title: 'Work after your review',
+          body: `<p class="reception-row-meta" style="white-space: pre-wrap">${e(vav.approval_workflow_summary)}</p>`,
+        })}</div>` : ''}
+        <div class="reception-vav-preview">
+          <h4 class="reception-subhead">Server-rendered visitor page</h4>
+          <iframe
+            class="reception-vav-frame"
+            sandbox=""
+            title="Reception visitor preview"
+            srcdoc="${e(vav.rendered_html)}"
+          ></iframe>
+        </div>
+        <div class="reception-vav-review">
+          ${vav.panel !== null
+            ? renderViewAsVisitorPanel(vav.panel)
+            : inlineHint('This preview did not carry a field-visibility panel — re-run it against an up-to-date server.')}
+        </div>
       </div>
-      ${
-        vav.panel !== null
-          ? renderViewAsVisitorPanel(vav.panel)
-          : inlineHint('This preview did not carry a field-visibility panel — re-run it against an up-to-date server.')
-      }
     </div>
   `;
 };
@@ -1128,6 +1129,13 @@ export interface ReceptionPageView {
   dispose(): void;
 }
 
+interface VisitorPreviewOrigin {
+  endpointId: string;
+  scroller: Element | null;
+  scrollTop: number;
+  ownsFocus: () => boolean;
+}
+
 /** Mount the Reception page into a host element — the `mountServerPill`
  *  shape. Subscribes to the shell, re-renders on every state change, and
  *  installs a delegated `data-action` dispatcher: the mount-native
@@ -1151,13 +1159,34 @@ export const mountReceptionPage = (
   const doc = host.ownerDocument;
   const focusOwner = doc ? trackCustomerWorkspaceFocus(doc) : null;
   let detailFocus: { id: string; current: () => boolean } | null = null;
+  let previewOrigin: VisitorPreviewOrigin | null = null;
+  let renderedPreview: ViewAsVisitorModel | null = null;
   const findAction = (action: string, endpointId?: string): HTMLElement | undefined =>
     Array.from(host.querySelectorAll?.<HTMLElement>('[data-action]') ?? []).find(el =>
       el.dataset.action === action && el.dataset.endpointId === endpointId && !el.matches(':disabled'));
 
+  const restorePreviewOrigin = (origin: VisitorPreviewOrigin): void => {
+    const target = findAction('reception-preview-as-visitor', origin.endpointId)
+      ?? findAction('reception-open-detail', origin.endpointId)
+      ?? host.querySelector?.<HTMLElement>('.reception-detail-title')
+      ?? findAction('reception-refresh');
+    if (origin.scroller) origin.scroller.scrollTop = origin.scrollTop;
+    target?.focus({ preventScroll: true });
+    target?.scrollIntoView?.({ block: 'nearest' });
+  };
+
+  const closeVisitorPreview = (): VisitorPreviewOrigin | null => {
+    const origin = previewOrigin;
+    previewOrigin = null;
+    shell.closeViewAsVisitor();
+    return origin;
+  };
+
   const render = (): void => {
     if (disposed) return;
-    const html = renderReceptionPage(shell.getState(), now(), {
+    const state = shell.getState();
+    const preview = state.view_as_visitor;
+    const html = renderReceptionPage(state, now(), {
       editPageGated: gateEditPage(),
       pendingAsksCount: resolvePendingAsksCount(),
     });
@@ -1165,19 +1194,38 @@ export const mountReceptionPage = (
     const active = doc?.activeElement as HTMLElement | null;
     const previous = active && host.contains(active) ? { action: active.dataset.action, id: active.dataset.endpointId } : null;
     const focusedDetail = active && host.contains(active) && active.matches('.reception-detail-title') ? active.textContent : null;
-    host.innerHTML = html;
+    const revealPreview = preview !== null && preview !== renderedPreview && previewOrigin !== null
+      && (previewOrigin.ownsFocus() || previous?.action === 'reception-preview-as-visitor' && previous.id === previewOrigin.endpointId);
+    const mountedPreview = preview !== null && preview === renderedPreview
+      ? host.querySelector?.('.reception-vav') : null;
+    if (mountedPreview) {
+      // Keep the same anonymous document and its scroll when the surrounding chrome repaints.
+      const next = host.cloneNode(false) as HTMLElement;
+      next.innerHTML = html;
+      const nextPreview = next.querySelector('.reception-vav');
+      if (!nextPreview || !reconcileNativeField(host, next, mountedPreview, nextPreview)) host.innerHTML = html;
+    } else host.innerHTML = html;
+    renderedPreview = preview;
     lastHtml = html;
-    if (shell.getState().loading) {
+    if (state.loading) {
       for (const control of host.querySelectorAll?.<HTMLButtonElement>('button[data-action]') ?? []) {
         if (['reception-refresh', 'reception-enable', 'reception-disable'].includes(control.dataset.action ?? '')) control.disabled = true;
+      }
+      if (preview === null && previewOrigin !== null) {
+        findAction('reception-preview-as-visitor', previewOrigin.endpointId)?.setAttribute('aria-busy', 'true');
       }
     }
     if (previous?.action && !detailFocus) findAction(previous.action, previous.id)?.focus({ preventScroll: true });
     const heading = host.querySelector?.<HTMLElement>('.reception-detail-title');
     if (focusedDetail !== null && heading?.textContent === focusedDetail) heading.focus({ preventScroll: true });
-    if (detailFocus && shell.getState().detail?.row.endpoint_id === detailFocus.id) {
+    if (detailFocus && state.detail?.row.endpoint_id === detailFocus.id) {
       const requested = detailFocus; detailFocus = null;
       if (requested.current()) host.querySelector<HTMLElement>('.reception-detail-title')?.focus({ preventScroll: true });
+    }
+    if (revealPreview) {
+      const review = host.querySelector<HTMLElement>('.reception-vav');
+      review?.querySelector<HTMLElement>('.reception-vav-title')?.focus({ preventScroll: true });
+      review?.scrollIntoView?.({ block: 'start' });
     }
   };
 
@@ -1206,6 +1254,7 @@ export const mountReceptionPage = (
     }, 'reception-refresh'),
     'reception-open-detail': (d: DOMStringMap) => {
       if (!d.endpointId) return;
+      if (previewOrigin !== null) closeVisitorPreview();
       detailFocus = { id: d.endpointId, current: focusOwner?.capture() ?? (() => false) };
       // R19 Slice 4 — routed detail: navigate to the deep link (a durable,
       // shareable URL); the re-mounted spine reconciles the detail open from
@@ -1218,6 +1267,7 @@ export const mountReceptionPage = (
     },
     'reception-close-detail': () => {
       const id = shell.getState().detail?.row.endpoint_id;
+      if (previewOrigin !== null) closeVisitorPreview();
       detailFocus = null;
       // R19 Slice 4 — routed detail: navigate back to the endpoints list.
       // Falls back to the in-place close when no navigator is wired.
@@ -1236,9 +1286,26 @@ export const mountReceptionPage = (
       if (d.endpointId) runAction(() => shell.disableEndpoint(d.endpointId!), 'reception-disable', d.endpointId, 'reception-enable');
     },
     'reception-preview-as-visitor': (d: DOMStringMap) => {
-      if (d.endpointId) swallow(shell.previewEndpointAsVisitor(d.endpointId));
+      if (!d.endpointId || previewOrigin !== null) return;
+      const scroller = host.closest?.('[data-recued-webclient-content]') ?? doc?.scrollingElement ?? null;
+      const origin: VisitorPreviewOrigin = { endpointId: d.endpointId, scroller,
+        scrollTop: scroller?.scrollTop ?? 0, ownsFocus: () => false };
+      previewOrigin = origin;
+      const request = shell.previewEndpointAsVisitor(origin.endpointId);
+      // The loading repaint can restore focus to the opener before the request settles.
+      origin.ownsFocus = focusOwner?.capture() ?? origin.ownsFocus;
+      swallow(request.finally(() => {
+        if (disposed || previewOrigin !== origin || shell.getState().view_as_visitor !== null) return;
+        previewOrigin = null;
+        const opener = findAction('reception-preview-as-visitor', origin.endpointId);
+        opener?.removeAttribute('aria-busy');
+        if (origin.ownsFocus() || opener === doc?.activeElement) restorePreviewOrigin(origin);
+      }));
     },
-    'reception-close-view-as-visitor': () => shell.closeViewAsVisitor(),
+    'reception-close-view-as-visitor': () => {
+      const origin = closeVisitorPreview();
+      if (origin) restorePreviewOrigin(origin);
+    },
     'reception-open-abuse-inbox': () => swallow(shell.loadAbuseInbox()),
     'reception-ban-ip': (d: DOMStringMap) => {
       if (d.endpointId && d.sourceIpHash) swallow(shell.banIp(d.endpointId, d.sourceIpHash));
@@ -1270,6 +1337,7 @@ export const mountReceptionPage = (
       if (disposed) return;
       disposed = true;
       unsubscribe();
+      if (previewOrigin !== null) closeVisitorPreview();
       focusOwner?.dispose();
       detachDispatcher();
       host.innerHTML = '';
@@ -1666,6 +1734,9 @@ export const RECEPTION_PAGE_STYLES = `
   align-items: center;
   gap: 10px;
 }
+.reception-vav-top, .reception-vav-workspace { display: grid; gap: 10px; min-width: 0; }
+.reception-vav-title { margin: 0; }
+.reception-vav-head > .rx-btn { order: -1; }
 .reception-detail-title,
 .reception-vav-title {
   font-size: 14px;
@@ -1720,6 +1791,7 @@ export const RECEPTION_PAGE_STYLES = `
 }
 .reception-access-log { width: 100%; }
 .reception-vav-frame {
+  box-sizing: border-box;
   width: 100%;
   height: 360px;
   border: 1px solid var(--border);

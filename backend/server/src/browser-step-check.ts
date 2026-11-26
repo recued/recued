@@ -55,9 +55,9 @@ export const browserStepNeeds = (recipe: RecipeDefinition, config: Readonly<Reco
       ...(commands !== undefined && commands.length > 0 ? { commands } : {}) }];
   });
 
-/** The browser operations that only read. */
+/** The browser operations that only read. Opening a page among them since 2026-11-23 (the owner's ruling). */
 const READING_OPS: ReadonlySet<string> = new Set(['core.dom.read', 'core.dom.inspect', 'core.dom.tabs', 'core.dom.wait',
-  'core.dom.table', 'core.dom.screenshot', 'core.dom.scroll', 'core.dom.bridges']);
+  'core.dom.table', 'core.dom.screenshot', 'core.dom.scroll', 'core.dom.bridges', 'core.dom.open']);
 
 /** Whether a browser step only reads: a reading operation, or an Act batch whose steps all read. */
 const readsOnly = (op: string, args: Readonly<Record<string, unknown>>): boolean => {

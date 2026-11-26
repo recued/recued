@@ -1,4 +1,4 @@
-import type { RecipeDefinition } from '@recued/contracts';
+import { browserStepBinding, type RecipeDefinition } from '@recued/contracts';
 
 type BrowserArgumentKind = 'selector' | 'text' | 'steps';
 const bindings: Readonly<Record<string, Readonly<Record<string, BrowserArgumentKind>>>> = {
@@ -29,9 +29,10 @@ export const browserArgumentKinds = (recipe: RecipeDefinition): Map<string, Brow
   };
   const candidates = new Map<string, { kind: BrowserArgumentKind; count: number }>();
   for (const step of recipe.steps ?? []) {
-    if (!('op' in step) || typeof step.op !== 'string' || !('args' in step) || !step.args) continue;
-    for (const [parameter, kind] of Object.entries(bindings[step.op] ?? {})) {
-      const value: unknown = (step.args as Record<string, unknown>)[parameter];
+    const browser = browserStepBinding(step);
+    if (!browser) continue;
+    for (const [parameter, kind] of Object.entries(bindings[browser.op] ?? {})) {
+      const value = browser.args[parameter];
       const name = typeof value === 'string' ? /^\{\{config\.([A-Za-z0-9_]+)\}\}$/.exec(value)?.[1] : undefined;
       if (!name) continue;
       const previous = candidates.get(name);

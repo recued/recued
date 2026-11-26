@@ -1,10 +1,12 @@
 import { clickActionGlyph } from './helpers/action-glyph.js';
 import { expect, test, type Page } from '@playwright/test';
+import type { MailFollowUpPage, ReminderListResult } from '@recued/contracts';
 
 test.use({ locale: 'en-US', timezoneId: 'America/Los_Angeles', viewport: { width: 390, height: 844 } });
 const base = '/full-app-harness.html?data=today';
+const fixtureTime = '2026-09-08T12:00:00-07:00';
 const boot = async (page: Page, extra = ''): Promise<void> => {
-  await page.clock.install({ time: new Date('2026-09-08T12:00:00-07:00') });
+  await page.clock.install({ time: new Date(fixtureTime) });
   await page.goto(`${base}${extra}#data/today`);
   await page.waitForFunction(() => window.__app?.ready === true);
   await expect(page.locator('[data-today-view]')).toHaveAttribute('aria-busy', 'false');
@@ -27,6 +29,56 @@ test('Today merges all kinds, exposes source freshness, and renders within a mob
   await expect(page.locator('[data-today-group="next"]')).toContainText('Prepare the demo');
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await page.locator('[data-today-view]').screenshot({ path: test.info().outputPath('recued-today-mobile.png') });
+});
+
+test('Today puts due reminders and ready drafts in view beside a populated desktop agenda', async ({ page }) => {
+  const now = Date.parse(fixtureTime);
+  const due = now - 60_000;
+  const reminders: ReminderListResult = {
+    reminders: [{ reminder_id: 'call-riley', text: 'Call Riley', at: due, when: 'Today at 11:59 AM',
+      time_zone: 'America/Los_Angeles', state: 'pending', delivered_at: null }],
+    count: 1, page: { state: 'pending', matched_count: 1, next_cursor: null },
+  };
+  const replyWatches: MailFollowUpPage = {
+    watches: [{ id: 'mfw_20aeb0cc-a9dd-4a2a-8755-c4758f883124', revision: 1, subject: 'Budget review',
+      state: 'draft_ready', check_at: due, created_at: due - 86_400_000, updated_at: now, checked_at: now,
+      draft_id: 'mad_c162f42e-130c-46b3-b104-fe695c67c809',
+      mail_ref: { slug: 'work', record_id: 'sent-1', source_id: 'source-1', received_at: due - 86_400_000, incarnation: 'mail-1' } }],
+    next_cursor: null,
+  };
+  await page.addInitScript(({ reminders, replyWatches }) => {
+    Object.assign(window, { __connectionsFixture: async (method: string) => {
+      if (method === 'reminder.list') return { result: reminders };
+      if (method === 'mail.follow_up.list') return { result: replyWatches };
+    } });
+  }, { reminders, replyWatches });
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await boot(page);
+
+  const today = page.locator('[data-today-group="today"]');
+  const upcoming = page.locator('[data-today-group="next"]');
+  const watches = page.getByRole('region', { name: 'Reply watches' });
+  const reminderPanel = page.getByRole('region', { name: 'One-off reminders' });
+  const draft = watches.getByRole('link', { name: 'Open draft for Budget review' });
+  await expect(today).toContainText('Review the brief');
+  await expect(upcoming).toContainText('Prepare the demo');
+  await expect(draft).toBeInViewport({ ratio: 1 });
+  await expect(reminderPanel.getByRole('link', { name: 'Call Riley' })).toBeInViewport({ ratio: 1 });
+  const desktopToday = (await today.boundingBox())!;
+  const desktopUpcoming = (await upcoming.boundingBox())!;
+  const desktopWatches = (await watches.boundingBox())!;
+  expect(desktopWatches.x).toBeGreaterThanOrEqual(Math.max(desktopToday.x + desktopToday.width, desktopUpcoming.x + desktopUpcoming.width));
+
+  await draft.focus();
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(draft).toBeFocused();
+  const phoneToday = (await today.boundingBox())!;
+  const phoneWatches = (await watches.boundingBox())!;
+  const phoneReminders = (await reminderPanel.boundingBox())!;
+  expect(phoneWatches.y).toBeGreaterThanOrEqual(phoneToday.y + phoneToday.height);
+  expect((await upcoming.boundingBox())!.y).toBeGreaterThanOrEqual(phoneReminders.y + phoneReminders.height);
+  const content = page.locator('[data-recued-webclient-content]');
+  expect(await content.evaluate(node => node.scrollWidth <= node.clientWidth)).toBe(true);
 });
 
 const mutations = (page: Page): Promise<unknown[]> => page.evaluate(() =>

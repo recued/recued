@@ -1130,8 +1130,11 @@ export const KERNEL_OP_REGISTRY: readonly KernelOpEntry[] = [
   //    `{ clicked }`; it and `core.dom.write` name the element by a selector,
   //    or by a page handle with a ref (or selector), bound to that page.
   //    Slice C: `core.dom.tabs(target)` → a `list_tabs` → `{ tabs, truncated }`;
-  //    `core.dom.open(target, address)` → an `open_tab` (a write: it asks for the
-  //    address as the owner) → `{ page, url, title }` of a new tab.
+  //    `core.dom.open(target, address)` → an `open_tab` → `{ page, url, title }` of a new tab.
+  //    A read since 2026-11-23 (the owner: "make all reads & open as normal read permission, which
+  //    does not need ask, it is more align with human expectation"). It was a write, asking, because the
+  //    page is asked for as the owner, signed in, and an address can carry data to its site; an AI app
+  //    holds what it read anyway, and `core.http.get` already fetches any public address as a read.
   //    Slice H, all three reads on a page handle: `core.dom.wait(target, page,
   //    selector, until?, text?, timeout_seconds?)` → a `wait_for_element` →
   //    `{ page, url, title, found, waited_ms }`; `core.dom.table(target, page,
@@ -1146,7 +1149,7 @@ export const KERNEL_OP_REGISTRY: readonly KernelOpEntry[] = [
   op('core.dom.click', 'dom', 'dom-click', 'write', 'browser'),
   op('core.dom.tabs', 'dom', 'dom-tabs', 'read', 'browser'),
   op('core.dom.bridges', 'dom', 'dom-bridges', 'read', 'browser'),
-  op('core.dom.open', 'dom', 'dom-open', 'write', 'browser'),
+  op('core.dom.open', 'dom', 'dom-open', 'read', 'browser'),
   op('core.dom.wait', 'dom', 'dom-wait', 'read', 'browser'),
   op('core.dom.table', 'dom', 'dom-table', 'read', 'browser'),
   op('core.dom.screenshot', 'dom', 'dom-screenshot', 'read', 'browser'),

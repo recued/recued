@@ -43,6 +43,55 @@ const openFirst = async (page: Page) => {
   await control.click(); await expect(page.locator('.work-entity-task-reader')).toHaveAttribute('data-task-id', id); return { id, key };
 };
 
+test('wide Projects shows tasks alongside attention and restores a filtered task visit', async ({ page }, info) => {
+  await page.setViewportSize({ width: 1536, height: 900 });
+  const f = await boot(page, f => f.updateProject('project-one', {
+    title: 'Launch planning', description: 'Coordinate handover and confirm the remaining work with the launch team.',
+    related_contact_ids: [f.person.contact_id!],
+  }));
+  try {
+    await page.getByRole('button', { name: 'Open navigation', exact: true }).click();
+    await page.getByRole('button', { name: 'Pin navigation', exact: true }).click();
+    const project = overview(page), tasks = project.getByRole('region', { name: 'Tasks', exact: true });
+    const search = project.getByRole('searchbox', { name: 'Search this project', exact: true });
+    const firstTask = tasks.locator('[data-project-item-id]').first();
+    const firstAttention = overdue(page);
+    await expect(firstTask).toBeInViewport({ ratio: 0.99 });
+    await expect(firstAttention).toBeInViewport({ ratio: 0.99 });
+    const taskBox = (await firstTask.boundingBox())!, attentionBox = (await firstAttention.boundingBox())!;
+    expect(taskBox.x + taskBox.width).toBeLessThan(attentionBox.x);
+    await page.screenshot({ path: info.outputPath('project-workspace-desktop.png') });
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await expect(firstAttention).toBeInViewport({ ratio: 0.99 });
+    await firstAttention.click();
+    await expect(list(page)).toBeVisible();
+    await expect(firstTask).toBeInViewport({ ratio: 0.99 });
+
+    await search.fill('Overdue task'); await search.press('Enter');
+    const open = tasks.getByRole('button', { name: 'Open', exact: true });
+    await open.click();
+    await expect(tasks.locator('[data-project-match-count]')).toHaveText('Showing 10 of 14 matching tasks · open only.');
+    const chosen = tasks.locator('[data-project-item-id="overdue/13二?"]');
+    await chosen.click();
+    const reader = page.locator('.work-entity-task-reader');
+    await expect(reader).toHaveAttribute('data-task-id', 'overdue/13二?');
+    await reader.getByRole('button', { name: 'Back to project', exact: true }).click();
+    await expect(search).toHaveValue('Overdue task');
+    await expect(open).toHaveAttribute('aria-pressed', 'true');
+    await expect(chosen).toBeFocused();
+    await expect(chosen).toBeInViewport();
+
+    await search.fill('Unapplied project search');
+    await search.evaluate((input: HTMLInputElement) => input.setSelectionRange(4, 4));
+    await page.setViewportSize({ width: 390, height: 900 });
+    await expect(search).toBeFocused();
+    await expect(search).toHaveValue('Unapplied project search');
+    expect(await search.evaluate((input: HTMLInputElement) => input.selectionStart)).toBe(4);
+    await expect(open).toHaveAttribute('aria-pressed', 'true');
+    expect(f.writes).toEqual([]);
+  } finally { f.dispose(); }
+});
+
 test('complete attention totals and the copied update remain independent of project search and task filters', async ({ page }, info) => {
   await clipboard(page); const f = await boot(page);
   try {

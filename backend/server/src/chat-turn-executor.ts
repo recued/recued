@@ -156,6 +156,8 @@ import {
   tier1CallTitle,
 } from '@recued/contracts';
 import { dispatchToolCalls } from '@recued/middleware';
+import { requestsJsonResponse, serializeJsonResponse } from './chat-json-response.js';
+import { withBrowserTableGoal } from './bridges/browser-table-continuation.js';
 import { conversationCarriesOn } from './chat-carries-on.js';
 import { keptTabPdfs, withTabPdfReadNote } from './chat-tab-pdf-read.js';
 import { carriedResults, carryRefusal, closingFoldLimit, estimatedTokens, nextPacketTokens } from './chat-turn-carry.js';
@@ -1913,7 +1915,8 @@ export const composeChatMainTurnPromptParts = (
   const browserReads = packet.deduplicate_browser_reads ? projectBrowserReadContext(once) : undefined;
   const orderedBrowserObservations = projectBrowserObservationOrder(browserReads?.calls ?? once);
   const capturedBrowserContext = browserCurrentContext(orderedBrowserObservations,
-    packet.available_tools.find(tool => /^(recued-core|kitchen)\/act-on-web-page$/.test(tool.recipe_slug))?.recipe_slug, packet.attachment_refs);
+    packet.available_tools.find(tool => /^(recued-core|kitchen)\/act-on-web-page$/.test(tool.recipe_slug))?.recipe_slug,
+    packet.attachment_refs, packet.content.user_message);
   const browserContext = packet.native_browser_page_key ? nativeBrowserPageContext(capturedBrowserContext, packet.native_browser_page_key) : capturedBrowserContext;
   const nativeTools = packet.native_browser_page_key ? nativeBrowserPageSchemas(packet.available_tools) : packet.available_tools;
   const compactedViews = packet.deduplicate_browser_reads ? compactBrowserPassiveViews(orderedBrowserObservations) : undefined;
@@ -2704,8 +2707,10 @@ export const runChatTurn = async (
   // Current-instant date+time anchor, computed ONCE per turn (stable
   // across tool-loop rounds) from the injected clock.
   const currentDate = formatChatCurrentDate(now(), turnTimeZone);
+  const ownerRequest = inputs.content.user_message;
+  const jsonResponse = requestsJsonResponse(ownerRequest);
   const dispatchTool: OrchestratorDispatch['dispatchTool'] = (args) =>
-    deps.dispatchTool({ ...args, time_zone: turnTimeZone });
+    withBrowserTableGoal(ownerRequest, () => deps.dispatchTool({ ...args, time_zone: turnTimeZone }));
 
   // Inline AI-packet composer. Per D-164 P6.0 (b) the chat
   // orchestrator owns the packet shape directly + calls
@@ -3742,9 +3747,10 @@ export const runChatTurn = async (
       // envelope deviations (dropped empty `events`/`tool_calls`, omitted
       // `response`, a bare `{tool, args}` tool call) into a well-formed
       // AIOutput, THEN validate the parsed body before declaring `ok`
-      // (Codex P1.4 review P1-A fold). `coerceAIOutput` only fills ABSENT
-      // optional fields, so a present-but-wrong-typed field still fails below.
-      const body = coerceAIOutput(result.body);
+      // (Codex P1.4 review P1-A fold). Coercion fills absent optional fields.
+      // The text envelope carries an explicitly requested JSON answer as serialized text.
+      const coerced = coerceAIOutput(result.body);
+      const body = jsonResponse && result.finish_reason !== 'length' ? serializeJsonResponse(coerced) : coerced;
       const validation_issues = validateAIOutput(body);
       if (validation_issues.length > 0) {
         if (result.finish_reason === 'length') {

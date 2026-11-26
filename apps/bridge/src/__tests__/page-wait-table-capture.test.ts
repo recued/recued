@@ -235,6 +235,20 @@ describe('read_table — one document, and only a well-formed answer', () => {
       args: [{ selector: '#deals' }, PAGE_TABLE_LIMITS] }]);
   });
 
+  it('passes a JSON-serializable passive table-window probe to Chrome', async () => {
+    const plan = { scroll_scope: { selector: '#panel' }, enclosing: 0 };
+    const table_window = { table_id: 1, scroll_id: 2, position: 0, limit: 180, first: 1, total: 12 };
+    const out = await run(browser({
+      executeInDocument: async (_target, func, args) => {
+        expect(func).toBe(readPageTable);
+        expect(args).toEqual([{}, PAGE_TABLE_LIMITS, null, plan]);
+        expect(JSON.parse(JSON.stringify(args))).toEqual(args);
+        return { document_id: 'DOC7', result: { outputs: { ...table, table_window } } };
+      },
+    }), command('read_table', { page: '7:DOC7', table_walk: plan }, [...TABLE_KEYS, 'table_window']));
+    expect(out).toEqual({ status: 'ok', outputs: { page: '7:DOC7', ...table, table_window } });
+  });
+
   it.each([
     [{ missing: true }, 'No table on the page matches.'],
     [{ stale: true }, 'The page changed since it was inspected: inspect it again.'],
@@ -527,7 +541,7 @@ describe('scroll — a screen at a time, from where the page is, and left there'
     const touched: string[] = [];
     const api = browser({ executeInDocument: async (_target, func) => { touched.push(func.name); return null; } });
     expect(await run(api, command('scroll', { page: '7:DOC7', to: 'sideways' }, ['page']))).toMatchObject({ status: 'error',
-      error: { message: 'bridge: to is next, previous, top, bottom' } });
+      error: { message: 'bridge: to is next, previous, top, bottom, left, right' } });
     expect(await run(api, command('scroll', { page: '7:DOC7', screen: 0 }, ['page']))).toMatchObject({ status: 'error',
       error: { message: 'bridge: screen is a whole number from 1, the top of the page' } });
     expect(touched.filter((name) => name !== 'rebindPageRef')).toEqual([]);

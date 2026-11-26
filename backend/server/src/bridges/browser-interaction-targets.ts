@@ -1,10 +1,14 @@
 import { BROWSER_INTERACTION_TARGETS_CHARS, BRIDGE_INSPECT_CEILING_CHARS, type BrowserInteractionTarget, type BrowserInteractionTargets, type BrowserInteractionContext } from '@recued/contracts';
-import { parseInspectHtml, type OutlineElement, type OutlineNode } from './page-outline.js';
+import { capturedAriaLabel, parseInspectHtml, type OutlineElement, type OutlineNode } from './page-outline.js';
 import { browserControlScope } from './browser-control-scope.js';
 import { browserRecordContexts } from './browser-record-context.js';
 
 const attr = (node: OutlineElement, key: string) => typeof node.attrs[key] === 'string' ? node.attrs[key] as string
   : node.attrs[key] === true ? '' : undefined;
+const simpleId = (node: OutlineElement): string | undefined => {
+  const id = attr(node, 'id');
+  return id !== undefined && /^[A-Za-z_][A-Za-z0-9_-]{0,79}$/.test(id) ? id : undefined;
+};
 const text = (node: OutlineElement): string => {
   const stack: OutlineNode[] = [...node.children].reverse(); let value = '', visited = 0;
   while (stack.length && ++visited <= 15_000 && value.length <= 160) {
@@ -14,6 +18,43 @@ const text = (node: OutlineElement): string => {
       && !Object.hasOwn(part.attrs, 'hidden') && part.attrs['aria-hidden'] !== 'true') stack.push(...[...part.children].reverse());
   }
   return value.replace(/\s+/g, ' ').trim();
+};
+
+/** Scoped HTML can ground small text-only replacements without rebuilding the editor. */
+export const browserEditorTextTargets = (html: string) => {
+  if (html.length > BRIDGE_INSPECT_CEILING_CHARS) return undefined;
+  const root = parseInspectHtml(html);
+  const editor = root.children.length === 1 && root.children[0]?.kind === 'element' ? root.children[0] : undefined;
+  if (!editor || !['', 'true'].includes(attr(editor, 'contenteditable')?.toLowerCase() ?? '')) return undefined;
+  if (!Object.hasOwn(editor.attrs, 'contenteditable') || attr(editor, 'aria-readonly') === 'true') return undefined;
+  const id = simpleId(editor);
+  if (!id) return undefined;
+  const scope = browserControlScope(root);
+  if (!scope.complete || scope.ids.get(id) !== editor || !scope.allowed.has(editor)) return undefined;
+  const tags = new Map<string, number>();
+  for (const node of scope.nodes) if (node !== editor && scope.inside(node, editor)) {
+    tags.set(node.tag, (tags.get(node.tag) ?? 0) + 1);
+  }
+  const targets: Array<{ text: string; selector: string }> = [];
+  for (const node of scope.nodes) {
+    if (targets.length === 8) break;
+    if (node === editor || !scope.allowed.has(node) || !scope.inside(node, editor) || !node.children.every(child => child.kind === 'text')) continue;
+    // Use an observed unique child ID or a unique tag within this editor. A live type still verifies the selector.
+    const child = simpleId(node);
+    const suffix = child && scope.ids.get(child) === node ? `#${child}`
+      : /^[a-z][a-z0-9-]*$/.test(node.tag) && tags.get(node.tag) === 1 ? node.tag : undefined;
+    if (!suffix) continue;
+    let editable = true;
+    for (let at: OutlineElement | undefined = node; at && at !== editor; at = scope.parents.get(at)) {
+      if (attr(at, 'contenteditable')?.toLowerCase() === 'false' || attr(at, 'aria-readonly') === 'true'
+        || attr(at, 'aria-disabled') === 'true') { editable = false; break; }
+    }
+    const value = node.children.map(part => part.kind === 'text' ? part.text : '').join('');
+    if (editable && value.trim() !== '' && value.length <= 100 && !value.endsWith('…')) {
+      targets.push({ text: value, selector: `#${id} ${suffix}` });
+    }
+  }
+  return targets.length ? targets : undefined;
 };
 
 /** Positive targets from this capture, even while resources load. Zero counts
@@ -35,16 +76,22 @@ export const browserInteractionTargets = (html: string, input: { whole: boolean;
   for (const node of scope.nodes) {
     if (!scope.allowed.has(node)) continue;
     const ref = attr(node, 'ref');
-    const type = attr(node, 'type'), role = attr(node, 'role'), editable = attr(node, 'contenteditable');
+    const type = attr(node, 'type'), editable = attr(node, 'contenteditable');
+    const labelChoice = node.tag === 'label' ? attr(node, 'data-recued-label-choice') : undefined;
+    const role = labelChoice === 'radio' || labelChoice === 'checkbox' ? labelChoice : attr(node, 'role');
     const nativeType = (type ?? 'text').toLowerCase();
     const upload = node.tag === 'input' && nativeType === 'file';
+    const draggable = attr(node, 'draggable')?.toLowerCase() === 'true';
+    const disclosure = node.tag === 'summary' ? attr(node, 'data-recued-summary-expanded') : undefined;
+    const nativeSummary = disclosure === 'true' || disclosure === 'false';
     const field = !upload && (node.tag === 'textarea' || node.tag === 'select' || node.tag === 'input'
       && !['hidden', 'button', 'submit', 'reset', 'image', 'file'].includes(nativeType)
       || editable !== undefined && ['true', '', 'plaintext-only'].includes(editable.toLowerCase()));
-    const clickable = node.tag === 'button' || node.tag === 'a' || node.tag === 'input'
+    const clickable = node.tag === 'button' || node.tag === 'a' || node.tag === 'area' && ref !== undefined
+      || nativeSummary || node.tag === 'input'
       && ['button', 'submit', 'reset', 'image'].includes(nativeType)
       || ['button', 'link', 'checkbox', 'radio', 'combobox', 'switch', 'option'].includes(role ?? '');
-    if (!field && !clickable && !upload) continue;
+    if (!field && !clickable && !upload && !draggable) continue;
     let disabled = false;
     for (let at: OutlineElement | undefined = node; at; at = scope.parents.get(at)) {
       if (attr(at, 'aria-disabled') === 'true' || ['input', 'textarea', 'select', 'button', 'optgroup'].includes(at.tag)
@@ -60,12 +107,14 @@ export const browserInteractionTargets = (html: string, input: { whole: boolean;
     const actions: BrowserInteractionTarget['actions'] = disabled ? [] : [
       ...(field && !readonly ? ['type' as const] : []), ...(clickable ? ['click' as const] : []),
       ...(upload && !readonly ? ['upload' as const] : []),
+      ...(draggable ? ['drag' as const] : []),
     ];
     if (actions.includes('type')) result.captured_editable_fields++;
     if (actions.includes('click')) result.captured_clickable_controls++;
     if (actions.includes('upload')) result.captured_upload_fields = (result.captured_upload_fields ?? 0) + 1;
+    if (actions.includes('drag')) result.captured_drag_sources = (result.captured_drag_sources ?? 0) + 1;
     if (!ref || !/^e[1-9]\d{0,8}$/.test(ref)) { result.items_complete = false; continue; }
-    let label = attr(node, 'aria-label');
+    let label = capturedAriaLabel(node);
     if (!label && attr(node, 'aria-labelledby')) {
       const parts = attr(node, 'aria-labelledby')!.split(/\s+/).map(id => scope.ids.get(id));
       if (parts.every(part => part)) label = parts.map(part => text(part!)).join(' ');
@@ -74,13 +123,17 @@ export const browserInteractionTargets = (html: string, input: { whole: boolean;
     if (!label) for (let at = scope.parents.get(node); at; at = scope.parents.get(at)) {
       if (at.tag === 'label') { label = text(at); break; }
     }
-    label ||= attr(node, 'placeholder') || attr(node, 'title') || (field || upload ? attr(node, 'name') || attr(node, 'id')
-      : node.tag === 'input' ? attr(node, 'value') : text(node)) || '';
+    label ||= (node.tag === 'area' ? attr(node, 'alt') : undefined)
+      || attr(node, 'placeholder') || attr(node, 'title') || (field || upload ? attr(node, 'name') || attr(node, 'id')
+      : node.tag === 'input' ? attr(node, 'value') : text(node)) || attr(node, 'data-recued-svg-label') || '';
     const item: BrowserInteractionTarget = { ref, tag: node.tag, label: label.slice(0, 160),
       ...(label.length > 160 ? { label_truncated: true } : {}), actions,
       ...(type !== undefined && ['input', 'button'].includes(node.tag) && type.length <= 64 ? { type } : {}),
       ...(role !== undefined && role.length <= 64 ? { role } : {}),
+      ...(nativeSummary ? { expanded: disclosure === 'true' } : {}),
       ...(editable !== undefined && editable.length <= 64 ? { contenteditable: editable } : {}),
+      ...(draggable ? { draggable: true } : {}),
+      ...(upload && Object.hasOwn(node.attrs, 'multiple') ? { multiple: true } : {}),
       ...(disabled ? { disabled: true } : {}), ...(readonly ? { readonly: true } : {}) };
     let primary = false, navigation = false;
     for (let at: OutlineElement | undefined = node; at; at = scope.parents.get(at)) {
@@ -130,6 +183,23 @@ export const browserInteractionTargets = (html: string, input: { whole: boolean;
     if (general.length) add(general.shift()!, true);
   }
   for (const candidate of candidates) if (!candidate.field && !candidate.item.label) add(candidate, true);
+  if (result.captured_drag_sources) {
+    for (const node of scope.nodes) {
+      if ((result.drag_destinations?.length ?? 0) >= 6) break;
+      const id = simpleId(node);
+      if (!id || scope.ids.get(id) !== node || !scope.allowed.has(node) || attr(node, 'draggable')?.toLowerCase() === 'true'
+        || !(['div', 'section', 'ul', 'ol'].includes(node.tag) || ['region', 'list', 'grid', 'group'].includes(attr(node, 'role') ?? ''))) continue;
+      const heading = node.children.find(child => child.kind === 'element' && /^h[1-6]$/.test(child.tag));
+      const named = (attr(node, 'aria-labelledby') ?? '').split(/\s+/).slice(0, 4)
+        .map(part => scope.ids.get(part)).filter(part => part !== null && part !== undefined);
+      const label = (attr(node, 'aria-label')?.trim() || named.map(text).join(' ').trim()
+        || (heading?.kind === 'element' ? text(heading) : '')).slice(0, 100);
+      if (!label) continue;
+      const drag_destinations = [...(result.drag_destinations ?? []), { label, selector: `#${id}` }];
+      if (!fits({ ...result, drag_destinations })) break;
+      result.drag_destinations = drag_destinations;
+    }
+  }
   if (records.headings.length && fits({ ...result, headings: records.headings })) result.headings = records.headings;
   return result;
 };

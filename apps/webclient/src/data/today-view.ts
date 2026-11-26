@@ -4,7 +4,8 @@ import type {
   WorkEntity, WorkEntityListRpcRequest, WorkEntitySourceFreshness,
   ProactiveToday, SituationBasis, SituationCluster, SituationItem, SituationReason, SituationRef, SituationWindow, Sphere,
 } from '@recued/contracts';
-import { isDateOnlyDue, resolveTaskListFilter } from '@recued/contracts';
+import { isDateOnlyDue, resolveTaskListFilter, mailFollowUpTaskRef, type MailFollowUpTaskRef } from '@recued/contracts';
+import { taskReplyWatchSlot } from '../mail/task-reply-watch.js';
 import { e, renderActionLabel, renderTaskDueActions, renderTaskBlockers, TASK_DUE_STYLES } from '@recued/ui-shared';
 import { serializeShellRoute, serializeSourceRecordAddress } from '../shell/route.js';
 import { classifyRpcError, humanizeRpcError } from '../shell/rpc-error-copy.js';
@@ -38,6 +39,7 @@ export interface TodayItem {
   direction?: string;
   unreachable?: boolean;
   taskId?: string;
+  taskRef?: MailFollowUpTaskRef;
   taskDependencyIds?: readonly string[];
   taskDependenciesUncertain?: boolean;
   commitmentId?: string;
@@ -194,7 +196,7 @@ const workItem = (entity: WorkEntity, window: ReturnType<typeof todayWindow>): T
     ...(allDay ? { allDay: true } : {}),
     kind: entity._kind, sourceKey: `work:${entity.source_id}`,
     href: serializeShellRoute('data', entity._kind, entity.id),
-    ...(entity._kind === 'task' ? { taskId: entity.id } : {}),
+    ...(entity._kind === 'task' ? { taskId: entity.id, taskRef: mailFollowUpTaskRef(entity) ?? undefined } : {}),
     ...(entity._kind === 'task' && entity.blocks_task_ids.length ? { taskDependencyIds: entity.blocks_task_ids,
       taskDependenciesUncertain: entity.sync_state !== 'live' || entity.pending_write !== undefined } : {}),
     ...(entity._kind === 'commitment' ? { commitmentId: entity.id } : {}),
@@ -516,6 +518,9 @@ ${TASK_DUE_STYLES}
 .today-action { display:inline-flex; align-items:center; justify-content:center; gap:6px; }
 .today-action > svg { flex-shrink:0; }
 .today-view { max-width:960px; margin-top:var(--wc-space-lg, 24px); font-size:var(--wc-font-body, 14px); }
+.today-reminder-summary h2 { font-size:16px; }
+.today-reminder-summary > div { display:flex; flex-wrap:wrap; align-items:baseline; gap:8px; }
+.today-reminder-summary p { font-size:12px; }
 .today-header { display:flex; justify-content:space-between; align-items:start; gap:16px; margin-bottom:12px; }
 .today-header h2 { margin:0 0 8px; font-size:var(--wc-font-title, 28px); font-weight:600; line-height:1.15; letter-spacing:-.025em; }
 .today-header-actions { display:flex; gap:8px; flex-wrap:wrap; justify-content:flex-end; }
@@ -584,6 +589,56 @@ ${TASK_DUE_STYLES}
 @media (max-width:540px) { .today-row { grid-template-columns:minmax(0,1fr); gap:6px; } }
 /* A finger's height on a phone. ⛔ Refresh was 36px, and the Sources row only as tall as its text. */
 @media (max-width:640px) { .today-refresh { min-height:44px; } .today-sources summary { box-sizing:border-box; min-height:44px; padding-block:12px; } }
+
+/* Keep the stacked reading order and the same native fields across resizes. */
+.today-layout, .today-priority, .today-later, .today-attention { display:contents; }
+@media (min-width:1280px) and (hover:hover) and (pointer:fine) {
+  .today-notice p { margin:0; }
+  .today-notice p + p { margin-block-start:var(--wc-space-sm, 8px); }
+  .today-layout:has(> .today-attention) {
+    display:grid;
+    /* Extra height from the side panels goes to the second row. */
+    grid-template:
+      "priority attention" auto
+      "later    attention" 1fr / minmax(0, 2fr) minmax(19rem, 1fr);
+    align-items:start;
+    gap:0 var(--wc-space-lg, 24px);
+    margin-block-start:var(--wc-space-md, 16px);
+  }
+  .today-layout:has(> .today-attention) > .today-priority { display:block; grid-area:priority; min-width:0; }
+  .today-layout:has(> .today-attention) > .today-later { display:block; grid-area:later; min-width:0; }
+  .today-layout:has(> .today-attention) > .today-priority > .today-group:first-child { margin-block-start:0; }
+  .today-attention { display:grid; grid-area:attention; gap:var(--wc-space-md, 16px); min-width:0; }
+  .today-attention > .today-reminders {
+    margin:0;
+    padding:var(--wc-space-md, 16px);
+    border:1px solid var(--border);
+    border-radius:var(--wc-radius-lg, 14px);
+    background:var(--surface);
+    overflow-wrap:anywhere;
+  }
+  .today-attention > .today-reminders > header {
+    --wc-font-title:16px;
+    display:grid;
+    grid-template-columns:minmax(0, 1fr) auto;
+    align-items:start;
+    gap:var(--wc-space-sm, 8px);
+    margin:0;
+  }
+  .today-attention > .today-reminders > header > div { display:block; }
+  .today-attention h2 { margin:0; font-size:var(--wc-font-title); font-weight:600; line-height:1.25; }
+  .today-attention > .today-reminders > header p { margin:4px 0 0; font-size:var(--wc-font-small, 12px); line-height:1.35; }
+  .today-attention > .today-reminders > p:last-child { margin-block-end:0; }
+  .today-attention .today-list { margin:0; }
+  .today-attention .today-row { grid-template-columns:minmax(0, 1fr); gap:2px; padding-block:8px; }
+  .today-attention .today-row:last-child { padding-block-end:0; border-bottom:0; }
+  .today-attention .today-row p { margin-block:4px 0; }
+  .today-attention p.today-meta { display:block; line-height:1.35; }
+  .today-attention p.today-meta time { font:inherit; }
+  .today-attention .today-task-actions { margin-block-start:6px; }
+  .today-attention .today-group { margin-block-start:var(--wc-space-sm, 8px); }
+  .today-attention .today-group h3 { margin-block:12px 0; }
+}
 `;
 
 /** D-267 — the Today zero-state's one action. Today is now what bare `#data`
@@ -652,7 +707,7 @@ const renderStates = (states: readonly TodayItem[]): string => states.length ===
       : ` <span class="today-meta">until <time datetime="${e(new Date(state.until).toISOString())}">${e(new Date(state.until).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' }))}</time></span>`}</div></li>`).join('')}</ul></section>`;
 
 export type TodaySphereFilter = 'all' | 'personal' | 'professional' | 'unsorted';
-export const renderToday = (snapshot: TodaySnapshot | null, loading: boolean, actionAttr: string, sourcesOpen?: boolean, canCreate?: boolean, actions?: TodayTaskActions, sphereFilter: TodaySphereFilter = 'all', remindersHtml = ''): string => {
+export const renderToday = (snapshot: TodaySnapshot | null, loading: boolean, actionAttr: string, sourcesOpen?: boolean, canCreate?: boolean, actions?: TodayTaskActions, sphereFilter: TodaySphereFilter = 'all', attentionHtml = ''): string => {
   if (snapshot && sphereFilter !== 'all') snapshot = { ...snapshot, items: snapshot.items.filter(item => sphereFilter === 'unsorted' ? item.sphere === undefined && item.sphereReason !== undefined : item.sphere === sphereFilter) };
   const warning = snapshot !== null && (snapshot.issues.length > 0 || snapshot.sources.some((source) => source.freshness.warning)
     || snapshot.items.some((item) => item.unreachable));
@@ -665,6 +720,36 @@ export const renderToday = (snapshot: TodaySnapshot | null, loading: boolean, ac
     { id: 'next', label: 'Next seven days', empty: 'Nothing else in the next seven days.' },
     { id: 'coming_up', label: 'Coming up', empty: 'No later items have started reminding.' },
   ];
+  const urgent = groups.filter(group => (group.id === 'overdue' || group.id === 'today') && snapshot?.items.some(item => item.group === group.id));
+  const renderGroups = (selected: typeof groups): string => {
+    if (!snapshot) return '';
+    return selected.map(group => {
+        const items = snapshot.items.filter((item) => item.group === group.id);
+        return `<section class="today-group" data-today-group="${group.id}" aria-labelledby="today-group-${group.id}">
+          <h3 id="today-group-${group.id}">${group.label}<span class="today-count">${items.length}</span></h3>
+          ${items.length === 0 ? `<p>${snapshot.complete === false ? 'Still loading…' : warning ? 'Recued found nothing.' : group.empty}</p>` : `<ul class="today-list">${items.map((item) => {
+            const source = sources.get(item.sourceKey);
+            const when = item.dateUnknown ? 'Date unknown' : `${dateLabel(item.when)} · ${item.allDay ? 'All day' : new Date(item.when).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}`;
+            const whenMarkup = item.dateUnknown ? '<span>Date unknown</span>' : `<time datetime="${e(new Date(item.when).toISOString())}">${e(when)}${item.ongoing ? ' · In progress' : ''}</time>`;
+            return `<li class="today-row" data-today-item="${e(item.key)}">${whenMarkup}<div>
+              <a href="${e(item.href)}"${actions?.canDismissSituation ? rowOpenAttrs(item, actionAttr) : ''}>${e(item.title)}</a><div class="today-meta"><span>${e(kindLabel[item.kind])}</span><span>${e(source?.label ?? item.sourceKey)}</span>
+              ${item.sphereReason === undefined ? '' : `<span data-item-sphere title="${e(item.sphereReason)}">${item.sphere === 'personal' ? 'Personal' : item.sphere === 'professional' ? 'Work' : 'Unsorted'} · ${e(item.sphereReason)}</span>`}
+              ${item.direction === undefined ? '' : `<span>${e(item.direction)}</span>`}${item.kind === 'situation' ? '' : renderFreshness(item.unreachable ? { label: 'Recued cannot reach this source', detail: 'This may be out of date.', warning: true } : source?.freshness ?? unknownFreshness())}
+              </div>${taskReplyWatchSlot(item.taskRef)}${item.taskId && item.taskDependencyIds ? renderTaskBlockers(item.taskId, item.taskDependencyIds, item.taskDependenciesUncertain || source?.freshness.warning === true) : ''}${renderCluster(item.cluster, item.cluster ? snapshot.proactive?.summaries?.[item.cluster.id] : undefined,
+                actions?.canDismissSituation ? { actionAttr, busy: actions.commitmentBusy === true } : undefined, people)}${actions && item.taskId !== undefined && !item.unreachable && source?.writeCapable ? `<div class="today-task-actions">
+                ${actions.canComplete ? `<button type="button" ${actionAttr}="today-task-complete" data-today-task="${e(item.key)}" aria-label="Complete ${e(item.title)}"${actions.edit ? ' aria-disabled="true"' : ''}>${actions.edit?.key === item.key && actions.edit.busy && actions.edit.action === 'complete' ? 'Completing…' : 'Complete'}</button>` : ''}
+                <a ${actions.edit ? 'aria-disabled="true"' : `href="${e(item.href)}"`} aria-label="Open task: ${e(item.title)}">Open task</a>
+                ${actions.canReschedule ? renderTaskDueActions({ actionAttr, prefix: 'today-task-due',
+                  taskKey: item.key, title: item.title, hasDue: true, disabled: actions.edit !== null,
+                  pickAction: 'today-task-reschedule', pickExpanded: actions.edit?.key === item.key && actions.edit.action === 'reschedule' }) : ''}
+              </div>` : ''}${actions?.canCloseCommitment && item.commitmentId && !item.unreachable && source?.writeCapable ? `<div class="today-commitment-actions">
+                <button type="button" ${actionAttr}="today-commitment-fulfill" data-today-task="${e(item.key)}" aria-label="Done: ${e(item.title)}"${actions.commitmentBusy ? ' disabled' : ''}>Done</button>
+                <button type="button" ${actionAttr}="today-commitment-cancel" data-today-task="${e(item.key)}" aria-label="Cancel: ${e(item.title)}"${actions.commitmentBusy ? ' disabled' : ''}>Cancel</button>
+              </div>` : ''}${actions?.edit?.key === item.key ? renderTaskEditor(actions, actionAttr) : ''}</div></li>`;
+          }).join('')}</ul>`}</section>`;
+
+    }).join('');
+  };
   return `<section class="today-view" data-today-view aria-busy="${loading}">
     <header class="today-header"><div><h2>Today</h2>
       <p>Tasks, commitments, and calendar events in one place.</p>
@@ -676,8 +761,7 @@ export const renderToday = (snapshot: TodaySnapshot | null, loading: boolean, ac
       ? ` <button type="button" class="today-action" ${actionAttr}="today-situation-restore" data-today-dismissal="${e(actions.undoDismissal)}">${renderActionLabel('undo', 'Undo')}</button>` : ''}</p>` : ''}
     ${actions?.error ? `<p role="alert" tabindex="-1" data-today-task-error>${e(actions.error)}</p>` : ''}
     ${actions?.edit && !snapshot?.items.some(item => item.key === actions.edit?.key) ? renderTaskEditor(actions, actionAttr) : ''}
-    ${remindersHtml}
-    ${snapshot === null ? '<p role="status">Loading Today…</p>' : `
+    ${snapshot === null ? `<p role="status">Loading Today…</p>${attentionHtml}` : `
       <div class="today-toolbar"><div class="today-status-cluster">
       <p class="today-window">Seven-day window: ${e(dateLabel(snapshot.now))}–${e(dateLabel(snapshot.before - 1))} · Your local time</p>
       <p class="today-updated" role="status">${snapshot.complete === false
@@ -690,43 +774,25 @@ export const renderToday = (snapshot: TodaySnapshot | null, loading: boolean, ac
       ${snapshot.sources.map((source) => `<li><span>${e(source.label)} · ${e(kindLabel[source.kind])}</span>${renderFreshness(source.freshness)}<span>${e(source.freshness.detail)}</span></li>`).join('')}
       </ul></details></div></div>
       ${warning ? `<div class="today-notice" role="status"><p>Some sources may be missing or out of date. Results below may be incomplete.</p>${snapshot.issues.map((issue) => `<p>${e(issue)}</p>`).join('')}</div>` : ''}
-      ${snapshot.items.length === 0 && snapshot.complete && canCreate === true ? `<div class="today-empty" data-today-empty>
-        <p class="today-empty-lead">${warning
-          ? 'The sources that answered had nothing to show.'
-          : 'Nothing is due in the next seven days.'}</p>
-        <button type="button" class="today-empty-create" ${actionAttr}="${TODAY_CREATE_ACTION}">Capture something</button>
-        <p class="today-empty-sub">A task, a note, a contact, or something you promised. No setup needed — it stays on this server.</p>
-      </div>` : ''}
-      ${renderSuggestions(snapshot.proactive?.suggestions)}
-      ${actions?.canAnswerOccasionNext === true
-        ? renderOccasionsWaiting(snapshot.proactive?.occasions_waiting, actionAttr, actions.commitmentBusy === true, localIsoDay(snapshot.now), actions.occasionDrafts) : ''}
-      ${renderStates(snapshot.items.filter((item) => item.group === 'holds'))}
-      ${groups.map((group) => {
-        const items = snapshot.items.filter((item) => item.group === group.id);
-        return `<section class="today-group" data-today-group="${group.id}" aria-labelledby="today-group-${group.id}">
-          <h3 id="today-group-${group.id}">${group.label}<span class="today-count">${items.length}</span></h3>
-          ${items.length === 0 ? `<p>${snapshot.complete === false ? 'Still loading…' : warning ? 'Recued found nothing.' : group.empty}</p>` : `<ul class="today-list">${items.map((item) => {
-            const source = sources.get(item.sourceKey);
-            const when = item.dateUnknown ? 'Date unknown' : `${dateLabel(item.when)} · ${item.allDay ? 'All day' : new Date(item.when).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}`;
-            const whenMarkup = item.dateUnknown ? '<span>Date unknown</span>' : `<time datetime="${e(new Date(item.when).toISOString())}">${e(when)}${item.ongoing ? ' · In progress' : ''}</time>`;
-            return `<li class="today-row" data-today-item="${e(item.key)}">${whenMarkup}<div>
-              <a href="${e(item.href)}"${actions?.canDismissSituation ? rowOpenAttrs(item, actionAttr) : ''}>${e(item.title)}</a><div class="today-meta"><span>${e(kindLabel[item.kind])}</span><span>${e(source?.label ?? item.sourceKey)}</span>
-              ${item.sphereReason === undefined ? '' : `<span data-item-sphere title="${e(item.sphereReason)}">${item.sphere === 'personal' ? 'Personal' : item.sphere === 'professional' ? 'Work' : 'Unsorted'} · ${e(item.sphereReason)}</span>`}
-              ${item.direction === undefined ? '' : `<span>${e(item.direction)}</span>`}${item.kind === 'situation' ? '' : renderFreshness(item.unreachable ? { label: 'Recued cannot reach this source', detail: 'This may be out of date.', warning: true } : source?.freshness ?? unknownFreshness())}
-              </div>${item.taskId && item.taskDependencyIds ? renderTaskBlockers(item.taskId, item.taskDependencyIds, item.taskDependenciesUncertain || source?.freshness.warning === true) : ''}${renderCluster(item.cluster, item.cluster ? snapshot.proactive?.summaries?.[item.cluster.id] : undefined,
-                actions?.canDismissSituation ? { actionAttr, busy: actions.commitmentBusy === true } : undefined, people)}${actions && item.taskId !== undefined && !item.unreachable && source?.writeCapable ? `<div class="today-task-actions">
-                ${actions.canComplete ? `<button type="button" ${actionAttr}="today-task-complete" data-today-task="${e(item.key)}" aria-label="Complete ${e(item.title)}"${actions.edit ? ' aria-disabled="true"' : ''}>${actions.edit?.key === item.key && actions.edit.busy && actions.edit.action === 'complete' ? 'Completing…' : 'Complete'}</button>` : ''}
-                <a ${actions.edit ? 'aria-disabled="true"' : `href="${e(item.href)}"`} aria-label="Open task: ${e(item.title)}">Open task</a>
-                ${actions.canReschedule ? renderTaskDueActions({ actionAttr, prefix: 'today-task-due',
-                  taskKey: item.key, title: item.title, hasDue: true, disabled: actions.edit !== null,
-                  pickAction: 'today-task-reschedule', pickExpanded: actions.edit?.key === item.key && actions.edit.action === 'reschedule' }) : ''}
-              </div>` : ''}${actions?.canCloseCommitment && item.commitmentId && !item.unreachable && source?.writeCapable ? `<div class="today-commitment-actions">
-                <button type="button" ${actionAttr}="today-commitment-fulfill" data-today-task="${e(item.key)}" aria-label="Done: ${e(item.title)}"${actions.commitmentBusy ? ' disabled' : ''}>Done</button>
-                <button type="button" ${actionAttr}="today-commitment-cancel" data-today-task="${e(item.key)}" aria-label="Cancel: ${e(item.title)}"${actions.commitmentBusy ? ' disabled' : ''}>Cancel</button>
-              </div>` : ''}${actions?.edit?.key === item.key ? renderTaskEditor(actions, actionAttr) : ''}</div></li>`;
-          }).join('')}</ul>`}</section>`;
-      }).join('')}
-      ${snapshot.proactive?.proposal_count ? `<p data-today-proposals><a href="#yours/proposals">${snapshot.proactive.proposal_count} proposals and questions wait</a>${snapshot.proactive.newest_proposal ? ` · ${e(snapshot.proactive.newest_proposal.title)}` : ''}</p>` : ''}
-      ${snapshot.proactive?.unmatched_replies.length ? `<section data-today-unmatched><h3>Unmatched replies</h3><p>These replies changed nothing. <a href="#yours/proposals">Review in Yours</a>.</p><ul>${snapshot.proactive.unmatched_replies.map(reply => `<li><p>${e(reply.text)}</p><p>${e(reply.reason.replaceAll('_', ' '))}</p></li>`).join('')}</ul></section>` : ''}`}
+      <div class="today-layout">
+        <div class="today-priority">${renderGroups(urgent)}</div>
+        ${attentionHtml ? `<div class="today-attention">${attentionHtml}</div>` : ''}
+        <div class="today-later">
+          ${snapshot.items.length === 0 && snapshot.complete && canCreate === true ? `<div class="today-empty" data-today-empty>
+            <p class="today-empty-lead">${warning
+              ? 'The sources that answered had nothing to show.'
+              : 'Nothing is due in the next seven days.'}</p>
+            <button type="button" class="today-empty-create" ${actionAttr}="${TODAY_CREATE_ACTION}">Capture something</button>
+            <p class="today-empty-sub">A task, a note, a contact, or something you promised. No setup needed — it stays on this server.</p>
+          </div>` : ''}
+          ${renderSuggestions(snapshot.proactive?.suggestions)}
+          ${actions?.canAnswerOccasionNext === true
+            ? renderOccasionsWaiting(snapshot.proactive?.occasions_waiting, actionAttr, actions.commitmentBusy === true, localIsoDay(snapshot.now), actions.occasionDrafts) : ''}
+          ${renderStates(snapshot.items.filter((item) => item.group === 'holds'))}
+          ${renderGroups(groups.filter(group => !urgent.includes(group)))}
+          ${snapshot.proactive?.proposal_count ? `<p data-today-proposals><a href="#yours/proposals">${snapshot.proactive.proposal_count} proposals and questions wait</a>${snapshot.proactive.newest_proposal ? ` · ${e(snapshot.proactive.newest_proposal.title)}` : ''}</p>` : ''}
+          ${snapshot.proactive?.unmatched_replies.length ? `<section data-today-unmatched><h3>Unmatched replies</h3><p>These replies changed nothing. <a href="#yours/proposals">Review in Yours</a>.</p><ul>${snapshot.proactive.unmatched_replies.map(reply => `<li><p>${e(reply.text)}</p><p>${e(reply.reason.replaceAll('_', ' '))}</p></li>`).join('')}</ul></section>` : ''}
+        </div>
+      </div>`}
   </section>`;
 };

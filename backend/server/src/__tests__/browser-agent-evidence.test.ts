@@ -288,7 +288,7 @@ describe('host browser evidence at the native model boundary', () => {
     }
   });
 
-  it('offers a checked card collector instead of a guessed table and executes its supplied fields', async () => {
+  it('offers a checked card collector whose supplied fields can return a filtered set and count in one step', async () => {
     const html = '<main>' + ['Arden', 'Blake', 'Cedar'].map(name => '<article class="card"><b class="name">' + name + '</b><span class="amount">$3.00</span></article>').join('') + '</main>';
     const url = 'https://example.test/items', collection = browserCollectHint(html, url);
     expect(collection).toBeDefined();
@@ -297,18 +297,12 @@ describe('host browser evidence at the native model boundary', () => {
     const sent = native(render('inspect-web-page', view));
     const option = sent.browser_guidance.options.find((value: { kind: string }) => value.kind === 'collect');
     expect(sent.browser_guidance.options.some((value: { kind: string }) => value.kind === 'table')).toBe(false);
-    const parsed = parseBrowserActSteps([option.step]);
+    const parsed = parseBrowserActSteps([{ ...option.step, where: { field: 'name', equals: 'Blake' } }]);
     if (!parsed.ok || parsed.steps[0]?.do !== 'collect') throw Error('Expected an executable collection');
     const output = await collectBrowserPages({ spec: parsed.steps[0], read: async () => ({ page, url, title: '', html, truncated: false }),
       navigate: async () => { throw Error('One-page advice must not navigate'); }, assertActive() {} });
-    expect(output.records.map(row => row.values.name)).toEqual(['Arden', 'Blake', 'Cedar']);
-    const store = createBrowserDataStore();
-    const saved = store.keep('owner', output.records.map(row => row.values),
-      [{ kind: 'collection', page, url, title: '', complete: true, truncated: false, loading: false }]);
-    const data = parseBrowserDataStep(option.rows_and_count.step);
-    if (!data.ok) throw Error(data.error);
-    expect(runBrowserDataPipeline({ step: data.step, latest: saved.descriptor.data_ref, store, scope: 'owner', assertActive() {} }).value)
-      .toEqual({ rows: output.records.map(row => row.values), count: 3 });
+    expect(output.records.map(row => row.values.name)).toEqual(['Blake']);
+    expect(output).toMatchObject({ count: 1, scanned: 3, coverage: { complete: true } });
     expect(native(render('inspect-web-page', { text: JSON.stringify(view) }))).not.toHaveProperty('browser_guidance');
     expect(native(render('another-recipe', view))).not.toHaveProperty('browser_guidance');
   });

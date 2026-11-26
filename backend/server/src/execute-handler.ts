@@ -4,7 +4,7 @@ import { bodyNumbersAllowsRead, bodyNumbersHeldReads } from './body-numbers-sett
 import { PAUSED_RUN_CODE, PAUSED_RUN_DETAIL, PAUSED_RUN_REFUSAL } from './pause-approval.js';
 import { connectionIdentity, connectionRevisionGuard } from './connection-revision.js';
 import { canonicalJsonString } from '@recued/recipes';
-import { collectRefs, mergeValueLabels, KITCHEN_DRAFT_FROM_JOB_SLUG } from '@recued/contracts';
+import { collectRefs, mergeValueLabels, KITCHEN_DRAFT_FROM_JOB_SLUG, type BrowserPassJob } from '@recued/contracts';
 import { createReadScope, assertKernelReadScope, SPHERE_READ_REFUSAL } from './situations/read-scope.js';
 /** Recipe execution handler for the headless server.
  *
@@ -33,6 +33,10 @@ import type {
   PeerAskOutboxRow,
   PeerAskOutboxStageRow,
 } from './storage/peer-ask-outbox-store.js';
+import {
+  buildPackOperationIndex, focusBlockStarterSettings, FOCUS_BLOCK_PACK, FOCUS_BLOCK_PUBLISHER,
+  FOCUS_BLOCK_RECIPE_ID, isProvablyReadOnly, mailDraftRecipeConfig, parseMailDraftContent, recipeSpendsPerRun,
+} from '@recued/contracts';
 import {
   recoverPeerAskDelivery,
   type PeerAskDeliveryOutcome,
@@ -1986,6 +1990,7 @@ export interface ExecuteHandlerDeps {
    *  Plumbed now so 3b.3 is a wiring-only change. Absent ⇒ no commit log
    *  (no-db / harness modes), exactly as today. */
   commitStore?: CommitStore;
+  mailFollowUpSend?: import('./mail-follow-up-send-service.js').MailFollowUpSendService;
   /** D-157 P1 slice 3 — the preflight checkpoint store. The handler
    *  writes a `Checkpoint` here when the engine returns
    *  `result.awaiting_approval` — the host mints `checkpoint_id` (this
@@ -3337,6 +3342,8 @@ const handleExecuteInner = async (
   if (internal.preapproval_run !== undefined && deps.preapprovalRuntime) {
     recipe = deps.preapprovalRuntime.continuationRecipe(internal.preapproval_run, recipe.recipe_id) ?? recipe;
   }
+
+  internal.verifyRecipe?.(recipe);
 
   // D-222 Slice 3 — a filter submit is narrower than an ordinary owner run.
   // Re-resolve the immutable authored block before ANY overlay or dispatch
@@ -4841,15 +4848,21 @@ const handleExecuteInner = async (
   // filed under it; a run resumed once the owner approved it binds again, to the same turn.
   const runSource = request.execution_source;
   const flowRecorder = deps.browserFlows ?? processBrowserFlows;
+  // D-402 (2026-11-23) — the AI app's job this run is part of: its browser writes may run under a pass "until this job
+  //   ends", and a held one offers it. Read once, here, as the run is bound to it.
+  let browserJob: BrowserPassJob | undefined;
   if (runSource?.channel === 'chat' && runSource.actor === 'user_self' && runSource.turn_id !== undefined) {
     flowRecorder.bindRun(run_id, { session_id: runSource.chat_session_id, turn_id: runSource.turn_id });
   } else if (runSource?.channel === 'mcp' && !(recipe.recipe_id === RUN_INGREDIENT_RECIPE.recipe_id
     && planArgs.ingredient_slug === KITCHEN_DRAFT_FROM_JOB_SLUG)) {
     // D-402 slice A2 — an AI app's run, bound to the job the app started, while one is going.
     // Slice A5: never its draft request, which asks about the job and is no part of it.
-    const job = (deps.browserJobs ?? processBrowserJobs).activeFor({ mcp_token_id: runSource.mcp_token_id,
+    const job = (deps.browserJobs ?? processBrowserJobs).activeJob({ mcp_token_id: runSource.mcp_token_id,
       agent_id: runSource.agent_id });
-    if (job !== undefined) flowRecorder.bindRun(run_id, { session_id: browserJobSession(job), turn_id: job });
+    if (job !== undefined) {
+      flowRecorder.bindRun(run_id, { session_id: browserJobSession(job.job_id), turn_id: job.job_id });
+      browserJob = { channel_session_id: browserJobSession(job.job_id), expires_at: job.expires_at };
+    }
   }
   // D-402 slice A1 — the call the request's plan records (nothing for a run bound to no request).
   flowRecorder.startCall(run_id, { recipe_id: recipe.recipe_id, args: planArgs, browser: recipeActsInBrowser(recipe),
@@ -6338,8 +6351,9 @@ const handleExecuteInner = async (
       ? {
           admit: async ({ slug, input }): Promise<boolean> => {
             const identity = runIdentity!;
-            // D-335 slice X — a batch that only reads, scrolls, waits and points, on tabs already
-            // open, changes nothing and asks nothing; what it may open is recorded, which is none.
+            // D-335 slice X — a batch that only reads, scrolls, waits and points changes nothing and asks
+            // nothing. Since 2026-11-23 it may open the tabs it reads too (the owner: "make all reads & open
+            // as normal read permission"): opening a page is a read, so any tab is recorded as its to open.
             if (stripCorePrefix(slug) === 'dom-act' && await browserBatchReadsOnly({
               dispatcher: deps.executorConfig.bridgeDispatcherRef?.(),
               manifests: { get: (manifestSlug) => deps.executorConfig.manifests.get(manifestSlug) ?? null },
@@ -6347,7 +6361,7 @@ const handleExecuteInner = async (
               run_id,
               ...(deps.heldBrowserDescribeTimeoutMs !== undefined ? { timeoutMs: deps.heldBrowserDescribeTimeoutMs } : {}),
             })) {
-              browserBatchAdmissions.record(run_id, input, { open: new Set() });
+              browserBatchAdmissions.record(run_id, input, { open: 'any' });
               return true;
             }
             // D-335 slice AQ — a batch that puts one of the owner's files into a page is always asked
@@ -6397,7 +6411,10 @@ const handleExecuteInner = async (
               ...browserOfCall(input),
             });
             if (offer === undefined) return false;
-            const pass = useBrowserPass(deps.browserPasses, offer.key, identity.channel_session_id);
+            // D-402 (2026-11-23) — then an AI app's pass "until this job ends", while this run is in that job.
+            const pass = useBrowserPass(deps.browserPasses, offer.key, identity.channel_session_id)
+              ?? (browserJob !== undefined && offer.key.principal.kind === 'ai_app'
+                ? useBrowserPass(deps.browserPasses, offer.key, browserJob.channel_session_id) : undefined);
             if (pass === undefined) return false;
             lastBrowserTargetRead = undefined;
             // Slice X — a batch the pass let through may open a tab on the pass's site only.
@@ -7421,7 +7438,7 @@ const handleExecuteInner = async (
     });
   }
     const executionStartedAt = Date.now();
-    internal.beforeRunStart?.(run_id);
+    await internal.beforeRunStart?.(run_id);
     // D-402 slice H3 (§4.2 item 3) — each browser the recipe names, checked before step 1 by routing's
     // own rule: here, so the question below is never raised for a run that cannot start, and its answer,
     // which starts the run afresh through this path, checks them again. A run resumed part-way is past
@@ -7488,8 +7505,11 @@ const handleExecuteInner = async (
               const browser = ask.recipe_id === recipe.recipe_id ? stepBrowsers.get(ask.step_id) : undefined;
               const key = browserPassKeyHash({ principal, recipe: recipe.recipe_id, site: where.site,
                 ...(browser !== undefined ? { browser } : {}) });
+              // D-402 (2026-11-23) — an AI app's pass "until this job ends" covers the runs in its job.
               if (deps.browserPasses.listPasses(Date.now()).some((pass) => browserPassKeyHash(pass.key) === key
-                && (pass.kind === 'always' || pass.channel_session_id === identity.channel_session_id))) return true;
+                && (pass.kind === 'always' || pass.channel_session_id === identity.channel_session_id
+                  || (browserJob !== undefined && principal.kind === 'ai_app'
+                    && pass.channel_session_id === browserJob.channel_session_id)))) return true;
             }
           }
           if (deps.sessionGrantResolver === undefined || ask.risk_tier === undefined || ask.pre_lift_approval === undefined) return false;
@@ -9003,6 +9023,7 @@ const handleExecuteInner = async (
                 ),
                 channel_session_id: runIdentity?.channel_session_id,
                 ...browserOfCall(heldCall.input),
+                ...(browserJob !== undefined ? { job: browserJob } : {}),
               })
             : undefined;
           // D-341 slice B2 — what this hold's "Always allow for this webhook / schedule / trigger /
@@ -11283,7 +11304,7 @@ const ensureRecipeInsightId = (
 // Handler slice — composeHandlers factory
 // ────────────────────────────────────────────────────────────────
 
-export type ExecuteMethods = 'execute';
+export type ExecuteMethods = 'execute' | 'recipe.focus_blocks.preview';
 
 /** D-153 P2.C — build the `ExecuteRequest` for an rpc `execute` call.
  *  Pure shape construction over (rpc args, connected client) so tests
@@ -11353,13 +11374,49 @@ export const handleRpcExecute = async (
 
 export const makeExecuteHandlers = (
   deps: ExecuteHandlerDeps | undefined,
+  followUps?: import('./mail-follow-up-rpc-handler.js').MailFollowUpRpcDeps,
 ): HandlerSlice<ServerRpcRegistry, ExecuteMethods, WsClient> | undefined => {
   if (!deps) return undefined;
   return {
-    methods: ['execute'],
+    methods: ['execute', 'recipe.focus_blocks.preview'],
     handlers: {
-      'execute': async (args, client) =>
-        handleRpcExecute(deps, args, client),
+      'recipe.focus_blocks.preview': async (args, client) => {
+        if (!client.instance_id || client.client_kind !== 'webclient') {
+          throw new RpcError('unauthorized', 'A paired webclient is required.', 401);
+        }
+        const slug = args?.calendar_slug;
+        if (typeof slug !== 'string' || !slug.trim() || slug !== slug.trim() || typeof args.recipe_hash !== 'string') {
+          throw new RpcError('bad_request', 'Choose one connected calendar for the preview.', 400);
+        }
+        const stored = deps.recipeStore.getStored(FOCUS_BLOCK_RECIPE_ID);
+        if (stored?.pack_slug !== FOCUS_BLOCK_PACK || stored.publisher_id !== FOCUS_BLOCK_PUBLISHER) {
+          throw new RpcError('recipe_not_found', 'Install Focus block proposer from Daily Ops to run the preview.', 404);
+        }
+        return handleRpcExecute(deps, {
+          recipe_id: FOCUS_BLOCK_RECIPE_ID, config: focusBlockStarterSettings(slug), trigger_source: 'manual',
+        }, client, { verifyRecipe: recipe => {
+          const roster = buildPackOperationIndex([]);
+          const changed = () => new RpcError('recipe_changed', 'The installed workflow changed. Refresh the starter before running it again.', 409);
+          if (hashRecipe(recipe) !== args.recipe_hash || recipe.auto_run || recipe.event_triggers?.length
+            || recipe.prefetch_steps?.length || recipe.trigger_steps?.length
+            || !isProvablyReadOnly(recipe, roster) || recipeSpendsPerRun(recipe, roster)) throw changed();
+          const reads = lowerOpStepRecipe(recipe, new Map()).steps.filter(step => 'ingredient' in step);
+          const read = reads[0];
+          const input = read && 'input' in read ? read.input : null;
+          if (reads.length !== 1 || !read || !('ingredient' in read) || read.ingredient !== 'calendar-list'
+            || !input || typeof input !== 'object' || !('slug' in input) || input.slug !== '{{config.calendar_slug}}') throw changed();
+        } });
+      },
+      'execute': async (args, client) => {
+        if (args.mail_follow_up === undefined) return handleRpcExecute(deps, args, client);
+        if (!followUps?.send) throw new RpcError('not_configured', 'Reply watches from the composer are unavailable on this server.', 503);
+        const token = followUps.authorize(client);
+        const result = await followUps.send.execute(args, token, () => { followUps.authorize(client); }, beforeRunStart => {
+          const { mail_follow_up: _preference, ...request } = args;
+          return handleRpcExecute(deps, { ...request, config: mailDraftRecipeConfig(parseMailDraftContent(request.config)) }, client, { beforeRunStart });
+        });
+        followUps.authorize(client); return result;
+      },
     },
   };
 };

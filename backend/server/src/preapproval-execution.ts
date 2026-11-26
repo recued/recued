@@ -9,7 +9,7 @@ import {
 import type { ExecutionContext, IngredientExecutor, LocalRecipeInvokeCall } from '@recued/engine';
 import { canonicalRecipeDefinition } from '@recued/recipes';
 import type { CommitGatewayDeps } from '@recued/gateway';
-import { mergeManifestStepInput, mergeManifestStepOutput } from '@recued/ingredients';
+import { IngredientError, mergeManifestStepInput, mergeManifestStepOutput } from '@recued/ingredients';
 import { hashStepPiiFields } from '@recued/transforms';
 import type { createPreapprovalService } from './preapproval-service.js';
 import type { PreapprovalStorage } from './storage/preapproval-storage.js';
@@ -47,7 +47,8 @@ interface Frame {
   run: Run; call: EngineCall; member: PreparedInvocation; claim: PreapprovalMemberClaim;
   provider_input_hash: string;
   progress: { delegates: number; provider_entered: boolean; file_access?: boolean; use_reservation?: object; dom_commands?: number;
-    calendar_provider?: 'local' | 'entered' | 'returned'; records_returned?: boolean };
+    calendar_provider?: 'local' | 'entered' | 'returned'; records_returned?: boolean;
+    mail_condition_stop?: import('./mail-follow-up-service.js').ScheduledFollowUpStop };
   transport?: { key: string; resolved: boolean };
   gateway_resolved: boolean;
 }
@@ -420,6 +421,26 @@ export const createPreapprovalExecutionRuntime = (deps: {
           }
         };
         const io: PreapprovalIoContext = {
+          scheduledMailFollowUp(input) {
+            if (!run.plan.mail_follow_up) return undefined;
+            mailMatches(String(input.instance), input);
+            return { plan: run.plan, future_execution_ref: run.binding.future_execution_ref };
+          },
+          async prepareMailCondition(instance, input) {
+            if (run.plan.request.subject.kind !== 'mail_draft' || run.plan.request.subject.send_if_no_reply !== true) return undefined;
+            mailMatches(instance, input);
+            const check = await deps.service.scheduledMailCondition(run.plan);
+            if (!check) return refuse('The conditional follow-up has no reviewed reply check.');
+            return {
+              assertAllowed() {
+                const stop = frame.progress.mail_condition_stop ?? check();
+                if (!stop) return;
+                frame.progress.mail_condition_stop = stop;
+                throw new IngredientError('MAIL_FOLLOW_UP_CONDITION_STOPPED', stop.message, { not_sent: true });
+              },
+              stoppedMessage: () => frame.progress.mail_condition_stop?.message,
+            };
+          },
           async beforeCalendarProvider(review, external) {
             const saved = frame.member.resource_review;
             if (current() !== frame || !saved || saved.resources.length !== 1
@@ -603,6 +624,12 @@ export const createPreapprovalExecutionRuntime = (deps: {
             }
           } catch (error) {
             if (isPreflightRequiredSignal(error) && error.preapproval_nested_wait) throw error;
+            const stopped = frame.progress.mail_condition_stop;
+            if (stopped) {
+              await repository.settleMember(claim, { status: 'failed', result: null,
+                message: stopped.message, mail_follow_up_stop: stopped.outcome });
+              throw error;
+            }
             const code = error && typeof error === 'object' && 'code' in error ? error.code : null;
             const uncertain = code === 'ACTION_DELIVERY_UNCERTAIN'
               || (code === 'run_killed' && frame.progress.provider_entered)

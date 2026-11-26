@@ -26,6 +26,36 @@ const recovery = (page: Page) => page.evaluate(() => Object.keys(sessionStorage)
   .filter(key => key.startsWith('recued.mail.compose-recovery.v1:'))
   .flatMap(key => JSON.parse(sessionStorage.getItem(key)!) as Array<{ id: string; brief: string; dialog: { values: { body: string } } }>));
 
+test('saving a desktop commitment follow-up restores the selected promise and its filtered list', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  const f = await installCommitmentFollowUpFixture(page);
+  try {
+    f.seed('promise-two', { statement: 'Another promise' });
+    await page.goto(`${HARNESS_URL}?journey=verification&server_profiles=multiple#data/commitment`);
+    await page.waitForFunction(() => window.__app?.ready === true);
+    const selected = page.locator('button[data-entity-id="promise-one"]');
+    const other = page.locator('button[data-entity-id="promise-two"]');
+    const search = page.getByRole('searchbox', { name: 'Search commitments', exact: true });
+    const status = page.getByRole('combobox', { name: 'Commitment status', exact: true });
+    await expect(other).toBeVisible();
+    await status.selectOption('open');
+    await search.fill('revised'); await expect(other).toHaveCount(0);
+    await selected.click();
+    await expect(page.getByRole('region', { name: 'Send the revised proposal <team>', exact: true })).toBeVisible();
+    await action(page).click(); await expect(brief(page)).toBeFocused();
+    await field(page, 'subject').fill('Proposal update'); await field(page, 'body').fill('The revised proposal is ready.');
+    await compose(page).getByRole('button', { name: 'Save draft', exact: true }).click();
+    await expect.poll(() => f.saved()?.content.body).toBe('The revised proposal is ready.');
+    await discard(page);
+    await expect(action(page)).toBeFocused();
+    await expect(selected).toHaveAttribute('aria-current', 'true');
+    await expect(status).toHaveValue('open');
+    await expect(search).toHaveValue('revised');
+    await expect(page).toHaveURL(/#data\/commitment\/promise-one$/);
+    expect(f.executions).toEqual([]);
+  } finally { f.dispose(); }
+});
+
 test('drafts from quoted promise facts, keeps edits and saved mail, then returns to the exact reader', async ({ page }, info) => {
   await page.setViewportSize({ width: 390, height: 844 }); const f = await boot(page);
   try {

@@ -1,3 +1,4 @@
+import { isDeliveryReportHeader, parseDeliveryReport } from './delivery-report.js';
 /** Phase D (D-106) — Gmail REST provider (Commit 14).
  *
  *  Implements `MailProvider` against the Gmail REST API v1 directly —
@@ -47,6 +48,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
+import { parsedReplyAutomation } from './reply-automation.js';
 import { simpleParser } from 'mailparser';
 import type { AddressObject, ParsedMail } from 'mailparser';
 import { IngredientError } from '@recued/ingredients';
@@ -356,6 +358,8 @@ export const canonicalizeGmail = async (
   }
   const rfc822 = base64UrlDecode(msg.raw);
   const parsed = await simpleParser(rfc822);
+  const isReport = isDeliveryReportHeader(parsed.headerLines.map(header => [header.key, header.line.slice(header.line.indexOf(':') + 1)] as const));
+  const deliveryReport = isReport ? await parseDeliveryReport(rfc822) : undefined;
   const labels = msg.labelIds ?? [];
   const internalDate = msg.internalDate ? Number(msg.internalDate) : 0;
   const attachments = parsedAttachmentParts(parsed);
@@ -380,6 +384,8 @@ export const canonicalizeGmail = async (
     from: parsed.from ? firstAddress(parsed.from) : '',
     from_name: mailParsedFromName(parsed.from),
     headers: mailParsedHeaderMap(parsed),
+    reply_automation: parsedReplyAutomation(parsed),
+    ...(isReport ? { delivery_report: deliveryReport, delivery_report_unverified: !deliveryReport } : {}),
     to: addressToStringList(parsed.to),
     cc: addressToStringList(parsed.cc),
     subject: parsed.subject ?? '',

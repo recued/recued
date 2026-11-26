@@ -30,8 +30,7 @@ const openResult = async (page: Page, surface: Surface, recorded = true, resultK
     : `${HARNESS_URL}?packs=installed&${query}#packs/installed-mail`);
   await page.waitForFunction(() => window.__app?.ready === true);
   if (surface === 'recipes') {
-    await page.locator('[data-recued-recipes-card="autorun-live-1"]')
-      .getByRole('button', { name: /Open .+ details/ }).click();
+    await page.locator('[data-recued-recipes-card="autorun-live-1"]').press('Enter');
   }
   if (surface === 'packs' && resultKind === 'editable-grid') {
     await expect(page.locator('.recipes-result-panel [data-recued-run-summary]')).toBeVisible();

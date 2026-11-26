@@ -8,7 +8,7 @@
  *  A kind the authoring schema accepts with no case here fails too. */
 import { describe, expect, it, vi } from 'vitest';
 import {
-  BRIDGE_ACTIONS, BROWSER_ACT_STEPS_ARGUMENT_SCHEMA, bridgeRunsCommand, kernelOpForBackingSlug,
+  BRIDGE_ACTIONS, BROWSER_ACT_STEPS_ARGUMENT_SCHEMA, bridgeRunsCommand, isHorizontalScrollDirection, kernelOpForBackingSlug,
   type BridgeAction, type BridgeCapabilityProfile, type BridgeResult,
 } from '@recued/contracts';
 import type { ResolvedCall } from '@recued/ingredients';
@@ -34,7 +34,7 @@ const answer = (request: DispatchRequest): Record<string, unknown> => {
     case 'open_tab': return { ...base, page: '8:DOC2', url: String(args.url ?? URL0) };
     case 'inspect': case 'reread': return { ...base, html: HTML, truncated: false };
     case 'describe': return { ...base, role: 'textbox', label: 'Name', protected: false };
-    case 'fill': return { ...base, filled: true, value: args.value };
+    case 'fill': return { ...base, ...(args.delivery === 'paste' ? { pasted: true } : { filled: true, value: args.value }) };
     case 'pick': return { ...base, picked: args.pick };
     case 'click': return { ...base, clicked: 1 };
     case 'press': return { ...base, pressed: true };
@@ -44,8 +44,10 @@ const answer = (request: DispatchRequest): Record<string, unknown> => {
     case 'scroll': return { ...base, scrolled: true, screen: 2, screens: 3 };
     case 'close_tab': return { closed: true };
     case 'hover': return { ...base, hovered: true };
+    case 'drag': return { ...base, dropped: true };
     case 'download_file': return { ...base, address: 'https://shop.example/f.pdf', filename: 'f.pdf', mime_type: 'application/pdf', size: 3, data: 'YWJj' };
-    case 'upload_file': return { ...base, attached: true };
+    case 'upload_file': return { ...base, ...(request.args.delivery === 'drop' ? { dropped: 'f.pdf' } : { attached: true }) };
+    case 'upload_files': return { ...base, [request.args.delivery === 'drop' ? 'dropped' : 'attached']: ['f.pdf', 'g.pdf'] };
     default: return { ...base };
   }
 };
@@ -82,6 +84,11 @@ const leastBridge = (commands: readonly BrowserCommand[]): BridgeCapabilityProfi
     offscreen_supported: true, alarms_supported: true, supported_actions: [...actions],
     row_checks: commands.some((one) => one.args.within !== undefined),
     structural_reads: commands.some((one) => one.args.preserve_structure === true),
+    horizontal_scroll: commands.some(one => one.action === 'scroll' && isHorizontalScrollDirection(one.args.to)),
+    generated_download_wait: commands.some(one => one.args.download_wait_ms !== undefined),
+    double_click: commands.some(one => one.args.click_count === 2),
+    file_drop: commands.some(one => one.args.delivery === 'drop'),
+    text_paste: commands.some(one => one.args.delivery === 'paste'),
     guarded_links: false };
 };
 
@@ -97,13 +104,16 @@ const ACT: Array<[string, unknown[]]> = [
   ['type in a row', [{ do: 'type', text: 'Note', value: 'x', within: { text: ['Bob'] } }]],
   ['type in a row, sending', [{ do: 'type', text: 'Note', value: 'x', submit: true, within: { text: ['Bob'] } }]],
   ['type with success_when', [{ do: 'type', ref: 'e2', value: 'Bob', success_when: { shows: 'h1' } }]],
+  ['click and wait for a generated file', [{ do: 'click', ref: 'e1', download_wait: 3 }]],
   ['click', [{ do: 'click', ref: 'e1' }]],
+  ['double-click', [{ do: 'click', ref: 'e1', count: 2 }]],
   ['click by text', [{ do: 'click', text: 'Send' }]],
   ['click in a row', [{ do: 'click', text: 'Open', within: { text: ['Bob'] } }]],
   ['click with success_when', [{ do: 'click', ref: 'e1', success_when: { shows: 'h1' } }]],
   ['click with fail_when', [{ do: 'click', ref: 'e1', fail_when: { shows: '.error' } }]],
   ['click with then_read', [{ do: 'click', ref: 'e1', then_read: 'main' }]],
   ['press', [{ do: 'press', ref: 'e2', key: 'Enter' }]],
+  ['seek media, then read', [{ do: 'seek', ref: 'e3', at_seconds: 7.5, then_read: '#checkpoint' }]],
   ['submit', [{ do: 'submit', ref: 'e2' }]],
   ['wait a while', [{ do: 'wait', seconds: 1 }, { do: 'read' }]],
   ['wait for an element', [{ do: 'wait', selector: 'h1', seconds: 2 }, { do: 'read' }]],
@@ -120,16 +130,21 @@ const ACT: Array<[string, unknown[]]> = [
   ['table', [{ do: 'table' }]],
   ['scroll', [{ do: 'scroll' }]],
   ['scroll an element', [{ do: 'scroll', ref: 'e4' }]],
+  ['scroll a panel right', [{ do: 'scroll', ref: 'e4', to: 'right' }]],
   ['go', [{ do: 'go', address: 'https://shop.example/next' }]],
   ['go, then read', [{ do: 'go', address: 'https://shop.example/next', then_read: 'main' }]],
   ['back', [{ do: 'back' }]],
   ['reload', [{ do: 'reload' }]],
   ['close', [{ do: 'close' }]],
   ['hover by text', [{ do: 'hover', text: 'Send' }]],
+  ['drag onto an observed element', [{ do: 'drag', ref: 'e5', drop: { selector: '#lane' } }]],
   ['download', [{ do: 'download', ref: 'e10' }]],
   ['download by text', [{ do: 'download', text: 'Invoice PDF' }]],
   ['download an address', [{ do: 'download', address: 'https://shop.example/f.pdf' }]],
   ['upload', [{ do: 'upload', ref: 'e9', file: `file:${'a'.repeat(32)}` }]],
+  ['upload a selection', [{ do: 'upload', ref: 'e9', files: [`file:${'a'.repeat(32)}`, `file:${'b'.repeat(32)}`] }]],
+  ['drop a selection', [{ do: 'upload', ref: 'e9', delivery: 'drop', files: [`file:${'a'.repeat(32)}`, `file:${'b'.repeat(32)}`] }]],
+  ['paste supplied text', [{ do: 'type', ref: 'e9', value: 'a\tb\nc\td', delivery: 'paste' }]],
   ['a tab by its address', [{ url: 'https://shop.example/other', do: 'read' }]],
 ];
 const SINGLE: Array<[string, Record<string, unknown>]> = [
@@ -137,7 +152,7 @@ const SINGLE: Array<[string, Record<string, unknown>]> = [
   ['dom-write', { page: PAGE, ref: 'e2', value: 'Bob' }], ['dom-click', { page: PAGE, ref: 'e1' }],
   ['dom-inspect', { page: PAGE }], ['dom-tabs', {}], ['dom-open', { address: 'https://shop.example/x' }],
   ['dom-wait', { page: PAGE, selector: 'h1' }], ['dom-table', { page: PAGE }], ['dom-screenshot', { page: PAGE }],
-  ['dom-scroll', { page: PAGE }], ['dom-download', { page: PAGE, ref: 'e10' }],
+  ['dom-scroll', { page: PAGE }], ['dom-scroll', { page: PAGE, to: 'left' }], ['dom-download', { page: PAGE, ref: 'e10' }],
 ];
 
 const runsAll = (sent: ReadonlyArray<{ action: BridgeAction; args: Record<string, unknown> }>, listed: readonly BrowserCommand[]) =>
@@ -171,9 +186,35 @@ describe('D-402 slice H3b — what a step sends, read before the run', () => {
   it('a step known only at the run (its steps a setting) has no list, and a Bridge with every action runs any list', () => {
     expect(browserStepCommands('core.dom.act', { steps: '{{config.steps}}' })).toBeUndefined();
     expect(browserStepCommands('core.dom.act', { steps: [{ do: 'teleport' }] })).toBeUndefined();
-    const every: BridgeCapabilityProfile = { ...leastBridge([]), supported_actions: [...BRIDGE_ACTIONS], row_checks: true, structural_reads: true };
+    const every: BridgeCapabilityProfile = { ...leastBridge([]), supported_actions: [...BRIDGE_ACTIONS], row_checks: true,
+      structural_reads: true, horizontal_scroll: true, generated_download_wait: true, double_click: true, file_drop: true, text_paste: true };
     for (const [, steps] of ACT) for (const one of browserStepCommands('core.dom.act', { steps })!) {
       expect(bridgeRunsCommand(every, one.action, one.args)).toBe(true);
     }
+  });
+
+  it('requires explicit download-wait support before offering a batch with an export click', () => {
+    const listed = browserStepCommands('core.dom.act', { steps: [{ do: 'click', ref: 'e1', download_wait: 3 }] })!;
+    const click = listed.find(one => one.action === 'click')!;
+    expect(click.args).toMatchObject({ download_wait_ms: 3_000 });
+    expect(bridgeRunsCommand({ ...leastBridge(listed), generated_download_wait: undefined }, click.action, click.args)).toBe(false);
+    expect(bridgeRunsCommand(leastBridge(listed), click.action, click.args)).toBe(true);
+  });
+
+  it('requires double-click support before offering the batch', () => {
+    const listed = browserStepCommands('core.dom.act', { steps: [{ do: 'click', ref: 'e1', count: 2 }] })!;
+    const click = listed.find(one => one.action === 'click')!;
+    expect(click.args.click_count).toBe(2);
+    expect(bridgeRunsCommand({ ...leastBridge(listed), double_click: undefined }, click.action, click.args)).toBe(false);
+    expect(bridgeRunsCommand(leastBridge(listed), click.action, click.args)).toBe(true);
+  });
+
+  it('requires file drop support before offering an explicit drop', () => {
+    const listed = browserStepCommands('core.dom.act', { steps: [{ do: 'upload', ref: 'e9',
+      file: `file:${'a'.repeat(32)}`, delivery: 'drop' }] })!;
+    const upload = listed.find(one => one.action === 'upload_file')!;
+    expect(upload.args.delivery).toBe('drop');
+    expect(bridgeRunsCommand({ ...leastBridge(listed), file_drop: undefined }, upload.action, upload.args)).toBe(false);
+    expect(bridgeRunsCommand(leastBridge(listed), upload.action, upload.args)).toBe(true);
   });
 });

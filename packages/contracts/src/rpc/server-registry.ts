@@ -1,3 +1,4 @@
+import type { MailFollowUp, MailFollowUpStart, MailFollowUpReschedule, MailFollowUpGet, MailFollowUpPage, MailFollowUpList, MailFollowUpReplyTarget, MailFollowUpReplyNotification } from '../mail-follow-up.js';
 /** Extension ↔ recued-server rpc method registry.
  *
  *  Mirrors the method table in `backend/server/src/ws-server.ts`. When
@@ -1234,6 +1235,7 @@ export interface RecipeRunFacts {
 }
 
 export interface ServerExecuteResponse {
+  mail_follow_up?: import('../mail-follow-up-send.js').MailFollowUpSendIntent;
   /** Exact persisted audit anchor for this execution. Absent for unaudited runs. */
   run_id?: string;
   recipe_id: string;
@@ -1644,6 +1646,27 @@ export type ServerRpcRegistry = {
   // D-261 owner control plane. Never exported through the MCP trampoline.
   'preapproval.capabilities': RpcMethodSpec<void, PreapprovalCapabilities>;
   'mail.drafts.create': RpcMethodSpec<MailDraftCreateRequest, MailDraft>;
+  'mail.follow_up.get': RpcMethodSpec<{ mail_ref: import('../reminder.js').ReminderMailReference }, MailFollowUpGet>;
+  'mail.follow_up.start': RpcMethodSpec<MailFollowUpStart, MailFollowUp>;
+  'mail.follow_up.check': RpcMethodSpec<{ id: string }, MailFollowUp>;
+  'mail.follow_up.cancel': RpcMethodSpec<{ id: string; expected_revision: number }, MailFollowUp>;
+  'mail.follow_up.reschedule': RpcMethodSpec<MailFollowUpReschedule, MailFollowUp>;
+  'mail.follow_up.replacement.create': RpcMethodSpec<import('../mail-follow-up.js').MailFollowUpReplacementCreate, MailFollowUp>;
+  'mail.follow_up.delivery_report.get': RpcMethodSpec<{ id: string }, MailFollowUpReplyTarget>;
+  'mail.follow_up.reply.get': RpcMethodSpec<{ id: string }, MailFollowUpReplyTarget>;
+  'mail.follow_up.reply_notification.set': RpcMethodSpec<MailFollowUpReplyNotification, MailFollowUp>;
+  'mail.follow_up.list': RpcMethodSpec<MailFollowUpList | undefined, MailFollowUpPage>;
+  'mail.follow_up.send.capabilities': RpcMethodSpec<undefined, {
+    available: boolean; scheduled?: boolean; waiting_for?: boolean;
+    scheduled_replacement_task?: boolean; scheduled_follow_up_task?: boolean; scheduled_no_reply?: boolean;
+  }>;
+  'mail.follow_up.task.get': RpcMethodSpec<{ id: string }, import('../mail-follow-up-task.js').MailFollowUpTaskView>;
+  'mail.follow_up.task.context': RpcMethodSpec<{ watch_id: string; draft_id: string }, import('../mail-follow-up-task.js').MailFollowUpTaskContext>;
+  'mail.follow_up.task.set': RpcMethodSpec<import('../mail-follow-up-task.js').MailFollowUpTaskSet, MailFollowUp>;
+  'mail.follow_up.task.create': RpcMethodSpec<import('../mail-follow-up-task.js').MailFollowUpTaskCreate, MailFollowUp>;
+  'mail.follow_up.task.list': RpcMethodSpec<{ tasks: import('../mail-follow-up-task.js').MailFollowUpTaskRef[] }, import('../mail-follow-up-task.js').MailFollowUpTaskLinks>;
+  'mail.follow_up.send.get': RpcMethodSpec<{ id: string }, import('../mail-follow-up-send.js').MailFollowUpSendIntent | null>;
+  'mail.follow_up.send.cancel': RpcMethodSpec<{ id: string; expected_revision: number }, import('../mail-follow-up-send.js').MailFollowUpSendIntent>;
   'mail.work.list': RpcMethodSpec<MailWorkListRequest | undefined, MailWorkListResult>;
   'mail.work.get': RpcMethodSpec<{ id: string }, MailWorkDetail>;
   'mail.work.create': RpcMethodSpec<MailWorkCreateRequest, MailWorkDetail>;
@@ -2427,6 +2450,9 @@ export type ServerRpcRegistry = {
     ExecutionListQuery,
     ExecutionListResponse
   >;
+  /** Paired-client search of run identifiers and recipe names. Never searches
+   * inputs, outputs, configuration, error details, or source credentials. */
+  'execution.search': RpcMethodSpec<import('../execution-rpc.js').ExecutionSearchRequest, import('../execution-rpc.js').ExecutionSearchResponse>;
   /** D-174 Runs/Audit detail for one `run_id`. Joins the audit row,
    *  provenance links, redacted checkpoint approvals, run errors, and
    *  the Tier-1 gateway honest-degrade marker. Local-UI / paired-client
@@ -2668,6 +2694,11 @@ export type ServerRpcRegistry = {
   'recipe.get': RpcMethodSpec<
     { recipe_id: string },
     { recipe: ServerRecipeFullEntry | null }
+  >;
+
+  /** Run the installed Daily Ops starter with one explicit calendar and reviewed recipe identity. */
+  'recipe.focus_blocks.preview': RpcMethodSpec<
+    import('../focus-block-starter.js').FocusBlocksPreviewRequest, ServerExecuteResponse
   >;
 
   /** R2 build step 4c.1 — derived recipe runnability (recipe-identity doc
@@ -3195,6 +3226,8 @@ export type ServerRpcRegistry = {
     {
       recipe_id?: string;
       recipe?: unknown;
+      /** Paired owner compose only; does not change send authority. */
+      mail_follow_up?: import('../mail-follow-up-send.js').MailFollowUpSendRequest;
       config?: Record<string, unknown>;
       /** D-222 host-derived output-filter provenance. */
       invocation?: RecipeInvocation;
@@ -6597,6 +6630,12 @@ export type ServerRpcRegistry = {
   'work_entity.commitment.cancel': RpcMethodSpec<
     { id: string }, { entity: Extract<import('../work-entities.js').WorkEntity, { _kind: 'commitment' }> }
   >;
+  'work_entity.refund_credits.read': RpcMethodSpec<
+    import('../refund-credits.js').RefundCreditsRead, import('../refund-credits.js').RefundCreditsView
+  >;
+  'work_entity.refund_credits.change': RpcMethodSpec<
+    import('../refund-credits.js').RefundCreditsChange, import('../refund-credits.js').RefundCreditsView
+  >;
   /** D-174 #22 — delete one entity by `(kind, id)`; default tombstone.
    *  Emits a `deleted` warehouse event through the dispatcher path. */
   'work_entity.delete': RpcMethodSpec<
@@ -6643,6 +6682,18 @@ export type ServerRpcRegistry = {
   'records.kind.list': RpcMethodSpec<{ owner: RecordsPackRef }, { kinds: RecordsKindSummary[] }>;
   'records.search': RpcMethodSpec<RecordsOwnerSearchRequest, RecordsSearchResult>;
   'records.get': RpcMethodSpec<RecordsOwnerGetRequest, RecordsOwnerGetResponse>;
+  'records.decision_watch.accounts': RpcMethodSpec<
+    { query: string }, { accounts: import('../customer-decision-watch.js').CustomerAccountChoice[] }
+  >;
+  'records.decision_watch.read': RpcMethodSpec<
+    import('../customer-decision-watch.js').CustomerDecisionRef, import('../customer-decision-watch.js').CustomerDecisionWatchView
+  >;
+  'records.decision_watch.change': RpcMethodSpec<
+    import('../customer-decision-watch.js').CustomerDecisionWatchChange, import('../customer-decision-watch.js').CustomerDecisionWatchView
+  >;
+  'records.decision_watch.reviews': RpcMethodSpec<
+    void, { reviews: import('../customer-decision-watch.js').CustomerDecisionReview[] }
+  >;
   'records.delete': RpcMethodSpec<
     RecordsOwnerDeleteRequest,
     { deleted: true; id: string; revision: number }
@@ -9061,6 +9112,10 @@ export const SERVER_RPC_METHODS = [
   'local_undo.decide',
   'preapproval.capabilities',
   'mail.drafts.create',
+  'mail.follow_up.get', 'mail.follow_up.start', 'mail.follow_up.check', 'mail.follow_up.cancel', 'mail.follow_up.reschedule', 'mail.follow_up.list',
+  'mail.follow_up.send.capabilities', 'mail.follow_up.send.get', 'mail.follow_up.send.cancel',
+  'mail.follow_up.task.get', 'mail.follow_up.task.set', 'mail.follow_up.task.list', 'mail.follow_up.task.create', 'mail.follow_up.task.context',
+  'mail.follow_up.reply.get', 'mail.follow_up.delivery_report.get', 'mail.follow_up.replacement.create', 'mail.follow_up.reply_notification.set',
   'mail.work.list',
   'mail.work.get',
   'mail.work.create',
@@ -9201,6 +9256,7 @@ export const SERVER_RPC_METHODS = [
   // The by-id companion. Local-UI only, same posture as `recipe.list` — not in
   // MCP_TOOL_CATALOG.
   'recipe.get',
+  'recipe.focus_blocks.preview',
   // R2 build step 4c.1 — derived recipe runnability read surface. Per-pair /
   // local-UI only; NOT in MCP_TOOL_CATALOG (same posture as `recipe.list` —
   // runnability discloses connection/capability topology, which stays off the
@@ -9617,6 +9673,7 @@ export const SERVER_RPC_METHODS = [
   'execution.recent',
   // D-174 Runs/Audit read seam for the webclient `#runs` route.
   'execution.list',
+  'execution.search',
   'execution.get',
   'execution.action.get',
   'execution.action.list',
@@ -9719,6 +9776,8 @@ export const SERVER_RPC_METHODS = [
   'work_entity.task.mark_done',
   'work_entity.commitment.fulfill',
   'work_entity.commitment.cancel',
+  'work_entity.refund_credits.read',
+  'work_entity.refund_credits.change',
   'work_entity.delete',
   // Accepted visitor intake responses — owner Data browser only.
   'form_response.list',
@@ -9731,6 +9790,10 @@ export const SERVER_RPC_METHODS = [
   'records.kind.list',
   'records.search',
   'records.get',
+  'records.decision_watch.accounts',
+  'records.decision_watch.read',
+  'records.decision_watch.change',
+  'records.decision_watch.reviews',
   'records.delete',
   'records.quota.set',
   'records.quota.set_global',

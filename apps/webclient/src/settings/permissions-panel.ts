@@ -511,9 +511,11 @@ export const mountPermissionsPanel = (
   catalogRecovery.appendChild(catalogRetry);
   if (canCreate) panel.appendChild(catalogRecovery);
   const root = doc.createElement('div');
+  root.className = 'perm-layout';
   panel.appendChild(root);
   const createHost = doc.createElement('div');
   const inventoryHost = doc.createElement('div');
+  inventoryHost.className = 'perm-inventory';
   root.appendChild(createHost);
   root.appendChild(inventoryHost);
 
@@ -674,7 +676,6 @@ export const mountPermissionsPanel = (
     if (disposed) return;
     clearChildren(createHost);
 
-    // The create form (when enabled) sits above the inventory.
     renderCreateForm();
     // A picker read must not replace an existing rule's confirmation or
     // action while the owner is using it.
@@ -682,6 +683,11 @@ export const mountPermissionsPanel = (
     clearChildren(inventoryHost);
 
     if (!canManageOverrides) return;
+
+    const heading = doc.createElement('h3');
+    heading.className = 'perm-inventory-heading';
+    heading.textContent = 'Existing rules';
+    inventoryHost.appendChild(heading);
 
     // A list error surfaces as a chip ABOVE any still-visible cards — a
     // transient re-list failure shows the chip without wiping the inventory
@@ -1192,6 +1198,7 @@ export const mountPermissionsPanel = (
  *  isn't mounted. The Contracts route joins this into its `<style>` bundle. */
 export const PERMISSIONS_PANEL_STYLES = `
 
+[data-recued-permissions-panel] .perm-inventory-heading { display: none; }
 [data-recued-permissions-panel] .perm-catalog-recovery {
   display: flex;
   align-items: center;

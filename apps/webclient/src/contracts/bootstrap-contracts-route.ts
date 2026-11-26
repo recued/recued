@@ -49,13 +49,15 @@ import {
 } from '@recued/ui-shared';
 import { PRIMITIVE_STYLES } from '@recued/ui-shared/primitives';
 import { renderActionLabel } from '@recued/ui-shared/icon-render';
-import { serializeShellRoute } from '../shell/route.js';
+import { parseShellRoute, serializeShellRoute } from '../shell/route.js';
 import { createHierarchicalHistory } from '../shell/hierarchical-navigation.js';
+import { focusListTarget, readListScroll, restoreListScroll, type ListScrollPosition } from '../shell/list-preview-continuity.js';
 import {
   CONTRACTS_LIST_TABS,
   contractDetailAddress,
   contractsListAddress,
   isContractsListTab,
+  parseContractsAddress,
   unparentedContractDetailAddress,
   type ContractsAddress,
   type ContractsListTab,
@@ -117,6 +119,13 @@ import {
 import { CONTRACTS_DETAIL_STYLES } from './contracts-detail-styles.js';
 import {
   mountPermissionsPanel,
+  PERMISSIONS_CREATE_APPROVAL_ATTR,
+  PERMISSIONS_CREATE_FORM_ATTR,
+  PERMISSIONS_CREATE_INGREDIENT_ATTR,
+  PERMISSIONS_CREATE_MAXRISK_ATTR,
+  PERMISSIONS_CREATE_OPERATION_ATTR,
+  PERMISSIONS_CREATE_SAVE_ATTR,
+  PERMISSIONS_OVERRIDE_CARD_ATTR,
   PERMISSIONS_PANEL_STYLES,
   type PermissionsPanelMount,
 } from '../settings/permissions-panel.js';
@@ -231,6 +240,12 @@ export const CONTRACTS_ROUTE_PAGER_ATTR = 'data-recued-contracts-pager';
 export const CONTRACTS_ROUTE_PAGE_STATUS_ATTR = 'data-recued-contracts-page-status';
 export const CONTRACTS_ROUTE_PAGE_PREVIOUS_ATTR = 'data-recued-contracts-page-previous';
 export const CONTRACTS_ROUTE_PAGE_NEXT_ATTR = 'data-recued-contracts-page-next';
+
+const CONTRACTS_PREVIEW_MEDIA = '(min-width: 1280px) and (hover: hover) and (pointer: fine)';
+const CONTRACTS_PREVIEW_ATTR = 'data-recued-contracts-preview';
+const CONTRACTS_PREVIEW_OPEN_ATTR = 'data-recued-contracts-preview-open';
+const CONTRACTS_PINNED_SELF_ATTR = 'data-recued-contracts-pinned-self';
+const CONTRACTS_RULES_OPEN_ATTR = 'data-recued-contracts-rules-open';
 
 // ── Connect tab (delta 2) ───────────────────────────────────────────
 /** The Connect tab's content host (snippets + the contract-credential panel). */
@@ -529,6 +544,7 @@ const CONTRACTS_ROUTE_CHROME_STYLES = `
 [${CONTRACTS_ROUTE_HOST_ATTR}] .contracts-inventory-section {
   margin: 0 0 24px;
 }
+[${CONTRACTS_ROUTE_HOST_ATTR}] .contracts-list-toolbar { display: contents; }
 [${CONTRACTS_ROUTE_HOST_ATTR}] .contracts-list-tabs {
   display: flex;
   gap: 4px;
@@ -702,6 +718,171 @@ const CONTRACTS_ROUTE_CHROME_STYLES = `
   cursor: default;
 }
 
+[${CONTRACTS_PREVIEW_ATTR}], [${CONTRACTS_PINNED_SELF_ATTR}]:empty { display: none; }
+@media ${CONTRACTS_PREVIEW_MEDIA} {
+  [${CONTRACTS_ROUTE_LIST_PANEL_ATTR}]:is([data-tab="customer"], :has(> .contracts-list-workspace)) {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    column-gap: 16px;
+  }
+  [${CONTRACTS_ROUTE_LIST_PANEL_ATTR}]:is([data-tab="customer"], :has(> .contracts-list-workspace)) > * { grid-column: 1 / -1; }
+  [${CONTRACTS_ROUTE_LIST_PANEL_ATTR}]:is([data-tab="customer"], :has(> .contracts-list-workspace))
+    > .contracts-section-title { grid-area: 1 / 1; }
+  [${CONTRACTS_ROUTE_LIST_PANEL_ATTR}]:is([data-tab="customer"], :has(> .contracts-list-workspace))
+    > .contracts-section-title + .contracts-section-copy { grid-area: 2 / 1; }
+  [${CONTRACTS_ROUTE_LIST_PANEL_ATTR}]:has(> .contracts-list-workspace)
+    > .contracts-new-wrap,
+  [${CONTRACTS_ROUTE_LIST_PANEL_ATTR}][data-tab="customer"] > .contracts-seller-link {
+    grid-area: 1 / 2 / 3 / 3;
+    align-self: center;
+    margin: 0;
+  }
+  [${CONTRACTS_ROUTE_LIST_PANEL_ATTR}][data-tab="customer"] > .contracts-seller-link {
+    border: 1px solid var(--border);
+    border-radius: var(--wc-radius, 9px);
+    padding-inline: 12px;
+    font-weight: 600;
+  }
+  [${CONTRACTS_ROUTE_LIST_PANEL_ATTR}][data-tab="customer"] > .contracts-seller-link + .contracts-section-copy {
+    margin-top: 12px;
+  }
+  [${CONTRACTS_ROUTE_LIST_PANEL_ATTR}][data-tab="customer"]
+    > [${CONTRACTS_ROUTE_PAGER_ATTR}]:has([${CONTRACTS_ROUTE_PAGE_PREVIOUS_ATTR}][disabled] + [${CONTRACTS_ROUTE_PAGE_NEXT_ATTR}][disabled]) {
+    display: none;
+  }
+  [${CONTRACTS_ROUTE_HOST_ATTR}] .contracts-list-workspace {
+    display: grid;
+    grid-template-columns: minmax(300px, 38%) minmax(0, 1fr);
+    block-size: clamp(300px, calc(100dvh - 310px), 720px);
+    gap: 16px;
+    margin-top: 12px;
+  }
+  .contracts-list-workspace:has([${CONTRACTS_PINNED_SELF_ATTR}]):has([${CONTRACTS_ROUTE_LIST_ATTR}]:empty) {
+    block-size: auto;
+    min-block-size: 172px;
+  }
+  [${CONTRACTS_ROUTE_HOST_ATTR}] .contracts-list-workspace:has(> [${CONTRACTS_PREVIEW_ATTR}]:empty):not(:has(> [${CONTRACTS_ROUTE_NEW_FORM_ATTR}])) {
+    grid-template-columns: minmax(0, 1fr);
+    block-size: auto;
+  }
+  [${CONTRACTS_ROUTE_HOST_ATTR}] .contracts-roster,
+  [${CONTRACTS_PREVIEW_ATTR}] {
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
+    border: 1px solid var(--border);
+    border-radius: var(--wc-radius, 9px);
+    background: var(--surface);
+  }
+  [${CONTRACTS_ROUTE_HOST_ATTR}] .contracts-roster {
+    display: grid;
+    grid-area: 1 / 1;
+    grid-template-rows: minmax(0, 1fr) auto;
+  }
+  .contracts-roster > .contracts-section-copy { padding: 12px; }
+  .contracts-roster:has(> [${CONTRACTS_PINNED_SELF_ATTR}]) { grid-template-rows: auto minmax(0, 1fr) auto; }
+  [${CONTRACTS_PINNED_SELF_ATTR}] {
+    list-style: none;
+    margin: 0;
+    padding: 6px;
+    border-bottom: 1px solid var(--border);
+  }
+  .contracts-roster > [${CONTRACTS_ROUTE_LIST_ATTR}] {
+    align-content: start;
+    overflow: auto;
+    overscroll-behavior: contain;
+    scrollbar-gutter: stable;
+    gap: 4px;
+    margin: 0;
+    padding: 6px;
+  }
+  .contracts-roster [${CONTRACTS_ROUTE_ROW_ATTR}] {
+    min-height: 46px;
+    padding: 8px 12px;
+    border-color: transparent;
+    background: var(--surface);
+  }
+  .contracts-roster [${CONTRACTS_ROUTE_ROW_ATTR}]:hover { background: var(--surface-subtle); }
+  .contracts-roster [${CONTRACTS_ROUTE_ROW_ATTR}][aria-current="true"] {
+    border-color: var(--accent);
+    background: var(--accent-weak);
+  }
+  .contracts-roster [${CONTRACTS_ROUTE_ROW_ATTR}]:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: -2px;
+  }
+  .contracts-roster :is(.contracts-row-meta, [${CONTRACTS_ROUTE_BADGE_ATTR}]) { display: none; }
+  .contracts-roster [${CONTRACTS_ROUTE_BADGE_ATTR}][data-kind="door"] {
+    display: inline-block;
+    flex-shrink: 0;
+  }
+  .contracts-roster .contracts-row-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .contracts-list-workspace [${CONTRACTS_ROUTE_PILL_ATTR}][data-state="active"] {
+    color: var(--ok, var(--fg));
+    background: var(--ok-soft, var(--surface-sunk));
+    border: 1px solid var(--border);
+  }
+  .contracts-roster > [${CONTRACTS_ROUTE_PAGER_ATTR}] {
+    flex-wrap: wrap;
+    margin: 0;
+    border-top: 1px solid var(--border);
+    padding: 8px 12px;
+  }
+  [${CONTRACTS_PREVIEW_ATTR}] {
+    display: grid;
+    grid-area: 1 / 2;
+    align-content: start;
+    overflow: auto;
+    overscroll-behavior: contain;
+    gap: 16px;
+    padding: 18px;
+  }
+  [${CONTRACTS_PREVIEW_ATTR}]:empty,
+  .contracts-list-workspace:has(> [${CONTRACTS_ROUTE_NEW_FORM_ATTR}]) > [${CONTRACTS_PREVIEW_ATTR}] { display: none; }
+  [${CONTRACTS_PREVIEW_ATTR}]:has(> .contracts-section-copy:only-child) { place-content: center; text-align: center; }
+  [${CONTRACTS_PREVIEW_ATTR}] .contracts-preview-head {
+    display: flex;
+    align-items: start;
+    flex-wrap: wrap;
+    gap: 8px 12px;
+  }
+  [${CONTRACTS_PREVIEW_ATTR}] h3 { flex: 1; margin: 0; min-width: 0; font-size: 18px; overflow-wrap: anywhere; }
+  [${CONTRACTS_PREVIEW_ATTR}] dl {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: baseline;
+    gap: 10px 18px;
+    margin: 0;
+    font-size: 13px;
+  }
+  [${CONTRACTS_PREVIEW_ATTR}] dt { color: var(--muted); }
+  [${CONTRACTS_PREVIEW_ATTR}] dd { margin: 0; overflow-wrap: anywhere; }
+  [${CONTRACTS_PREVIEW_ATTR}] dd > .contracts-link { padding-inline: 0; }
+  [${CONTRACTS_PREVIEW_ATTR}] .contracts-preview-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+  [${CONTRACTS_PREVIEW_ATTR}] .contracts-preview-actions > * {
+    box-sizing: border-box;
+    display: inline-flex;
+    align-items: center;
+    min-height: 40px;
+    padding: 8px 12px;
+    border: 1px solid var(--border);
+    border-radius: var(--wc-radius, 9px);
+    background: var(--surface);
+    color: var(--fg);
+    font: inherit;
+    font-size: 13px;
+    text-decoration: none;
+    cursor: pointer;
+  }
+  [${CONTRACTS_PREVIEW_ATTR}] .contracts-preview-actions > [${CONTRACTS_PREVIEW_OPEN_ATTR}] {
+    border-color: var(--accent);
+    background: var(--accent);
+    color: var(--on-accent);
+  }
+  [${CONTRACTS_PREVIEW_OPEN_ATTR}][aria-disabled="true"] { opacity: 0.6; }
+  [${CONTRACTS_PREVIEW_ATTR}] .contracts-preview-actions > :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+}
+
 /* ── DETAIL ─────────────────────────────────────────────────────── */
 [${CONTRACTS_ROUTE_BACK_ATTR}] {
   box-sizing: border-box;
@@ -865,19 +1046,6 @@ const CONTRACTS_ROUTE_CHROME_STYLES = `
   font-size: 13px;
   color: var(--danger, #b3261e);
 }
-[${CONTRACTS_ROUTE_RULES_ATTR}] {
-  margin-top: 24px;
-  padding: 14px;
-  border: 1px solid var(--border);
-  border-radius: var(--wc-radius-lg, 10px);
-  background: var(--surface);
-}
-[${CONTRACTS_ROUTE_RULES_ATTR}] > summary {
-  min-height: 44px;
-  padding: 10px 0;
-  font-weight: 600;
-  cursor: pointer;
-}
 [${CONTRACTS_ROUTE_DETAIL_ATTR}] .contracts-door-hint {
   flex-basis: 100%;
   font-size: 12px;
@@ -970,6 +1138,10 @@ const CONTRACTS_ROUTE_CHROME_STYLES = `
   gap: 10px;
   margin: 4px 0 12px;
 }
+[${CONTRACTS_ROUTE_HOST_ATTR}] .contracts-new-wrap:where(:has(> [${CONTRACTS_ROUTE_NEW_BUTTON_ATTR}][aria-expanded="true"]):not(:has(> [${CONTRACTS_ROUTE_NEW_FORM_ATTR}]))) {
+  margin-bottom: 10px;
+}
+[${CONTRACTS_ROUTE_HOST_ATTR}] .contracts-list-workspace > [${CONTRACTS_ROUTE_NEW_FORM_ATTR}] { margin-bottom: 12px; }
 [${CONTRACTS_ROUTE_NEW_BUTTON_ATTR}] {
   justify-self: start;
   appearance: none;
@@ -1001,6 +1173,10 @@ const CONTRACTS_ROUTE_CHROME_STYLES = `
   min-width: 0;
   max-width: 100%;
 }
+.contracts-new-heading,
+.contracts-new-period-label { display: none; }
+.contracts-new-limits { display: grid; gap: 10px; }
+.contracts-new-use-limit { display: grid; gap: 4px; }
 [${CONTRACTS_ROUTE_NEW_FORM_ATTR}] .contracts-new-field {
   display: grid;
   min-width: 0;
@@ -1071,6 +1247,38 @@ const CONTRACTS_ROUTE_CHROME_STYLES = `
 }
 [${CONTRACTS_ROUTE_NEW_ERROR_ATTR}]:empty {
   display: none;
+}
+@media ${CONTRACTS_PREVIEW_MEDIA} {
+  [${CONTRACTS_ROUTE_HOST_ATTR}] .contracts-list-workspace > [${CONTRACTS_ROUTE_NEW_FORM_ATTR}] {
+    grid-area: 1 / 2;
+    align-content: start;
+    min-height: 0;
+    overflow: auto;
+    overscroll-behavior: contain;
+    margin: 0;
+    gap: 8px;
+    padding: 16px;
+    border-radius: var(--wc-radius, 9px);
+    background: var(--surface);
+  }
+  [${CONTRACTS_ROUTE_NEW_FORM_ATTR}] .contracts-new-heading {
+    display: block;
+    margin: 0;
+    font-size: 17px;
+    font-weight: 650;
+  }
+  [${CONTRACTS_ROUTE_NEW_FORM_ATTR}] .contracts-new-period-label { display: block; }
+  [${CONTRACTS_ROUTE_NEW_FORM_ATTR}] .contracts-new-limits {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1.4fr);
+    align-items: end;
+    gap: 12px;
+  }
+  [${CONTRACTS_ROUTE_NEW_FORM_ATTR}] .contracts-new-use-limit { display: contents; }
+  [${CONTRACTS_ROUTE_NEW_FORM_ATTR}] :is(input, select) {
+    min-width: 0;
+    height: 40px;
+  }
+  [${CONTRACTS_ROUTE_NEW_FORM_ATTR}] :is([${CONTRACTS_ROUTE_NEW_DOOR_ATTR}], [${CONTRACTS_ROUTE_NEW_SUBMIT_ATTR}]) { min-height: 36px; }
 }
 
 /* ── Connect tab ────────────────────────────────────────────────── */
@@ -1159,6 +1367,120 @@ const CONTRACTS_ROUTE_CHROME_STYLES = `
 }
 `;
 
+const CONTRACTS_RULES_STYLES = `
+[${CONTRACTS_ROUTE_RULES_ATTR}] {
+  margin-top: 24px;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--wc-radius-lg, 10px);
+  background: var(--surface);
+}
+[${CONTRACTS_ROUTE_RULES_ATTR}] > summary {
+  min-height: 44px;
+  padding: 10px 0;
+  font-weight: 600;
+  cursor: pointer;
+}
+[${CONTRACTS_ROUTE_HOST_ATTR}] :is(.contracts-rules-action, .contracts-rules-head) {
+  display: none;
+}
+@media ${CONTRACTS_PREVIEW_MEDIA} {
+  [${CONTRACTS_ROUTE_HOST_ATTR}] .contracts-list-toolbar:has(> [${CONTRACTS_RULES_OPEN_ATTR}]) {
+    display: flex;
+    justify-content: space-between;
+    align-items: end;
+    gap: 16px;
+    margin-bottom: 18px;
+    border-bottom: 1px solid var(--border);
+  }
+  [${CONTRACTS_ROUTE_HOST_ATTR}] .contracts-list-toolbar:has(> [${CONTRACTS_RULES_OPEN_ATTR}]) > .contracts-list-tabs {
+    margin: 0;
+    border: 0;
+  }
+  [${CONTRACTS_ROUTE_HOST_ATTR}] .contracts-rules-action {
+    display: inline-flex;
+    align-items: center;
+    min-height: 36px;
+    padding: 6px 12px;
+    border: 1px solid var(--border);
+    border-radius: var(--wc-radius, 9px);
+    background: var(--surface);
+    color: var(--fg);
+    font: inherit;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  [${CONTRACTS_RULES_OPEN_ATTR}] { margin-bottom: 4px; }
+  .contracts-rules-action:hover:not(:disabled) { background: var(--surface-subtle); }
+  .contracts-rules-action:disabled { opacity: 0.6; cursor: default; }
+  .contracts-rules-action:focus-visible, .contracts-rules-head h2:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+  [${CONTRACTS_ROUTE_BODY_ATTR}]:has(> [${CONTRACTS_ROUTE_RULES_ATTR}][open]) > :not([${CONTRACTS_ROUTE_RULES_ATTR}]),
+  [${CONTRACTS_ROUTE_RULES_ATTR}]:not([open]),
+  [${CONTRACTS_ROUTE_RULES_ATTR}] > summary { display: none; }
+  [${CONTRACTS_ROUTE_RULES_ATTR}] {
+    margin: 0;
+    padding: 0;
+    border: 0;
+    background: transparent;
+  }
+  [${CONTRACTS_ROUTE_HOST_ATTR}] .contracts-rules-head {
+    position: sticky;
+    inset-block-start: 0;
+    z-index: 1;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 4px 0 10px;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg, var(--surface));
+  }
+  .contracts-rules-head h2 { margin: 0; font-size: 17px; font-weight: 650; }
+  [${CONTRACTS_ROUTE_RULES_ATTR}] > .contracts-section-copy { max-width: 78ch; margin: 12px 0 16px; }
+  [${CONTRACTS_ROUTE_RULES_ATTR}] .perm-layout:has([${PERMISSIONS_CREATE_FORM_ATTR}]) {
+    display: grid;
+    grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
+    align-items: start;
+    gap: 16px;
+  }
+  [${CONTRACTS_ROUTE_RULES_ATTR}] [${PERMISSIONS_CREATE_FORM_ATTR}] {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px 12px;
+    margin: 0;
+    padding: 14px;
+  }
+  [${CONTRACTS_ROUTE_RULES_ATTR}] [${PERMISSIONS_CREATE_FORM_ATTR}] > * {
+    grid-column: 1 / -1;
+    min-width: 0;
+  }
+  [${CONTRACTS_ROUTE_RULES_ATTR}] .perm-create-field:has(:is(
+    [${PERMISSIONS_CREATE_INGREDIENT_ATTR}], [${PERMISSIONS_CREATE_OPERATION_ATTR}],
+    [${PERMISSIONS_CREATE_APPROVAL_ATTR}], [${PERMISSIONS_CREATE_MAXRISK_ATTR}]
+  )) { grid-column: auto; align-self: end; }
+  [${CONTRACTS_ROUTE_RULES_ATTR}] [${PERMISSIONS_CREATE_SAVE_ATTR}] { justify-self: start; }
+  [${CONTRACTS_ROUTE_RULES_ATTR}] .perm-inventory {
+    padding: 14px;
+    border: 1px solid var(--border);
+    border-radius: var(--wc-radius, 9px);
+    background: var(--surface);
+    overflow-wrap: anywhere;
+  }
+  [${CONTRACTS_ROUTE_RULES_ATTR}] .perm-inventory-heading {
+    display: block;
+    margin: 0;
+    font-size: 13px;
+    font-weight: 650;
+  }
+  [${CONTRACTS_ROUTE_RULES_ATTR}] [${PERMISSIONS_OVERRIDE_CARD_ATTR}]:last-child { margin-bottom: 0; }
+  [${CONTRACTS_ROUTE_RULES_ATTR}] .perm-facet { white-space: normal; }
+}
+`;
+
 export const CONTRACTS_ROUTE_STYLES = [
   PRIMITIVE_STYLES,
   SUGGESTED_RULES_PANEL_STYLES,
@@ -1172,6 +1494,7 @@ export const CONTRACTS_ROUTE_STYLES = [
   // Bundle their scoped CSS here so a cold Contracts deep link does not render
   // either as native controls in one collapsed line.
   PERMISSIONS_PANEL_STYLES,
+  CONTRACTS_RULES_STYLES,
   CONTRACT_KEY_PANEL_STYLES,
   CONTRACTS_DETAIL_STYLES,
 ].join('\n');
@@ -1316,6 +1639,7 @@ export interface ContractsRoute {
   getActiveTab(): string | null;
   /** The active inventory tab in LIST mode. */
   getListTab(): ContractsListTab;
+  navigateDeepLinkAfterLeave(hash: string): boolean;
   /** D-327 — the key panel mounted in the open DETAIL's Connect tab, or null
    *  (a built-in/template detail, or the key callers aren't wired). It is built
    *  once per ordinary contract DETAIL and kept alive across tabs so a
@@ -1355,6 +1679,14 @@ const SELF_ROW: ContractRowVM = {
   is_self: true,
   lifecycle_state: 'active',
 };
+
+const findContractOnPage = (
+  rows: readonly ContractRowVM[],
+  tab: ContractsListTab,
+  contractId: string | null,
+): ContractRowVM | undefined => tab === 'built-in' && contractId === OWNER_CONTRACT_ID
+  ? SELF_ROW
+  : rows.find((row) => row.contract_id === contractId);
 
 const toRowVM = (c: ContractDefinitionView): ContractRowVM => ({
   contract_id: c.contract_id,
@@ -1603,7 +1935,10 @@ const appendBadgeAndPill = (
   badge.setAttribute(CONTRACTS_ROUTE_BADGE_ATTR, '');
   badge.setAttribute('data-kind', badgeKind);
   host.appendChild(badge);
+  appendLifecyclePill(doc, host, row);
+};
 
+const appendLifecyclePill = (doc: Document, host: HTMLElement, row: ContractRowVM): void => {
   const pill = makeEl(
     doc,
     'span',
@@ -1620,7 +1955,7 @@ const appendSnippet = (
   doc: Document,
   host: HTMLElement,
   snippet: McpClientSnippet,
-): void => {
+): HTMLElement => {
   const card = doc.createElement('section');
   card.setAttribute(CONTRACTS_ROUTE_SNIPPET_ATTR, snippet.id);
   const label = makeEl(doc, 'h3', 'contracts-snippet-label', snippet.label);
@@ -1630,6 +1965,7 @@ const appendSnippet = (
   card.appendChild(pre);
   for (const note of snippet.notes ?? []) card.appendChild(snippetNote(doc, 'contracts-snippet-note', note));
   host.appendChild(card);
+  return card;
 };
 
 /** One line under a snippet: its text, then any command or config as code. */
@@ -1660,6 +1996,30 @@ const DOOR_TYPE_LABELS: Record<DoorType, string> = {
 const clearChildren = (node: HTMLElement): void => {
   while (node.firstChild !== null) node.removeChild(node.firstChild);
 };
+
+const isModifiedClick = (event: MouseEvent | undefined): boolean =>
+  event !== undefined && ((typeof event.button === 'number' && event.button !== 0)
+    || event.metaKey || event.ctrlKey || event.altKey || event.shiftKey);
+
+interface NewContractEditor {
+  pending(): boolean;
+  dismissForPreview(): boolean;
+}
+
+interface ContractListReturn {
+  contractId: string;
+  tab: ContractsListTab;
+  listHash: string;
+  key: string | null;
+  rosterScroll: ListScrollPosition | undefined;
+  pageScroll: ListScrollPosition;
+  rows: readonly ContractRowVM[];
+  cursor: string | undefined;
+  previousCursors: Array<string | undefined>;
+  nextCursor: string | null;
+  total: number;
+  loadError: string | null;
+}
 
 // ════════════════════════════════════════════════════════════════
 // Mount
@@ -1731,11 +2091,17 @@ export const bootstrapContractsRoute = (
   let selectedContractId: string | null = null;
   let activeTab: string | null = null;
   let inPageDetailParent: ContractsListTab | null = null;
+  const view = doc.defaultView;
+  const previewMedia = view?.matchMedia?.(CONTRACTS_PREVIEW_MEDIA);
+  const canPreview = () => previewMedia?.matches === true;
+  let previewedContractId: string | null = null;
+  let listReturn: ContractListReturn | null = null;
+  let closingDetail = false;
   const contractsHistory = createHierarchicalHistory({
     initial: initialContractId === undefined
       ? contractsListAddress(activeListTab)
       : unparentedContractDetailAddress(initialContractId, initialContractTab),
-    history: () => doc.defaultView?.history,
+    history: () => view?.history,
     onCommit: (address) => opts.onHashSync?.(address.hash),
   });
   let loadErrorMessage: string | null = null;
@@ -1744,6 +2110,7 @@ export const bootstrapContractsRoute = (
   let nextListCursor: string | null = null;
   let totalContractsOnTab = 0;
   let listPageBusy = false;
+  let newContractEditor: NewContractEditor | null = null;
   let pendingPageFocus: 'previous' | 'next' | null = null;
   let suggestedRulesPanel: SuggestedRulesPanelMount | null = null;
   let standingTasksPanel: ReturnType<typeof mountStandingTasksPanel> | null = null;
@@ -1756,6 +2123,7 @@ export const bootstrapContractsRoute = (
   let rulesPanel: PermissionsPanelMount | null = null;
   let detailGrantPanel: ContractGrantsPanelMount | null = null;
   let permissionPanel: ReturnType<typeof mountPermissionRegressionPanel> | null = null;
+  let onDetailViewportChange: (() => void) | null = null;
   let routeOwnedMutationCount = 0;
 
   const beginRouteOwnedMutation = (): (() => void) => {
@@ -1785,6 +2153,8 @@ export const bootstrapContractsRoute = (
     || detailGrantPanel?.hasInFlightWork() === true;
 
   const clearBody = (): void => {
+    onDetailViewportChange = null;
+    newContractEditor = null;
     permissionPanel?.dispose(); permissionPanel = null;
     standingTasksPanel?.dispose(); standingTasksPanel = null;
     if (suggestedRulesPanel !== null) {
@@ -1908,15 +2278,25 @@ export const bootstrapContractsRoute = (
   // agreement at once. It sat on each agreement's Connect tab as "Extra rules",
   // where it read as that agreement's own. It lives here, beside the inventory,
   // collapsed and loaded on first open (most owners never write one).
-  const mountRules = (): void => {
+  const mountRules = (toolbar: HTMLElement): void => {
     const list = opts.permissionsListOverridesCaller;
     const remove = opts.permissionsDeleteOverrideCaller;
     if (list === undefined || remove === undefined) return;
+    const title = 'Rules for every contract';
     const section = doc.createElement('details');
     section.setAttribute(CONTRACTS_ROUTE_RULES_ATTR, '');
+    section.id = 'recued-contracts-global-rules';
     const summary = doc.createElement('summary');
-    summary.textContent = 'Rules for every contract';
+    summary.textContent = title;
     section.appendChild(summary);
+    const workspaceHeader = makeEl(doc, 'header', 'contracts-rules-head');
+    const workspaceTitle = makeEl(doc, 'h2', undefined, title);
+    workspaceTitle.tabIndex = -1;
+    const back = makeEl(doc, 'button', 'contracts-rules-action', 'Back to inventory');
+    back.type = 'button';
+    workspaceHeader.appendChild(workspaceTitle);
+    workspaceHeader.appendChild(back);
+    section.appendChild(workspaceHeader);
     section.appendChild(makeEl(
       doc,
       'p',
@@ -1927,10 +2307,8 @@ export const bootstrapContractsRoute = (
     ));
     const host = doc.createElement('div');
     section.appendChild(host);
-    section.addEventListener('toggle', () => {
-      // `clearBody` disposes the panel and drops this section on navigation, so
-      // a late toggle can only come from the list it was built for.
-      if (!section.open || rulesPanel !== null || disposed || viewMode !== 'list') return;
+    const loadRules = (): void => {
+      if (!section.open || rulesPanel !== null || disposed || section.parentNode !== body) return;
       rulesPanel = mountPermissionsPanel({
         host,
         document: doc,
@@ -1943,7 +2321,49 @@ export const bootstrapContractsRoute = (
           ? { runListCatalogOperations: opts.permissionsListCatalogOperationsCaller }
           : {}),
       });
+    };
+    const open = makeEl(doc, 'button', 'contracts-rules-action', title);
+    open.type = 'button';
+    open.setAttribute(CONTRACTS_RULES_OPEN_ATTR, '');
+    open.setAttribute('aria-controls', section.id);
+    open.setAttribute('aria-expanded', 'false');
+    if (listPageBusy) open.disabled = true;
+
+    // Keep the list and preview mounted under the rules workspace. A hidden
+    // scroll container can lose its offset, so save each scroll position here.
+    const roster = inventoryList();
+    const preview = body.querySelector<HTMLElement>(`[${CONTRACTS_PREVIEW_ATTR}]`);
+    let returnPosition: {
+      page: ListScrollPosition;
+      roster?: ListScrollPosition;
+      preview?: ListScrollPosition;
+    } | undefined;
+    open.addEventListener('click', () => {
+      if (disposed || section.parentNode !== body || listPageBusy) return;
+      returnPosition = {
+        page: readListScroll(opts.root),
+        ...(roster ? { roster: readListScroll(roster) } : {}),
+        ...(preview ? { preview: readListScroll(preview) } : {}),
+      };
+      section.open = true;
+      loadRules();
+      restoreListScroll(opts.root, { top: 0, left: 0 });
+      focusListTarget(workspaceTitle);
     });
+    back.addEventListener('click', () => {
+      section.open = false;
+      focusListTarget(open);
+      restoreListScroll(opts.root, returnPosition?.page);
+      if (roster) restoreListScroll(roster, returnPosition?.roster);
+      if (preview) restoreListScroll(preview, returnPosition?.preview);
+      returnPosition = undefined;
+    });
+    section.addEventListener('toggle', () => {
+      open.setAttribute('aria-expanded', String(section.open));
+      if (!section.open) returnPosition = undefined;
+      loadRules();
+    });
+    toolbar.appendChild(open);
     body.appendChild(section);
   };
 
@@ -1957,7 +2377,8 @@ export const bootstrapContractsRoute = (
   const mountNewContractAction = (
     parent: HTMLElement,
     mintCaller: PermissionsMintContractCaller,
-  ): void => {
+    workspace: HTMLElement | null,
+  ): NewContractEditor => {
     const wrap = makeEl(doc, 'div', 'contracts-new-wrap');
 
     const button = makeEl(
@@ -1970,6 +2391,7 @@ export const bootstrapContractsRoute = (
     button.setAttribute(CONTRACTS_ROUTE_NEW_BUTTON_ATTR, '');
     button.setAttribute('aria-expanded', 'false');
     button.setAttribute('aria-controls', 'recued-contracts-new-contract-form');
+    if (listPageBusy) button.setAttribute('disabled', '');
     wrap.appendChild(button);
 
     const form = makeEl(doc, 'div', 'contracts-new-form');
@@ -1978,6 +2400,7 @@ export const bootstrapContractsRoute = (
     form.setAttribute('id', 'recued-contracts-new-contract-form');
     form.setAttribute('role', 'group');
     form.setAttribute('aria-label', 'New contract');
+    form.appendChild(makeEl(doc, 'h3', 'contracts-new-heading', 'New contract'));
 
     const nameField = makeEl(doc, 'label', 'contracts-new-field');
     nameField.appendChild(makeEl(doc, 'span', undefined, 'Contract name'));
@@ -2017,6 +2440,8 @@ export const bootstrapContractsRoute = (
     }
     form.appendChild(doorRow);
 
+    const limits = makeEl(doc, 'div', 'contracts-new-limits');
+    const useLimit = makeEl(doc, 'div', 'contracts-new-use-limit');
     const capField = makeEl(doc, 'label', 'contracts-new-field');
     capField.appendChild(makeEl(doc, 'span', undefined, 'Use limit, if you want one'));
     const capInput = makeEl(doc, 'input');
@@ -2025,16 +2450,22 @@ export const bootstrapContractsRoute = (
     capInput.setAttribute('placeholder', 'unlimited');
     capInput.setAttribute(CONTRACTS_ROUTE_NEW_CAP_ATTR, '');
     capField.appendChild(capInput);
+    useLimit.appendChild(capField);
+    const capPeriodField = makeEl(doc, 'label', 'contracts-new-field');
+    const capPeriodLabel = 'Refill period';
+    capPeriodField.appendChild(makeEl(doc, 'span', 'contracts-new-period-label', capPeriodLabel));
     const capPeriod = makeEl(doc, 'select');
     capPeriod.setAttribute(CONTRACTS_ROUTE_NEW_CAP_PERIOD_ATTR, '');
+    capPeriod.setAttribute('aria-label', capPeriodLabel);
     for (const period of USAGE_CAP_PERIODS) {
       const option = makeEl(doc, 'option', undefined, USAGE_CAP_PERIOD_OPTION_LABEL[period]);
       option.setAttribute('value', period);
       capPeriod.appendChild(option);
     }
     (capPeriod as unknown as { value: string }).value = 'total';
-    capField.appendChild(capPeriod);
-    form.appendChild(capField);
+    capPeriodField.appendChild(capPeriod);
+    useLimit.appendChild(capPeriodField);
+    limits.appendChild(useLimit);
 
     const expiryField = makeEl(doc, 'label', 'contracts-new-field');
     expiryField.appendChild(makeEl(doc, 'span', undefined, 'Expiry (optional)'));
@@ -2042,7 +2473,8 @@ export const bootstrapContractsRoute = (
     expiryInput.setAttribute('type', 'datetime-local');
     expiryInput.setAttribute(CONTRACTS_ROUTE_NEW_EXPIRY_ATTR, '');
     expiryField.appendChild(expiryInput);
-    form.appendChild(expiryField);
+    limits.appendChild(expiryField);
+    form.appendChild(limits);
 
     const error = makeEl(doc, 'p');
     error.setAttribute(CONTRACTS_ROUTE_NEW_ERROR_ATTR, '');
@@ -2061,25 +2493,61 @@ export const bootstrapContractsRoute = (
 
     let submitting = false;
     let formOpen = false;
+    let returnScroll: {
+      page: ListScrollPosition;
+      roster?: ListScrollPosition;
+      preview?: ListScrollPosition;
+    } | undefined;
+    const setFormOpen = (open: boolean): void => {
+      formOpen = open;
+      button.setAttribute('aria-expanded', String(open));
+      button.textContent = open ? 'Cancel new contract' : '+ New contract';
+      if (!open) form.remove();
+      else if (workspace === null) wrap.appendChild(form);
+      else workspace.prepend(form);
+    };
+    const focusEditorField = (target: HTMLElement): void => {
+      focusListTarget(target);
+      if (canPreview()) target.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
+    };
     button.addEventListener('click', () => {
-      if (submitting) return;
-      formOpen = !formOpen;
-      button.setAttribute('aria-expanded', formOpen ? 'true' : 'false');
-      button.textContent = formOpen ? 'Cancel new contract' : '+ New contract';
+      if (submitting || listPageBusy || disposed || !body.contains(parent)) return;
+      const roster = inventoryList();
+      const preview = workspace?.querySelector<HTMLElement>(`[${CONTRACTS_PREVIEW_ATTR}]`);
       if (formOpen) {
-        wrap.appendChild(form);
-        nameInput.focus({ preventScroll: true });
-      } else {
-        form.remove();
+        setFormOpen(false);
+        focusListTarget(button);
+        restoreListScroll(opts.root, returnScroll?.page);
+        if (roster) restoreListScroll(roster, returnScroll?.roster);
+        if (preview) restoreListScroll(preview, returnScroll?.preview);
+        returnScroll = undefined;
+        return;
       }
+      if (canPreview()) {
+        returnScroll = {
+          page: readListScroll(opts.root),
+          ...(roster ? { roster: readListScroll(roster) } : {}),
+          ...(preview ? { preview: readListScroll(preview) } : {}),
+        };
+      }
+      setFormOpen(true);
+      focusEditorField(nameInput);
     });
 
+    const setPagerDisabled = (pending: boolean): void => {
+      for (const attr of [CONTRACTS_ROUTE_PAGE_PREVIOUS_ATTR, CONTRACTS_ROUTE_PAGE_NEXT_ATTR]) {
+        const control = parent.querySelector(`[${attr}]`);
+        if (!control || control.getAttribute('disabled') !== null) continue;
+        if (pending) control.setAttribute('aria-disabled', 'true');
+        else control.removeAttribute('aria-disabled');
+      }
+    };
     const doSubmit = async (): Promise<void> => {
-      if (submitting) return;
+      if (!formOpen || submitting || listPageBusy || disposed || !body.contains(parent)) return;
       const name = nameInput.value.trim();
       if (name.length === 0) {
         setError('Give this contract a name.');
-        nameInput.focus({ preventScroll: true });
+        focusEditorField(nameInput);
         return;
       }
       const doorTypes = SHOWN_DOOR_TYPES.filter((dt) => doorDraft[dt]);
@@ -2089,7 +2557,7 @@ export const bootstrapContractsRoute = (
         cap = Number(capRaw);
         if (!Number.isInteger(cap) || cap <= 0) {
           setError('The limit has to be a whole number above zero.');
-          capInput.focus({ preventScroll: true });
+          focusEditorField(capInput);
           return;
         }
       }
@@ -2099,7 +2567,7 @@ export const bootstrapContractsRoute = (
         const parsed = Date.parse(expiryRaw);
         if (Number.isNaN(parsed)) {
           setError('Type a real end date.');
-          expiryInput.focus({ preventScroll: true });
+          focusEditorField(expiryInput);
           return;
         }
         expiry = parsed;
@@ -2116,6 +2584,7 @@ export const bootstrapContractsRoute = (
       submit.setAttribute('aria-disabled', 'true');
       submit.setAttribute('aria-busy', 'true');
       button.setAttribute('aria-disabled', 'true');
+      setPagerDisabled(true);
       const releaseOwnership = beginRouteOwnedMutation();
       try {
         const request: MintContractRequest = {
@@ -2151,8 +2620,9 @@ export const bootstrapContractsRoute = (
         submit.removeAttribute('aria-disabled');
         submit.removeAttribute('aria-busy');
         button.removeAttribute('aria-disabled');
+        setPagerDisabled(false);
         setError(errMessage(err));
-        submit.focus({ preventScroll: true });
+        focusEditorField(submit);
       } finally {
         releaseOwnership();
       }
@@ -2162,9 +2632,166 @@ export const bootstrapContractsRoute = (
     });
 
     parent.appendChild(wrap);
+    return {
+      pending: () => submitting,
+      dismissForPreview: () => {
+        if (submitting) return false;
+        if (formOpen) setFormOpen(false);
+        returnScroll = undefined;
+        return true;
+      },
+    };
   };
 
-  const renderList = (): void => {
+  const inventoryList = () => body.querySelector<HTMLElement>(`[${CONTRACTS_ROUTE_LIST_ATTR}]`);
+  const findInventoryRow = (contractId: string): HTMLElement | undefined =>
+    Array.from(body.querySelectorAll<HTMLElement>(`[${CONTRACTS_ROUTE_ROW_ATTR}]`))
+      .find((row) => row.getAttribute(CONTRACTS_ROUTE_ROW_ID_ATTR) === contractId);
+
+  const positionSelfRow = (): void => {
+    if (activeListTab !== 'built-in') return;
+    const pinned = body.querySelector<HTMLElement>(`[${CONTRACTS_PINNED_SELF_ATTR}]`);
+    if (pinned === null) return;
+    const link = findInventoryRow(OWNER_CONTRACT_ID);
+    const item = link?.parentElement;
+    const host = canPreview() ? pinned : inventoryList();
+    if (!item || !host || item.parentElement === host) return;
+    const restoreFocus = doc.activeElement === link;
+    host.prepend(item);
+    if (restoreFocus) focusListTarget(link);
+  };
+
+  const openListContract = (row: ContractRowVM): void => {
+    if (listPageBusy || hasContractsInFlightWork()) return;
+    inPageDetailParent = activeListTab;
+    const address = contractDetailAddress(row.contract_id, activeListTab);
+    listReturn = null;
+    closingDetail = false;
+    if (canPreview()) {
+      const roster = inventoryList();
+      const rosterScroll = roster ? readListScroll(roster) : undefined;
+      const key = Math.random().toString(36).slice(2);
+      const listHash = view?.location?.hash || contractsHistory.current().hash;
+      const pageScroll = readListScroll(opts.root);
+      const result = contractsHistory.navigate(address, { state: { recuedContractListVisit: key } });
+      listReturn = {
+        contractId: row.contract_id,
+        tab: activeListTab,
+        listHash,
+        key: result.committed && result.mode === 'push' ? key : null,
+        rosterScroll,
+        pageScroll,
+        rows,
+        cursor: currentListCursor,
+        previousCursors: previousListCursors,
+        nextCursor: nextListCursor,
+        total: totalContractsOnTab,
+        loadError: loadErrorMessage,
+      };
+      previewedContractId = row.contract_id;
+    } else {
+      contractsHistory.navigate(address);
+    }
+    renderDetail(row);
+  };
+
+  const paintContractPreview = (): HTMLElement | null => {
+    const pane = body.querySelector<HTMLElement>(`[${CONTRACTS_PREVIEW_ATTR}]`);
+    if (pane === null) return null;
+    clearChildren(pane);
+    const desktop = canPreview();
+    const selected = desktop ? findContractOnPage(rows, activeListTab, previewedContractId) : undefined;
+    for (const anchor of body.querySelectorAll<HTMLElement>(`[${CONTRACTS_ROUTE_ROW_ATTR}]`)) {
+      if (desktop) anchor.setAttribute('aria-keyshortcuts', 'Space');
+      else anchor.removeAttribute('aria-keyshortcuts');
+      if (selected && anchor.getAttribute(CONTRACTS_ROUTE_ROW_ID_ATTR) === selected.contract_id) {
+        anchor.setAttribute('aria-current', 'true');
+      } else {
+        anchor.removeAttribute('aria-current');
+      }
+    }
+    if (selected === undefined) {
+      if (activeListTab === 'others' && rows.length === 0) return null;
+      const hint = activeListTab === 'built-in'
+        ? 'Select a contract to see its status and where to manage it.'
+        : activeListTab === 'customer'
+          ? 'Select a template to see how it is used.'
+          : 'Select a contract to see its status and limits.';
+      pane.appendChild(makeEl(doc, 'p', 'contracts-section-copy', hint));
+      return null;
+    }
+
+    const header = makeEl(doc, 'div', 'contracts-preview-head');
+    const title = makeEl(doc, 'h3', undefined, selected.display_name);
+    title.tabIndex = -1;
+    header.appendChild(title);
+    appendLifecyclePill(doc, header, selected);
+    pane.appendChild(header);
+
+    const facts = doc.createElement('dl');
+    const appendFact = (label: string, value: string | HTMLElement): void => {
+      const description = doc.createElement('dd');
+      description.append(value);
+      facts.appendChild(makeEl(doc, 'dt', undefined, label));
+      facts.appendChild(description);
+    };
+    const derived = anonymousDoorType(selected);
+    const customerTemplate = isCustomerTemplateRow(selected);
+    if (selected.is_self) {
+      appendFact('Source', 'Your Recued account');
+    } else if (customerTemplate) {
+      appendFact('When access is issued', 'Recued copies this template’s Ops and Entities permissions into the customer’s contract.');
+    } else if (derived !== null) {
+      const reception = derived === 'reception';
+      const manage = makeEl(doc, 'a', 'contracts-link', reception ? 'Reception endpoints' : 'Connections → Webhooks');
+      manage.setAttribute('href', reception
+        ? serializeShellRoute('reception', 'endpoints')
+        : serializeShellRoute('connections', 'webhooks'));
+      appendFact('Source', DERIVED_DOOR_BADGES[derived]);
+      appendFact('Purpose', DERIVED_DOOR_META[derived]);
+      appendFact('Manage in', manage);
+    } else {
+      const methods = selected.lifecycle_state === 'active'
+        ? backedDoorTypes(selected.door_types).map((door) => DOOR_TYPE_LABELS[door]) : [];
+      appendFact('Connection methods', methods.length === 0 ? 'None enabled' : methods.join(', '));
+      appendFact('Usage and expiry', limitsSummary(selected));
+    }
+    pane.appendChild(facts);
+
+    const actions = makeEl(doc, 'div', 'contracts-preview-actions');
+    const open = makeEl(doc, 'a', undefined, customerTemplate ? 'Open template' : 'Open contract');
+    open.setAttribute(CONTRACTS_PREVIEW_OPEN_ATTR, '');
+    open.setAttribute('href', contractDetailAddress(selected.contract_id, activeListTab).hash);
+    if (listPageBusy) open.setAttribute('aria-disabled', 'true');
+    open.addEventListener('click', (event) => {
+      if (isModifiedClick(event) || hasContractsInFlightWork()) return;
+      event.preventDefault();
+      if (canPreview() && pane.contains(open)) openListContract(selected);
+    });
+    const close = makeEl(doc, 'button', undefined, 'Close preview');
+    close.type = 'button';
+    close.addEventListener('click', closeContractPreview);
+    actions.append(open, close);
+    pane.appendChild(actions);
+    pane.scrollTop = 0;
+    return title;
+  };
+
+  const closeContractPreview = (): void => {
+    const previous = previewedContractId;
+    if (previous === null) return;
+    previewedContractId = null;
+    paintContractPreview();
+    focusListTarget(findInventoryRow(previous));
+  };
+
+  const previewContract = (row: ContractRowVM): void => {
+    if (newContractEditor?.dismissForPreview() === false) return;
+    previewedContractId = row.contract_id;
+    focusListTarget(paintContractPreview());
+  };
+
+  const renderList = (returnPosition?: ContractListReturn): void => {
     clearBody();
     viewMode = 'list';
     selectedContractId = null;
@@ -2244,7 +2871,9 @@ export const bootstrapContractsRoute = (
       tabLinks.push({ id: tab, link });
       listTabs.appendChild(link);
     }
-    body.appendChild(listTabs);
+    const toolbar = makeEl(doc, 'div', 'contracts-list-toolbar');
+    toolbar.appendChild(listTabs);
+    body.appendChild(toolbar);
 
     if (loadErrorMessage !== null) {
       const note = makeEl(
@@ -2275,24 +2904,18 @@ export const bootstrapContractsRoute = (
         );
         anchor.addEventListener('click', (event) => {
           const click = event as MouseEvent | undefined;
-          if (
-            (click !== undefined && (
-              (typeof click.button === 'number' && click.button !== 0)
-              || click.metaKey
-              || click.ctrlKey
-              || click.altKey
-              || click.shiftKey
-            ))
-            || hasContractsInFlightWork()
-          ) return;
+          const showPreview = canPreview() && click !== undefined && click.detail > 0;
+          if (isModifiedClick(click) || (!showPreview && hasContractsInFlightWork())) return;
           (event as (Event & { preventDefault?: () => void }) | undefined)
             ?.preventDefault?.();
-          inPageDetailParent = activeListTab;
-          contractsHistory.navigate(contractDetailAddress(
-            row.contract_id,
-            activeListTab,
-          ));
-          renderDetail(row);
+          if (listPageBusy) return;
+          if (showPreview) previewContract(row);
+          else openListContract(row);
+        });
+        anchor.addEventListener('keydown', (event) => {
+          if (event.key !== ' ' || !canPreview() || listPageBusy) return;
+          event.preventDefault();
+          previewContract(row);
         });
         if (anonymousDoorType(row) !== null) {
           anchor.setAttribute(CONTRACTS_ROUTE_ANONYMOUS_ATTR, '');
@@ -2356,8 +2979,6 @@ export const bootstrapContractsRoute = (
         previous.setAttribute('disabled', '');
       } else {
         previous.addEventListener('click', () => {
-          if (listPageBusy) return;
-          pendingPageFocus = 'previous';
           const prior = previousListCursors[previousListCursors.length - 1];
           void loadListPage(prior, 'previous');
         });
@@ -2381,8 +3002,6 @@ export const bootstrapContractsRoute = (
         next.setAttribute('disabled', '');
       } else {
         next.addEventListener('click', () => {
-          if (listPageBusy) return;
-          pendingPageFocus = 'next';
           void loadListPage(nextListCursor ?? undefined, 'next');
         });
       }
@@ -2390,7 +3009,13 @@ export const bootstrapContractsRoute = (
       host.appendChild(pager);
     };
 
-    if (activeListTab === 'built-in') {
+    const isBuiltIn = activeListTab === 'built-in';
+    const isCustomer = activeListTab === 'customer';
+    const mintCaller = !isBuiltIn && !isCustomer && opts.contractsListCaller !== undefined
+      ? opts.permissionsMintContractCaller : undefined;
+    const showPreviewPane = previewMedia !== undefined && (isBuiltIn || rows.length > 0 || mintCaller !== undefined);
+    const workspace = showPreviewPane ? makeEl(doc, 'div', 'contracts-list-workspace') : null;
+    if (isBuiltIn) {
       panel.appendChild(
         makeEl(doc, 'h2', 'contracts-section-title', 'Contracts Recued makes itself'),
       );
@@ -2403,13 +3028,7 @@ export const bootstrapContractsRoute = (
             + 'by those features. Change what they may do and read here.',
         ),
       );
-      const list = makeEl(doc, 'ul');
-      list.setAttribute(CONTRACTS_ROUTE_LIST_ATTR, '');
-      appendRows(list, [SELF_ROW, ...rows]);
-      panel.appendChild(list);
-      appendPager(panel, 'No contracts you look after', ' contracts you look after');
     } else {
-      const isCustomer = activeListTab === 'customer';
       panel.appendChild(
         makeEl(
           doc,
@@ -2431,48 +3050,72 @@ export const bootstrapContractsRoute = (
         ),
       );
       if (isCustomer) {
-        const sellerLink = doc.createElement('a');
-        sellerLink.className = 'contracts-link';
+        const sellerLink = makeEl(doc, 'a', 'contracts-link contracts-seller-link', 'Open Seller →');
         sellerLink.setAttribute('href', serializeShellRoute('settings', 'seller'));
-        sellerLink.textContent = 'Open Seller →';
         panel.appendChild(sellerLink);
-      } else if (
-        opts.permissionsMintContractCaller !== undefined
-        && opts.contractsListCaller !== undefined
-      ) {
-        mountNewContractAction(panel, opts.permissionsMintContractCaller);
+      } else if (mintCaller !== undefined) {
+        newContractEditor = mountNewContractAction(panel, mintCaller, workspace);
       }
+    }
 
-      if (rows.length === 0) {
-        panel.appendChild(
-          makeEl(
-            doc,
-            'p',
-            'contracts-section-copy',
-            isCustomer
-              ? 'No customer templates yet.'
-              : 'No other contracts on this page.',
-          ),
-        );
-      } else {
-        const list = makeEl(doc, 'ul');
-        list.setAttribute(CONTRACTS_ROUTE_LIST_ATTR, '');
-        appendRows(list, rows);
-        panel.appendChild(list);
-      }
+    const listHost = showPreviewPane ? makeEl(doc, 'div', 'contracts-roster') : panel;
+    if (showPreviewPane && isBuiltIn) {
+      const pinned = doc.createElement('ul');
+      pinned.setAttribute(CONTRACTS_PINNED_SELF_ATTR, '');
+      pinned.setAttribute('aria-label', 'Your contract');
+      listHost.appendChild(pinned);
+    }
+    if (isBuiltIn || rows.length > 0) {
+      const list = makeEl(doc, 'ul');
+      list.setAttribute(CONTRACTS_ROUTE_LIST_ATTR, '');
+      appendRows(list, isBuiltIn ? [SELF_ROW, ...rows] : rows);
+      listHost.appendChild(list);
+    } else {
+      listHost.appendChild(makeEl(doc, 'p', 'contracts-section-copy', isCustomer
+        ? 'No customer templates yet.'
+        : 'No other contracts on this page.'));
+    }
 
+    if (isBuiltIn) {
+      appendPager(listHost, 'No contracts you look after', ' contracts you look after');
+    } else {
       appendPager(
-        panel,
+        listHost,
         isCustomer ? 'No customer templates' : 'No other contracts',
       );
     }
+    if (workspace !== null) {
+      const pane = doc.createElement('section');
+      pane.setAttribute(CONTRACTS_PREVIEW_ATTR, '');
+      pane.setAttribute('aria-label', 'Contract preview');
+      pane.addEventListener('keydown', (event) => {
+        if (event.key !== 'Escape') return;
+        event.preventDefault();
+        closeContractPreview();
+      });
+      workspace.append(listHost, pane);
+      panel.appendChild(workspace);
+    }
 
     body.appendChild(panel);
+    positionSelfRow();
+    if (canPreview()) paintContractPreview();
 
     // Staged-trust proposals are user decisions, not contract inventory. Keep
     // their existing dormant-when-empty behavior after the active inventory.
     mountProposals();
-    mountRules();
+    mountRules(toolbar);
+
+    if (returnPosition !== undefined) {
+      const target = findInventoryRow(returnPosition.contractId) ?? heading;
+      if (target === heading) heading.tabIndex = -1;
+      focusListTarget(target);
+      restoreListScroll(opts.root, returnPosition.pageScroll);
+      const roster = inventoryList();
+      if (roster && canPreview()) restoreListScroll(roster, returnPosition.rosterScroll);
+      else target.scrollIntoView?.({ block: 'nearest' });
+      return;
+    }
 
     const requestedTabFocus = pendingListTabFocusByDocument.get(doc);
     if (requestedTabFocus !== undefined) {
@@ -2488,11 +3131,7 @@ export const bootstrapContractsRoute = (
     const returnFocusId = pendingListFocusByDocument.get(doc);
     if (returnFocusId !== undefined) {
       pendingListFocusByDocument.delete(doc);
-      const returnRow = Array.from(body.querySelectorAll(
-        `[${CONTRACTS_ROUTE_ROW_ATTR}]`,
-      )).find((candidate) =>
-        candidate.getAttribute(CONTRACTS_ROUTE_ROW_ID_ATTR) === returnFocusId,
-      ) as HTMLElement | undefined;
+      const returnRow = findInventoryRow(returnFocusId);
       if (returnRow !== undefined) {
         returnRow.focus({ preventScroll: true });
       } else {
@@ -2553,9 +3192,27 @@ export const bootstrapContractsRoute = (
       owner.focus({ preventScroll: true });
     }
     sibling?.setAttribute('disabled', '');
+    body.querySelector(`[${CONTRACTS_PREVIEW_OPEN_ATTR}]`)?.setAttribute('aria-disabled', 'true');
+    body.querySelector(`[${CONTRACTS_RULES_OPEN_ATTR}]`)?.setAttribute('disabled', '');
+    body.querySelector(`[${CONTRACTS_ROUTE_NEW_BUTTON_ATTR}]`)?.setAttribute('disabled', '');
+    body.querySelector(`[${CONTRACTS_ROUTE_NEW_SUBMIT_ATTR}]`)?.setAttribute('aria-disabled', 'true');
   };
 
-  const renderDetail = (row: ContractRowVM): void => {
+  const restorePreviewList = (position: ContractListReturn): void => {
+    closingDetail = false;
+    inPageDetailParent = null;
+    activeListTab = position.tab;
+    rows = position.rows;
+    currentListCursor = position.cursor;
+    previousListCursors = position.previousCursors;
+    nextListCursor = position.nextCursor;
+    totalContractsOnTab = position.total;
+    loadErrorMessage = position.loadError;
+    previewedContractId = position.contractId;
+    renderList(position);
+  };
+
+  const renderDetail = (row: ContractRowVM, wantedTab?: string): void => {
     clearBody();
     viewMode = 'detail';
     selectedContractId = row.contract_id;
@@ -2568,6 +3225,8 @@ export const bootstrapContractsRoute = (
     const back = doc.createElement('a');
     back.setAttribute(CONTRACTS_ROUTE_BACK_ATTR, '');
     const parentListTab = listTabForRow(row);
+    const previewVisit = listReturn?.contractId === row.contract_id ? listReturn : null;
+    const historyState = previewVisit?.key ? { recuedContractListVisit: previewVisit.key } : null;
     back.setAttribute('href', listTabRoute(parentListTab));
     back.textContent = `← Back to ${
       parentListTab === 'built-in'
@@ -2577,17 +3236,23 @@ export const bootstrapContractsRoute = (
           : 'Other contracts'
     }`;
     back.addEventListener('click', (event) => {
-      const click = event as MouseEvent | undefined;
-      if (
-        click !== undefined
-        && (
-          click.button !== 0
-          || click.metaKey
-          || click.ctrlKey
-          || click.altKey
-          || click.shiftKey
-        )
-      ) {
+      if (isModifiedClick(event)) return;
+      if (previewVisit && !hasContractsInFlightWork()) {
+        event.preventDefault();
+        if (closingDetail) return;
+        // Go through the owned list entry so Forward can reopen the same contract.
+        if (view && previewVisit.key && view.history.state?.recuedContractListVisit === previewVisit.key
+          && view.location.hash === contractsHistory.current().hash) {
+          try {
+            closingDetail = true;
+            view.history.back();
+            return;
+          } catch {
+            closingDetail = false;
+          }
+        }
+        contractsHistory.navigate(contractsListAddress(previewVisit.tab), { intent: 'replace' });
+        restorePreviewList(previewVisit);
         return;
       }
       pendingListFocusByDocument.set(doc, row.contract_id);
@@ -2625,8 +3290,7 @@ export const bootstrapContractsRoute = (
     // The L1 door toggle + Revoke mutate this contract's state, so the header
     // RE-RENDERS itself (`paintHead`) on each write — NOT the whole DETAIL — so
     // the kept-alive tab bodies (the Connect token, the grant panel) survive. The
-    // route is stateless (no live list), so the local `currentRow` is the only
-    // place to reflect a door/revoke edit until a Back-link remount reloads.
+    // summary is also carried back to the desktop list for an in-page visit.
     let currentRow = row;
     let doorBusy = false;
     let doorBusyType: DoorType | null = null;
@@ -3014,6 +3678,11 @@ export const bootstrapContractsRoute = (
     // carries in; the helpers above reference it only in deferred callbacks (the
     // grant-matrix `renderCell` → `runToggleEntry` forward-ref precedent).
     const paintHead = (): HTMLElement => {
+      if (previewVisit && selectedContractId === row.contract_id && currentRow !== row
+        && currentRow.contract_id === row.contract_id) {
+        rows = rows.map((entry) => entry.contract_id === currentRow.contract_id ? currentRow : entry);
+        previewVisit.rows = rows;
+      }
       const headingOwnedFocus = doc.activeElement === detailHeading;
       const activeHeadElement = doc.activeElement as HTMLElement | null;
       const focusedDoorTypeRaw = activeHeadElement?.tagName === 'INPUT'
@@ -3125,7 +3794,6 @@ export const bootstrapContractsRoute = (
     // The deep-link tab segment (`#contracts/<id>/<tab>`) seeds the landing tab
     // when valid; otherwise the first tab. The new-contract flow lands on
     // `connect` (an ordinary contract's first tab).
-    const wantedTab = initialContractTab;
     const wantedTabIsValid = wantedTab !== undefined
       && tabs.some((t) => t.id === wantedTab);
     activeTab = wantedTabIsValid ? wantedTab : (tabs[0]?.id ?? null);
@@ -3133,7 +3801,7 @@ export const bootstrapContractsRoute = (
       contractsHistory.navigate(contractDetailAddress(
         row.contract_id,
         parentListTab,
-      ), { intent: 'replace' });
+      ), { intent: 'replace', state: historyState });
     }
     const tabStrip = makeEl(doc, 'nav', 'contracts-tabs');
     tabStrip.setAttribute('role', 'tablist');
@@ -3163,7 +3831,7 @@ export const bootstrapContractsRoute = (
         ),
       );
       if (canMountContractCredential) {
-        const panelHost = doc.createElement('div');
+        const panelHost = makeEl(doc, 'div', 'contracts-connect-key');
         host.appendChild(panelHost);
         connectPanel = mountContractKeyPanel({
           host: panelHost,
@@ -3186,11 +3854,32 @@ export const bootstrapContractsRoute = (
           ...(opts.now !== undefined ? { now: opts.now } : {}),
         });
       }
+      const setup = makeEl(doc, 'div', 'contracts-connect-setup');
+      const picker = makeEl(doc, 'label', 'contracts-connect-picker');
+      const client = doc.createElement('select');
+      picker.appendChild(makeEl(doc, 'span', undefined, 'AI app'));
+      picker.appendChild(client);
+      setup.appendChild(picker);
+
       const grid = makeEl(doc, 'div', 'contracts-snippet-grid');
-      for (const snippet of buildMcpClientSnippets(opts.serverUrl)) {
-        appendSnippet(doc, grid, snippet);
-      }
-      host.appendChild(grid);
+      const snippets = buildMcpClientSnippets(opts.serverUrl);
+      const cards = snippets.map((snippet) => {
+        const option = doc.createElement('option');
+        option.value = snippet.id;
+        option.textContent = snippet.label;
+        client.appendChild(option);
+        return appendSnippet(doc, grid, snippet);
+      });
+      const updateSelection = (): void => {
+        for (const card of cards) {
+          card.setAttribute('data-selected', String(card.getAttribute(CONTRACTS_ROUTE_SNIPPET_ATTR) === client.value));
+        }
+      };
+      client.value = snippets[0]?.id ?? '';
+      updateSelection();
+      client.addEventListener('change', updateSelection);
+      setup.appendChild(grid);
+      host.appendChild(setup);
       if (!canMountContractCredential) {
         const note = makeEl(
           doc,
@@ -3252,15 +3941,71 @@ export const bootstrapContractsRoute = (
       return detailGrantPanel;
     };
 
+    const isApp = isAppContractRow(row);
+    const permissionCall = isApp ? opts.permissionWorkbenchCall : undefined;
+    const permissionHost = permissionCall ? makeEl(doc, 'details', 'contracts-permission-tests') : null;
+    const approvalCallers = isApp ? opts.callerPreapprovals : undefined;
+    const approvalHost = approvalCallers ? doc.createElement('section') : null;
+    const makeDetailPanel = (host: HTMLElement, id: string, label: string) => {
+      const button = makeEl(doc, 'button', 'contracts-detail-action', label);
+      host.id = id;
+      button.type = 'button';
+      button.setAttribute('aria-controls', id);
+      button.setAttribute('aria-expanded', 'false');
+      return { host, button, label };
+    };
+    const panels = {
+      permissions: permissionHost && makeDetailPanel(permissionHost, 'recued-contracts-permission-tests', 'Permission tests'),
+      approvals: approvalHost && makeDetailPanel(approvalHost, 'recued-contracts-app-preapprovals', 'Runs without asking'),
+    };
+    if (panels.approvals) panels.approvals.button.hidden = true;
+    type DetailPanel = keyof typeof panels;
+    let activeDetailPanel: DetailPanel | null = null;
+    let detailReturnScroll: ListScrollPosition | undefined;
+    // Follow the rendered entry when the viewport crosses the desktop breakpoint.
+    const showsDesktopEntry = (button: HTMLButtonElement): boolean => (button.getClientRects?.().length ?? 0) > 0;
+    const paintDetailActions = (): void => {
+      for (const [name, panel] of Object.entries(panels)) {
+        if (!panel) continue;
+        const open = name === activeDetailPanel;
+        panel.button.setAttribute('aria-expanded', String(open));
+        panel.button.textContent = open
+          ? `Back to ${tabs.find((tab) => tab.id === activeTab)?.label ?? 'grants'}`
+          : panel.label;
+      }
+    };
+    const setDetailPanel = (name: DetailPanel | null): void => {
+      activeDetailPanel = name;
+      if (name === null) detail.removeAttribute('data-recued-contracts-detail-panel');
+      else detail.setAttribute('data-recued-contracts-detail-panel', name);
+      if (permissionHost) permissionHost.open = name === 'permissions';
+      paintDetailActions();
+    };
+    const mountPermissionTests = (): void => {
+      if (!permissionCall || !permissionHost?.open || permissionPanel || disposed
+        || !body.contains(permissionHost) || selectedContractId !== row.contract_id) return;
+      permissionPanel = mountPermissionRegressionPanel({
+        host: permissionHost, contractId: row.contract_id, call: permissionCall,
+        ...(opts.beginPermissionWork ? { beginWork: opts.beginPermissionWork } : {}),
+        onActivated: () => { void detailGrantPanel?.refresh(); },
+      });
+    };
+
     const tabButtons: Array<{ id: string; btn: HTMLButtonElement }> = [];
     const selectTab = (id: string, syncAddress = true): void => {
+      const openPanel = activeDetailPanel === null ? null : panels[activeDetailPanel];
+      const wasReviewing = openPanel !== null && showsDesktopEntry(openPanel.button);
+      const returnScroll = wasReviewing && id === activeTab ? detailReturnScroll : undefined;
+      if (wasReviewing) setDetailPanel(null);
+      detailReturnScroll = undefined;
       activeTab = id;
+      paintDetailActions();
       if (syncAddress) {
         contractsHistory.navigate(contractDetailAddress(
           row.contract_id,
           parentListTab,
           id,
-        ), { intent: 'replace' });
+        ), { intent: 'replace', state: historyState });
       }
       for (const entry of tabButtons) {
         const selected = entry.id === id;
@@ -3294,6 +4039,10 @@ export const bootstrapContractsRoute = (
         }
       } else {
         tabBody.appendChild(makeEl(doc, 'p', undefined, tabPlaceholder(id)));
+      }
+      if (wasReviewing) {
+        if (returnScroll) restoreListScroll(opts.root, returnScroll);
+        else tabStrip.scrollIntoView({ block: 'nearest' });
       }
     };
 
@@ -3331,41 +4080,91 @@ export const bootstrapContractsRoute = (
       tabStrip.appendChild(btn);
     }
     const content = makeEl(doc, 'div', 'contracts-detail-content');
-    content.appendChild(tabStrip);
+    if (panels.permissions || panels.approvals) {
+      const toolbar = makeEl(doc, 'div', 'contracts-detail-toolbar');
+      toolbar.appendChild(tabStrip);
+      for (const name of ['permissions', 'approvals'] as const) {
+        const panel = panels[name];
+        if (!panel) continue;
+        const { button, host } = panel;
+        button.addEventListener('click', () => {
+          if (disposed || !showsDesktopEntry(button) || !body.contains(host)) return;
+          if (activeDetailPanel === name) {
+            setDetailPanel(null);
+            button.focus({ preventScroll: detailReturnScroll !== undefined });
+            restoreListScroll(opts.root, detailReturnScroll);
+            detailReturnScroll = undefined;
+            return;
+          }
+          if (activeDetailPanel === null) detailReturnScroll = readListScroll(opts.root);
+          setDetailPanel(name);
+          if (name === 'permissions') mountPermissionTests();
+          host.scrollIntoView({ block: 'start', inline: 'nearest' });
+          if (name === 'permissions') permissionPanel?.focusHeading();
+          else host.focus({ preventScroll: true });
+        });
+        toolbar.appendChild(button);
+      }
+      content.appendChild(toolbar);
+    } else {
+      content.appendChild(tabStrip);
+    }
     content.appendChild(tabBody);
     detail.appendChild(content);
     if (activeTab !== null) selectTab(activeTab, false);
 
-    // D-402 slice F4d (§7.9) — an AI app's page lists each recipe it runs without asking, with "End it"
-    // and "End all". Below the tabs, so it shows whichever is open; hidden while there is none.
-    if (opts.callerPreapprovals !== undefined && isAppContractRow(row)) {
-      const section = doc.createElement('section');
-      section.setAttribute(CONTRACTS_ROUTE_APP_PREAPPROVALS_ATTR, '');
+    if (approvalHost && approvalCallers && panels.approvals) {
+      const { button, label } = panels.approvals;
+      approvalHost.setAttribute(CONTRACTS_ROUTE_APP_PREAPPROVALS_ATTR, '');
+      approvalHost.setAttribute('aria-label', label);
+      approvalHost.tabIndex = -1;
+      approvalHost.hidden = true;
       appPreapprovalPanel = mountCallerPreapprovalPanel({
-        host: section,
+        host: approvalHost,
         document: doc,
-        callers: opts.callerPreapprovals,
+        callers: approvalCallers,
         only: { contract_id: row.contract_id },
         endAll: true,
-        heading: 'Runs without asking',
+        heading: label,
         intro: 'Recipes this app runs without asking you, because you answered “Always”. End one and it asks '
           + 'again from then on.',
+        onVisibilityChange: (visible) => {
+          const focused = doc.activeElement;
+          const wasReviewing = !visible && activeDetailPanel === 'approvals';
+          const wasDesktop = wasReviewing && showsDesktopEntry(button);
+          button.hidden = !visible;
+          if (wasReviewing) setDetailPanel(null);
+          if (!visible && (focused === button
+            || (wasDesktop && (focused === doc.body || approvalHost.contains(focused))))) {
+            tabButtons.find((entry) => entry.id === activeTab)?.btn.focus({ preventScroll: detailReturnScroll !== undefined });
+          }
+          if (wasReviewing) {
+            restoreListScroll(opts.root, detailReturnScroll);
+            detailReturnScroll = undefined;
+          }
+        },
         ...(opts.subscribe !== undefined ? { subscribe: opts.subscribe } : {}),
       });
-      detail.appendChild(section);
+      detail.appendChild(approvalHost);
     }
 
-    if (opts.permissionWorkbenchCall && !row.is_self && !isCustomerTemplateRow(row) && anonymousDoorType(row) === null) {
-      const permissionHost = doc.createElement('details');
-      const summary = doc.createElement('summary'); summary.textContent = 'Permission tests and reviewed grants'; permissionHost.append(summary);
+    if (permissionHost) {
+      const summary = makeEl(doc, 'summary', undefined, 'Permission tests and reviewed grants');
+      permissionHost.appendChild(summary);
       permissionHost.addEventListener('toggle', () => {
-        if (!permissionHost.open || permissionPanel || disposed || !body.contains(permissionHost) || selectedContractId !== row.contract_id) return;
-        permissionPanel = mountPermissionRegressionPanel({ host: permissionHost, contractId: row.contract_id, call: opts.permissionWorkbenchCall!,
-          ...(opts.beginPermissionWork ? { beginWork: opts.beginPermissionWork } : {}),
-          onActivated: () => { void detailGrantPanel?.refresh(); } });
+        if (permissionHost.open && activeDetailPanel !== 'permissions') setDetailPanel('permissions');
+        if (!permissionHost.open && activeDetailPanel === 'permissions') setDetailPanel(null);
+        mountPermissionTests();
       });
       detail.append(permissionHost);
     }
+    onDetailViewportChange = () => {
+      const panel = activeDetailPanel === null ? null : panels[activeDetailPanel];
+      if (panel === null) return;
+      if (!showsDesktopEntry(panel.button)) detailReturnScroll = undefined;
+      const focused = doc.activeElement;
+      if (focused && panel.host.contains(focused)) focused.scrollIntoView({ block: 'nearest' });
+    };
 
     body.appendChild(detail);
     // Exact contract navigation is asynchronous: the activating list row is
@@ -3373,6 +4172,50 @@ export const bootstrapContractsRoute = (
     // subject so keyboard and screen-reader users do not fall back to <body>.
     initialDetailHeading.focus();
   };
+
+  const navigateDeepLinkAfterLeave = (hash: string): boolean => {
+    const visit = listReturn;
+    if (!visit?.key || disposed || listPageBusy || hasContractsInFlightWork()) return false;
+    if (viewMode === 'detail' && selectedContractId === visit.contractId && hash === visit.listHash) {
+      contractsHistory.adopt({ ...contractsListAddress(visit.tab), hash });
+      restorePreviewList(visit);
+      return true;
+    }
+    if (viewMode !== 'list' || contractsHistory.current().hash !== visit.listHash
+      || view?.history.state?.recuedContractListVisit !== visit.key) return false;
+    const destination = parseContractsAddress(parseShellRoute(hash));
+    if (destination?.kind !== 'detail' || destination.contractId !== visit.contractId) return false;
+    const row = findContractOnPage(visit.rows, visit.tab, visit.contractId);
+    if (row === undefined) return false;
+    const detail = contractDetailAddress(row.contract_id, visit.tab, destination.tab);
+    if (detail.hash !== hash) return false;
+    contractsHistory.adopt(detail);
+    rows = visit.rows;
+    renderDetail(row, destination.tab ?? undefined);
+    return true;
+  };
+
+  const onPreviewViewportChange = (): void => {
+    if (disposed) return;
+    if (viewMode === 'detail') onDetailViewportChange?.();
+    if (viewMode !== 'list') return;
+    const pane = body.querySelector(`[${CONTRACTS_PREVIEW_ATTR}]`);
+    const leavingPreview = !canPreview() && pane?.contains(doc.activeElement);
+    positionSelfRow();
+    paintContractPreview();
+    const rules = body.querySelector<HTMLDetailsElement>(`[${CONTRACTS_ROUTE_RULES_ATTR}]`);
+    const editor = body.querySelector(`[${CONTRACTS_ROUTE_NEW_FORM_ATTR}]`);
+    const focused = doc.activeElement;
+    if (focused && ((rules?.open && rules.contains(focused)) || editor?.contains(focused))) {
+      focused.scrollIntoView({ block: 'center', inline: 'nearest' });
+    }
+    if (leavingPreview && previewedContractId !== null) {
+      const row = findInventoryRow(previewedContractId);
+      focusListTarget(row);
+      row?.scrollIntoView?.({ block: 'nearest' });
+    }
+  };
+  previewMedia?.addEventListener?.('change', onPreviewViewportChange);
 
   // ── initial loading placeholder ──
   const loading = makeEl(doc, 'p', undefined, 'Loading your contracts…');
@@ -3426,8 +4269,11 @@ export const bootstrapContractsRoute = (
     cursor: string | undefined,
     direction: 'next' | 'previous',
   ): Promise<void> => {
-    if (listPageBusy) return;
+    if (listPageBusy || newContractEditor?.pending()) return;
     listPageBusy = true;
+    pendingPageFocus = direction;
+    const roster = canPreview() ? inventoryList() : null;
+    const position = roster ? readListScroll(roster) : undefined;
     // Keep the current inventory and its ambient proposal panels mounted while
     // the next page is in flight. Replacing the whole list here detached the
     // focused pager and restarted supporting reads before the page even settled.
@@ -3441,13 +4287,18 @@ export const bootstrapContractsRoute = (
         previousListCursors = previousListCursors.slice(0, -1);
       }
       currentListCursor = cursor;
+      if (previewedContractId !== OWNER_CONTRACT_ID) previewedContractId = null;
       loadErrorMessage = null;
     } catch (err) {
       if (disposed) return;
       loadErrorMessage = errMessage(err);
     } finally {
       listPageBusy = false;
-      if (!disposed) renderList();
+      if (!disposed) {
+        renderList();
+        const list = canPreview() ? inventoryList() : null;
+        if (list && loadErrorMessage !== null) restoreListScroll(list, position);
+      }
     }
   };
 
@@ -3481,7 +4332,7 @@ export const bootstrapContractsRoute = (
             listTabForRow(target),
             initialContractTab,
           ));
-          renderDetail(target);
+          renderDetail(target, initialContractTab);
           return;
         }
         const fallbackAddress = contractsListAddress(activeListTab);
@@ -3494,6 +4345,7 @@ export const bootstrapContractsRoute = (
       if (disposed) return;
       currentListCursor = undefined;
       previousListCursors = [];
+      previewedContractId = null;
       renderList();
     } catch (err) {
       if (disposed) return;
@@ -3506,7 +4358,7 @@ export const bootstrapContractsRoute = (
   })();
 
   const retryRecoveryContext = async (): Promise<void> => {
-    if (disposed || listPageBusy) return;
+    if (disposed || listPageBusy || newContractEditor?.pending()) return;
     listPageBusy = true;
     loadErrorMessage = null;
     renderList();
@@ -3545,6 +4397,7 @@ export const bootstrapContractsRoute = (
     },
     getActiveTab: () => activeTab,
     getListTab: () => activeListTab,
+    navigateDeepLinkAfterLeave,
     contractKeyPanel: () => connectPanel,
     rulesPanel: () => rulesPanel,
     contractGrantsPanel: () => detailGrantPanel,
@@ -3566,6 +4419,8 @@ export const bootstrapContractsRoute = (
     dispose: () => {
       if (disposed) return;
       disposed = true;
+      previewMedia?.removeEventListener?.('change', onPreviewViewportChange);
+      onDetailViewportChange = null;
       permissionPanel?.dispose(); permissionPanel = null;
       standingTasksPanel?.dispose(); standingTasksPanel = null;
       if (suggestedRulesPanel !== null) {

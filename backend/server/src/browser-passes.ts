@@ -21,6 +21,7 @@ import {
   readBrowserPassOffer,
   writeRulePrincipalOf,
   type BrowserPassBrowser,
+  type BrowserPassJob,
   type BrowserPassKey,
   type BrowserPassAnswerKind,
   type BrowserPassKind,
@@ -65,6 +66,8 @@ export const browserPassOfferFor = (input: {
   readonly browser?: string;
   /** D-402 slice H4d — its name, as its owner gave it: the ask says its answers are for it alone. */
   readonly browser_name?: string;
+  /** D-402 (2026-11-23) — the AI app's job the write is part of: the ask offers "until this job ends". */
+  readonly job?: BrowserPassJob;
 }): BrowserPassOffer | undefined => {
   if (input.source === undefined || input.site === undefined || input.channel_session_id === undefined) return undefined;
   const principal = writeRulePrincipalOf(input.source);
@@ -74,6 +77,8 @@ export const browserPassOfferFor = (input: {
     host: browserPassHostOf(input.site),
     channel_session_id: input.channel_session_id,
     ...(input.browser !== undefined && input.browser_name !== undefined ? { browser_name: input.browser_name } : {}),
+    // Only an AI app has a job: the owner's chats have their own request pass (D-341 slice A).
+    ...(input.job !== undefined && principal.kind === 'ai_app' ? { job: input.job } : {}),
   };
 };
 

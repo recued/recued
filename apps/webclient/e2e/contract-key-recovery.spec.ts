@@ -122,6 +122,7 @@ test('key lookup recovers from detailed and empty errors with a read-only single
 });
 
 test('keyboard creation, copying and turn-off retain focus and guard duplicate commands', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 620 });
   await open(page);
   await page.evaluate(() => { window.__keyFixture.failReads = 1; window.__app.holdRpcResponses?.('chat.inbound_token.issue'); });
   await control(page, 'create').focus(); await control(page, 'create').press('Enter');
@@ -141,6 +142,7 @@ test('keyboard creation, copying and turn-off retain focus and guard duplicate c
   await page.evaluate(() => window.__keyFixture.completeCopy?.()); await expect(control(page, 'copy')).toHaveText('Copied');
   await expect(control(page, 'turn-off')).toBeFocused();
   await control(page, 'turn-off').press('Enter'); await expect(control(page, 'confirm')).toBeFocused();
+  await expect(control(page, 'confirm')).toBeInViewport({ ratio: 1 });
   await control(page, 'cancel').focus(); await control(page, 'cancel').press('Enter'); await expect(control(page, 'turn-off')).toBeFocused();
   await control(page, 'turn-off').press('Enter');
   await page.evaluate(() => window.__app.holdRpcResponses?.('chat.inbound_token.revoke'));
@@ -150,6 +152,40 @@ test('keyboard creation, copying and turn-off retain focus and guard duplicate c
   expect(await page.evaluate(() => window.__app.releaseRpcResponses?.('chat.inbound_token.revoke'))).toBe(1);
   await expect(control(page, 'create')).toBeFocused(); await expect(panel(page)).toContainText('Key turned off.');
   await expect(control(page, 'value')).toHaveCount(0);
+});
+
+test('desktop Connect keeps the selected setup and one-time key across tabs', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 620 });
+  await open(page);
+  const connect = page.locator('[data-recued-contracts-connect]');
+  const picker = connect.getByRole('combobox', { name: 'AI app', exact: true });
+  const setup = connect.locator('[data-recued-contracts-snippet]:visible');
+
+  await expect(control(page, 'create')).toBeInViewport({ ratio: 1 });
+  await expect(picker).toBeInViewport({ ratio: 1 });
+  await expect(setup.getByRole('heading')).toHaveText("Claude Desktop, on the server's computer");
+  await control(page, 'create').press('Enter');
+  await expect(control(page, 'copy')).toBeFocused();
+  await expect(control(page, 'copy')).toBeInViewport({ ratio: 1 });
+  await expect(panel(page)).toHaveAttribute('aria-busy', 'false');
+  const keyReads = (await calls(page, 'chat.inbound_token.list')).length;
+
+  await picker.press('o');
+  await expect(picker).toBeFocused();
+  await expect(picker).toHaveValue('openclaw');
+  await expect(setup.getByRole('heading')).toHaveText('OpenClaw');
+  await expect(setup).not.toContainText('fixture-only-key-1');
+
+  await page.getByRole('tab', { name: 'Ops', exact: true }).press('Enter');
+  await expect(connect).toHaveCount(0);
+  await page.getByRole('tab', { name: 'Connect', exact: true }).press('Enter');
+  await expect(picker).toHaveValue('openclaw');
+  await expect(setup.getByRole('heading')).toHaveText('OpenClaw');
+  await expect(control(page, 'value')).toHaveText('fixture-only-key-1');
+  await control(page, 'copy').press('Enter');
+  await expect(control(page, 'copy')).toHaveText('Copied');
+  expect(await page.evaluate(() => window.__keyFixture.clipboard)).toEqual(['fixture-only-key-1']);
+  expect((await calls(page, 'chat.inbound_token.list')).length).toBe(keyReads);
 });
 
 test('clipboard denial, absence and a throwing getter explain manual copying and keep selection through refresh', async ({ page }) => {

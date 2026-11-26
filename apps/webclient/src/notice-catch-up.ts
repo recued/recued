@@ -14,9 +14,9 @@
  *
  *  ## What "seen" means
  *
- *  A live frame that arrives while the page is VISIBLE was seen: its toast showed. The frame
- *  carries no id (`ServerRecentNotification` says so), so it is matched to its history row by
- *  what it says — title and text, which both are built from the same message. A frame that
+ *  A live frame that arrives while the page is VISIBLE was seen: its toast showed. Durable
+ *  producers supply a history id; older notices are matched by their title and text. An id
+ *  also lets a status correction update the visible card without another interruption. A frame that
  *  arrives while the page is HIDDEN was not seen; its row is caught up on return.
  *
  *  ⚠ The first time a browser runs this, nothing is shown: there is no "last seen" yet, and
@@ -78,6 +78,7 @@ export interface NoticeCatchUpToast {
   readonly text: string;
   readonly link_url?: string;
   readonly sticky: true;
+  readonly activity_id?: string;
 }
 
 export interface NoticeCatchUpOptions {
@@ -116,6 +117,7 @@ interface Mark {
 interface LiveSeen {
   readonly fp: string;
   readonly at: number;
+  readonly activity_id?: string;
 }
 
 const fingerprint = (title: unknown, text: unknown): string =>
@@ -287,6 +289,7 @@ export const followNoticeCatchUp = (options: NoticeCatchUpOptions): NoticeCatchU
     for (const row of shown) {
       const link = row.ui_link_url ?? row.link_url;
       options.present({
+        activity_id: row.id,
         ...(row.title !== undefined && row.title.trim() !== '' ? { title: row.title } : {}),
         text: `${sentence(row.text)} Sent ${formatWhen(row.fired_at, at)}.`,
         ...(link !== undefined ? { link_url: link } : {}),
@@ -328,7 +331,7 @@ export const followNoticeCatchUp = (options: NoticeCatchUpOptions): NoticeCatchU
     const missed: ServerRecentNotification[] = [];
     for (const row of fresh) {
       const fp = fingerprint(row.title, row.text);
-      const seen = liveSeen.findIndex((entry) => entry.fp === fp);
+      const seen = liveSeen.findIndex((entry) => entry.activity_id !== undefined ? entry.activity_id === row.id : entry.fp === fp);
       if (seen >= 0) liveSeen.splice(seen, 1);
       else missed.push(row);
     }
@@ -378,13 +381,18 @@ export const followNoticeCatchUp = (options: NoticeCatchUpOptions): NoticeCatchU
   }
 
   const unsubscribeNotify = options.subscribe('notification.notify', (event) => {
-    if (disposed || typeof event.text !== 'string') return;
+    if (disposed || event.replace_existing === true || typeof event.text !== 'string') return;
     if (!isVisible()) {
       // Its toast came and went unseen: catch it up when the owner is back.
       owed = true;
       return;
     }
-    liveSeen.push({ fp: fingerprint(event.title, event.text), at: now() });
+    const activity = typeof event.activity_id === 'string' && event.activity_id.length > 0 && event.activity_id.length <= 512
+      ? event.activity_id : undefined;
+    // A replay renders no second toast, so it must not account for a different
+    // history row that happens to have the same generic wording.
+    if (activity) liveSeen = liveSeen.filter(entry => entry.activity_id !== activity);
+    liveSeen.push({ fp: fingerprint(event.title, event.text), at: now(), ...(activity ? { activity_id: activity } : {}) });
     if (liveSeen.length > LIVE_SEEN_MAX) liveSeen.splice(0, liveSeen.length - LIVE_SEEN_MAX);
     persist();
     // Read the history shortly, so the mark moves past what the owner just saw.

@@ -33,14 +33,14 @@ import { mountAssetSummary } from './asset-summary.js';
 import { assetEvidenceLines, changedAssetPatch, renderAssetSource, type AssetEvidenceLine } from './asset-provenance.js';
 import { recordsRecordAddress } from '../data/records-navigation.js';
 import { lastTimeClassName } from './last-time-words.js';
-import { dayAfter, dueOnText, renewalDateWords, taskDueWords } from './due-words.js';
+import { dayAfter, dueOnText, groupDueOccurrences, renewalDateWords, taskDueWords } from './due-words.js';
 export { parseReminderOffsets } from './asset-rule-editor.js';
 import { proposalSourceWords, proposalWhyLine } from './proposal-why-words.js';
 import { mountAssetPicker, type AssetPicker } from './asset-picker.js';
 import { assetChatContext, type ChatAssetContext } from '../chat/asset-context.js';
 import { YOURS_STYLES } from './yours-styles.js';
 import { yoursActions, yoursDisclosure, yoursEmpty, yoursList, yoursMenu, yoursNavigation, yoursPageHeader, yoursToolbar } from './yours-view.js';
-import { focusListTarget, readListContinuity, readListScroll, restoreListScroll, updateListContinuity } from '../shell/list-preview-continuity.js';
+import { focusListTarget, readListContinuity, readListScroll, restoreListScroll, updateListContinuity, type ListScrollPosition } from '../shell/list-preview-continuity.js';
 import { mountAssetContextInspector } from './asset-context-inspector.js';
 import { mountAssetWriterSetup, type AssetWriterSetupCallers } from './asset-writer-setup.js';
 import { mountAssetTextFactEditor } from './asset-text-fact-editor.js';
@@ -64,6 +64,27 @@ type Tab = typeof TABS[number];
 // or coming up. Its address stays `#yours/occurrences`, which links already use.
 const TAB_LABELS: Readonly<Record<Tab, string>> = { assets: 'Assets', pursuits: 'Pursuits', proposals: 'Proposals', occurrences: 'Due', occasions: 'Occasions', episodes: 'Episodes' };
 const continuityScopes = new WeakMap<object, string>(); let nextContinuityScope = 0;
+const YOURS_DESKTOP_MEDIA = '(min-width: 1280px) and (hover: hover) and (pointer: fine)';
+const ASSET_PREVIEW_ID = 'recued-yours-asset-preview';
+const PURSUIT_PREVIEW_ID = 'recued-yours-pursuit-preview';
+const PROPOSAL_PREVIEW_ID = 'recued-yours-proposal-preview';
+const DUE_PREVIEW_ID = 'recued-yours-due-preview';
+const OCCASION_PREVIEW_ID = 'recued-yours-occasion-preview';
+const EPISODE_PREVIEW_ID = 'recued-yours-episode-preview';
+const NO_EPISODES = 'Only episodes you record, correct, annotate or keep for a proposal or occasion are stored here.';
+const ENDED_PURSUITS = 'pursuits:ended';
+type SphereListView = { sphere: string; outlineTop?: number };
+type PursuitListView = SphereListView & { endedOpen: boolean };
+type PagedListView = SphereListView & { hash: string; episodeFrom?: number };
+type QueueWriteHandoff = { from?: string; selected?: string; order: readonly string[]; failed?: YoursCommandResult['failed']; moved?: boolean };
+type QueueWrite = { proposalGroup?: readonly string[]; savedFields?: readonly string[] };
+const QUEUE_ITEM = '[data-yours-proposal], [data-yours-occurrence]';
+const queueItemId = (node: HTMLElement | null) => node?.dataset.yoursEpisode ?? node?.dataset.yoursOccasion ?? node?.dataset.yoursProposal ?? node?.dataset.yoursOccurrence;
+const queueRowId = (node: HTMLElement) => node.dataset.yoursEpisodeRow ?? node.dataset.yoursOccasionRow ?? node.dataset.yoursProposalRow ?? node.dataset.yoursDueRow;
+const PROPOSAL_LANES = [
+  ['likely_asset', 'Likely assets'], ['gift', 'Gifts'], ['return', 'Returns'], ['pickup', 'Pickups'],
+  ['bundle', 'Bundles'], ['other', 'Other proposals and questions'],
+] as const;
 export interface YoursRouteOptions {
   container: HTMLElement;
   segments?: readonly string[];
@@ -119,7 +140,7 @@ type Editor = { type: 'asset'; asset?: Asset; proposal?: ProactiveProposal; corr
      *  offers "Back to chat", and saving returns there, where the answer's line says the thing is in Yours. */
     returnToChat?: ChatAnswerAddress }
   /** D-342 — `pursuits` are what "Part of" offers; `part_of` starts a new pursuit under one. */
-  | { type: 'pursuit'; asset?: Asset; pursuits: Asset[]; part_of?: string; creation_key?: string }
+  | { type: 'pursuit'; asset?: Asset; pursuits: readonly Asset[]; part_of?: string; creation_key?: string }
   | { type: 'rule'; asset: Asset; rule?: AssetRule; proposal?: ProactiveProposal; classPreset?: AssetClassPreset; classCreating?: boolean; classDirty?: boolean; classFocus?: EditorReturnFocus; initialField?: { group: 'dates' | 'readings' | 'observations'; field: string } }
   | { type: 'trip'; proposal: ProactiveProposal }
   | { type: 'relation'; proposal: ProactiveProposal }
@@ -153,7 +174,7 @@ type Editor = { type: 'asset'; asset?: Asset; proposal?: ProactiveProposal; corr
   | { type: 'occasion'; occasion?: Occasion; proposal?: ProactiveProposal }
   | { type: 'occasion_rule'; occasion: Occasion; rule?: AssetRule; proposal?: ProactiveProposal }
   | { type: 'episode'; episode?: EpisodeInput; correction?: ProactiveProposal };
-type EditorReturnFocus = { key: string; asset_id: string; scope?: string; menu?: string };
+type EditorReturnFocus = { key: string; asset_id: string; queueId?: string; scope?: string; menu?: string };
 /** D-339 slice 13 — what the owner has chosen and typed in "Ask with the numbers", kept on the editor so
  *  a rebuild of the page shows it again. */
 interface AskNumbersState {
@@ -221,14 +242,40 @@ export const bootstrapYoursRoute = (options: YoursRouteOptions) => {
   const continuityOwner = options.continuityOwner ?? options.container;
   if (!continuityScopes.has(continuityOwner)) continuityScopes.set(continuityOwner, `yours-assets-${nextContinuityScope++}`);
   const continuityKey = continuityScopes.get(continuityOwner)!;
+  const pursuitContinuityKey = `${continuityKey}-pursuits`;
+  const proposalContinuityKey = `${continuityKey}-proposals`;
+  const dueContinuityKey = `${continuityKey}-due`;
+  const occasionContinuityKey = `${continuityKey}-occasions`;
+  const episodeContinuityKey = `${continuityKey}-episodes`;
   const scrollHost = options.container;
+  const workspaceRoster = () => root.querySelector<HTMLElement>('[data-yours-asset-roster], [data-yours-pursuit-roster], [data-yours-proposal-roster], [data-yours-due-roster], [data-yours-occasion-roster], [data-yours-episode-roster]');
+  const queueRow = (id: string | undefined) => id === undefined ? undefined
+    : [...root.querySelectorAll<HTMLButtonElement>('.yours-queue-row')].find(row => queueRowId(row) === id);
+  const readOutlineTop = (outline: HTMLElement) => outline.getBoundingClientRect().top - scrollHost.getBoundingClientRect().top;
+  const restoreWorkspaceScroll = (outline: HTMLElement | null, page: ListScrollPosition | undefined, outlineTop?: number) => {
+    // Status messages can change height. Keep the list where it was in the viewport.
+    if (page && outline && outlineTop !== undefined) {
+      restoreListScroll(scrollHost, { top: scrollHost.scrollTop + readOutlineTop(outline) - outlineTop, left: page.left });
+    } else restoreListScroll(scrollHost, page);
+  };
+  const assetRow = (id: string | undefined) => id === undefined ? undefined
+    : [...root.querySelectorAll<HTMLElement>('[data-yours-asset]')].find(row => row.dataset.yoursAsset === id);
+  const pursuitRow = (id: string | undefined) => id === undefined ? undefined
+    : [...root.querySelectorAll<HTMLElement>('[data-yours-pursuit]')].find(row => row.dataset.yoursPursuit === id);
   let restoreListPosition = true;
   let openedAsset: { id: string; kind: 'name' | 'open' } | undefined;
+  let openedPursuitId: string | undefined;
   root.addEventListener('click', event => {
     const anchor = (event.target as Element | null)?.closest?.('a');
-    const row = anchor?.closest<HTMLElement>('[data-yours-asset]');
-    if (row?.dataset.yoursAsset && anchor?.getAttribute('href')?.startsWith('#yours/asset/'))
-      openedAsset = { id: row.dataset.yoursAsset, kind: anchor.hasAttribute('data-yours-open-asset') ? 'open' : 'name' };
+    if (!anchor?.getAttribute('href')?.startsWith('#yours/asset/')) return;
+    const row = anchor.closest<HTMLElement>('[data-yours-asset]');
+    const id = row?.dataset.yoursAsset ?? anchor.closest<HTMLElement>('[data-yours-asset-preview]')?.dataset.yoursAssetPreview;
+    if (id)
+      openedAsset = { id, kind: anchor.hasAttribute('data-yours-open-asset') ? 'open' : 'name' };
+    if (event.button === 0 && !event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey) {
+      openedPursuitId = anchor.closest<HTMLElement>('[data-yours-pursuit]')?.dataset.yoursPursuit
+        ?? anchor.closest<HTMLElement>('[data-yours-pursuit-preview]')?.dataset.yoursPursuitPreview;
+    }
   }, true);
   let content: HTMLElement = root;
   let openingTrigger: EditorReturnFocus | undefined;
@@ -246,6 +293,21 @@ export const bootstrapYoursRoute = (options: YoursRouteOptions) => {
   const classesView = segments[0] === 'classes' || segments[1] === 'classes';
   const assetList = tab === 'assets' && !selected && !classesView;
   const pursuitList = tab === 'pursuits';
+  const proposalList = tab === 'proposals';
+  const dueList = tab === 'occurrences';
+  const occasionList = tab === 'occasions' && !selectedOccasion && !classesView;
+  const episodeList = tab === 'episodes' && !selectedEpisode && !selectedTrace && !classesView;
+  const queueList = proposalList || dueList || occasionList || episodeList;
+  const desktopMedia = assetList || pursuitList || queueList ? doc.defaultView?.matchMedia?.(YOURS_DESKTOP_MEDIA) : undefined;
+  const desktopQueue = () => queueList && !!desktopMedia?.matches;
+  const queueCardSelector = episodeList ? '[data-yours-episode]' : occasionList ? '[data-yours-occasion]' : QUEUE_ITEM;
+  const queueFilter = () => root.querySelector<HTMLElement>(proposalList ? '[name="proposal-kind"]' : '[name="sphere-filter"]');
+  const pagedQueueKey = proposalList ? proposalContinuityKey : occasionList ? occasionContinuityKey : episodeList ? episodeContinuityKey : undefined;
+  const pagedQueueHash = pagedQueueKey ? doc.defaultView?.location.hash : undefined;
+  const rememberedPagedQueue = pagedQueueKey && desktopQueue() ? readListContinuity<PagedListView>(doc, pagedQueueKey) : null;
+  const rememberedDue = dueList && desktopQueue() ? readListContinuity<SphereListView>(doc, dueContinuityKey) : null;
+  const rememberedPursuits = pursuitList ? readListContinuity<PursuitListView>(doc, pursuitContinuityKey) : null;
+  if (rememberedPursuits?.filter?.endedOpen) openDisclosures.set(ENDED_PURSUITS, true);
   let proposalKind: import('@recued/contracts').ProactiveProposalKind | '' = segments[1] === 'kind' && PROACTIVE_PROPOSAL_KINDS.includes(segments[2] as import('@recued/contracts').ProactiveProposalKind) ? segments[2] as import('@recued/contracts').ProactiveProposalKind : '';
   const pageAt = proposalKind ? 3 : 1;
   // D-405 slice 7 — `#yours/proposals/return/chat/<session>/<message>`: the first mailbox's Proposals (D-325's
@@ -255,6 +317,7 @@ export const bootstrapYoursRoute = (options: YoursRouteOptions) => {
     ? { sessionId: segments[3], messageId: segments[4] } : undefined;
   const pageNumber = (value: string | undefined) => { const number = Number(value); return Number.isSafeInteger(number) && number > 0 && Number.isSafeInteger((number - 1) * 50) ? number - 1 : 0; };
   let page = segments[pageAt] === 'page' ? pageNumber(segments[pageAt + 1]) : 0;
+  const episodeListHash = (targetPage: number) => targetPage ? `#yours/episodes/page/${targetPage + 1}` : '#yours/episodes';
   let assetFilter: YoursAssetFilter | '' = ''; let assetSphere: YoursAssetSphere | '' = ''; let search = '';
   if (segments[0] === 'assets' && !classesView) for (let at = 1; at + 1 < segments.length; at += 2) {
     const value = segments[at + 1]!;
@@ -264,6 +327,24 @@ export const bootstrapYoursRoute = (options: YoursRouteOptions) => {
     if (segments[at] === 'page') page = pageNumber(value);
   }
   const assetListHash = (targetPage = 0, filter = assetFilter) => `#yours/assets${filter ? `/filter/${filter}` : ''}${assetSphere ? `/sphere/${assetSphere}` : ''}${search ? `/search/${encodeURIComponent(search)}` : ''}${targetPage ? `/page/${targetPage + 1}` : ''}`;
+  const rememberedAssetList = assetList ? readListContinuity<string>(doc, continuityKey) : null;
+  let previewId = (rememberedAssetList?.filter === assetListHash(page) ? rememberedAssetList.previewId
+    : rememberedPursuits?.previewId ?? rememberedPagedQueue?.previewId ?? rememberedDue?.previewId) ?? undefined;
+  let renderedAssetListHash: string | undefined;
+  let renderedPursuitWorkspace = false;
+  let renderedPagedQueue = false;
+  let renderedDueWorkspace = false;
+  let allOccasions = false;
+  let queueOrder: readonly string[] = [];
+  let queueDraft: { id: string; values: Map<string, string> } | undefined;
+  let queueErrorId: string | undefined;
+  let queueConfirmation: QueueWriteHandoff | undefined;
+  let workspacePosition: {
+    list: ListScrollPosition;
+    page: ListScrollPosition;
+    outlineTop?: number;
+    preview?: { id: string; scroll: ListScrollPosition };
+  } | undefined;
   const assetFiltersApplied = (result: YoursSnapshot) => (!assetFilter || result.asset_filter?.kind === assetFilter) && (!assetSphere || result.asset_sphere === assetSphere);
   const navigateAssets = (targetPage = 0, replaceHistory = false) => {
     const hash = assetListHash(targetPage); const win = doc.defaultView;
@@ -286,7 +367,7 @@ export const bootstrapYoursRoute = (options: YoursRouteOptions) => {
   let openingIntent = 0;
   root.addEventListener('input', () => { draftVersion++; });
   let message = ''; let error = ''; let errorVersion = 0; let pending = Promise.resolve();
-  let openedRecorded = false; let sphereFilter = '';
+  let openedRecorded = false; let sphereFilter = rememberedPursuits?.filter?.sphere ?? rememberedPagedQueue?.filter?.sphere ?? rememberedDue?.filter?.sphere ?? '';
   const routeAbort = new AbortController();
   doc.addEventListener('pointerdown', event => {
     for (const menu of root.querySelectorAll<HTMLDetailsElement>('[data-yours-menu][open]')) if (!menu.contains(event.target as Node)) menu.open = false;
@@ -317,7 +398,12 @@ export const bootstrapYoursRoute = (options: YoursRouteOptions) => {
   const link = (parent: HTMLElement, label: string, hash: string) => { const node = el('a', label, parent); node.href = hash; return node; };
   const focusTarget = (node: HTMLElement | null | undefined): EditorReturnFocus | undefined => {
     if (!node || !root.contains(node) || !node.dataset.yoursFocus) return;
-    return { key: node.dataset.yoursFocus, asset_id: node.closest<HTMLElement>('[data-yours-asset]')?.dataset.yoursAsset ?? selected ?? '',
+    const assetId = node.closest<HTMLElement>('[data-yours-asset]')?.dataset.yoursAsset
+      ?? node.closest<HTMLElement>('[data-yours-asset-preview]')?.dataset.yoursAssetPreview
+      ?? node.closest<HTMLElement>('[data-yours-pursuit]')?.dataset.yoursPursuit
+      ?? node.closest<HTMLElement>('[data-yours-pursuit-preview]')?.dataset.yoursPursuitPreview ?? selected ?? '';
+    const queueId = queueItemId(node.closest<HTMLElement>(queueCardSelector)) ?? queueRowId(node);
+    return { key: node.dataset.yoursFocus, asset_id: assetId, queueId,
       scope: node.closest<HTMLElement>('[data-yours-focus-scope]')?.dataset.yoursFocusScope,
       menu: node.closest<HTMLDetailsElement>('[data-yours-menu]')?.dataset.yoursMenu };
   };
@@ -331,18 +417,22 @@ export const bootstrapYoursRoute = (options: YoursRouteOptions) => {
     else node.textContent = label;
   };
   const button = (parent: HTMLElement, label: string, action: (origin: EditorReturnFocus) => void | Promise<void>, key = label, icon?: IconName) => {
-    const node = el('button', undefined, parent); setButtonLabel(node, label, icon); node.type = 'button'; node.dataset.yoursFocus = key; node.disabled = busy;
+    const node = el('button', undefined, parent); setButtonLabel(node, label, icon); node.type = 'button'; node.dataset.yoursFocus = key;
+    node.disabled = busy || (!!queueConfirmation && key !== 'close-preview' && !!parent.closest(queueCardSelector));
     node.addEventListener('click', () => { const origin = focusTarget(node); if (!origin) return; void Promise.resolve().then(() => {
       const previous = openingTrigger; openingTrigger = origin;
       try { return action(origin); } finally { openingTrigger = previous; }
     }).catch(showError); }); return node;
   };
-  const setError = (value: string) => { error = value; errorVersion++; };
-  const showError = (value: unknown) => { setError(value instanceof Error ? value.message : String(value)); paintStatus(); };
+  const setError = (value: string, queueId?: string) => { error = value; queueErrorId = queueId; errorVersion++; };
+  const showError = (value: unknown, queueId?: string) => { setError(value instanceof Error ? value.message : String(value), queueId); paintStatus(); };
   const paintStatus = () => {
     const opening = openingIntent !== 0 && openingIntent === editorIntent;
     const status = root.querySelector('[data-yours-status]'); if (status) status.textContent = loading && snapshot ? 'Refreshing Yours…' : opening ? 'Opening editor…' : message;
-    const alert = root.querySelector<HTMLElement>('[data-yours-error]'); if (alert) alert.textContent = error;
+    const queueAlert = root.querySelector<HTMLElement>('[data-yours-queue-error]');
+    const errorInPreview = queueAlert && !!queueErrorId && previewId === queueErrorId;
+    if (queueAlert) queueAlert.textContent = errorInPreview ? error : '';
+    const alert = root.querySelector<HTMLElement>('[data-yours-error]'); if (alert) alert.textContent = errorInPreview ? '' : error;
     const refreshButton = root.querySelector<HTMLButtonElement>('[data-yours-focus="refresh"]');
     // D-325 — disabling the active Refresh button moves focus to the body.
     // Keep its identity, but restore it only if the owner has not focused elsewhere.
@@ -356,13 +446,19 @@ export const bootstrapYoursRoute = (options: YoursRouteOptions) => {
     const action = focusAction(target);
     let more = action?.closest<HTMLDetailsElement>('details');
     while (more) { more.open = true; more = more.parentElement?.closest<HTMLDetailsElement>('details'); }
-    const asset = [...root.querySelectorAll<HTMLElement>('[data-yours-asset]')].find(node => node.dataset.yoursAsset === target.asset_id);
+    const asset = assetRow(target.asset_id);
+    const pursuit = pursuitList ? pursuitRow(target.asset_id) : undefined;
     const menu = target.menu ? [...root.querySelectorAll<HTMLDetailsElement>('[data-yours-menu]')].find(node => node.dataset.yoursMenu === target.menu && !node.closest('[hidden]')) : undefined;
     const scope = target.scope ? [...root.querySelectorAll<HTMLElement>('[data-yours-focus-scope]')].find(node => node.dataset.yoursFocusScope === target.scope && !node.closest('[hidden]')) : undefined;
     const fallback = action ?? menu?.querySelector<HTMLElement>('summary') ?? asset?.querySelector<HTMLElement>('[data-yours-open-asset]')
+      ?? scope?.querySelector<HTMLElement>('[data-yours-open-asset]') ?? asset?.querySelector<HTMLElement>('[data-yours-preview-asset]')
+      ?? pursuit?.querySelector<HTMLElement>('[data-yours-preview-pursuit], [data-yours-asset-name]')
+      ?? (pursuitList && target.asset_id ? root.querySelector<HTMLElement>('[name="sphere-filter"]') : null)
+      ?? (desktopQueue() && target.queueId ? queueRow(target.queueId) ?? queueFilter() : null)
+      ?? (desktopMedia?.matches && target.asset_id ? root.querySelector<HTMLElement>('[name="search"]') : null)
       ?? scope?.querySelector<HTMLElement>('h2,h3') ?? root.querySelector<HTMLElement>('[data-yours-heading]');
     if (fallback?.matches('h2,h3')) fallback.tabIndex = -1;
-    fallback?.focus();
+    if (desktopMedia?.matches) focusListTarget(fallback); else fallback?.focus();
   };
   /** D-407 slice 4 (Q3) — the one calendar occasions put their events in: chosen once, a personal one, or none (every
    *  occasion Recued only). A calendar that dropped an event's private marking says so: private occasions stay out. */
@@ -388,9 +484,19 @@ export const bootstrapYoursRoute = (options: YoursRouteOptions) => {
       }), 'occasion-calendar-save').className = 'yours-primary';
     }, 'occasion-calendar-choose');
   };
-  const write = async (action: () => Promise<YoursCommandResult>, keepEditor = false) => {
+  const write = async (action: () => Promise<YoursCommandResult>, keepEditor = false, pendingSave?: QueueWrite) => {
     if (busy || disposed) return;
+    const origin = editorReturnFocus ?? openingTrigger;
+    const proposalGroup = pendingSave?.proposalGroup;
+    if (queueConfirmation && (origin?.queueId || proposalGroup)) return;
     editorIntent++;
+    const pursuitAction = pursuitList && desktopMedia?.matches ? openingTrigger : undefined;
+    const queueAction = desktopQueue() ? origin : undefined;
+    const queueId = queueAction?.queueId;
+    const handoff: QueueWriteHandoff | undefined = desktopQueue() && (queueId || proposalGroup)
+      ? { from: previewId ?? proposalGroup?.at(-1), selected: previewId, order: queueOrder } : undefined;
+    // A read that started before this decision must not replace its disabled controls.
+    if (handoff && loading) { generation++; loading = false; }
     const focus = doc.activeElement as HTMLElement | null;
     const controls = [...root.querySelectorAll<HTMLButtonElement | HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>('button,input,select,textarea')]
       .map(node => ({ node, disabled: node.disabled }));
@@ -399,21 +505,34 @@ export const bootstrapYoursRoute = (options: YoursRouteOptions) => {
     try {
       const result = await action(); if (disposed) return;
       message = result.message;
-      if (result.failed?.length) { setError(result.failed.map(item => item.reason).join(' ')); return; }
+      if (result.failed?.length) {
+        if (!proposalGroup || !handoff) { setError(result.failed.map(item => item.reason).join(' '), queueId); return; }
+        handoff.failed = result.failed;
+      }
       const createdAsset = editor?.type === 'asset' && !editor.asset && !editor.proposal && result.id;
       // D-404 slice B2 — a thing added from a chat answer returns to that answer.
       const backToChat = createdAsset && editor?.type === 'asset' ? editor.returnToChat : undefined;
-      const returnFocus = !keepEditor ? editorReturnFocus : undefined;
-      if (!keepEditor) { editor = undefined; dirty = false; editorReturnFocus = undefined; }
+      const returnFocus = !keepEditor ? editorReturnFocus ?? pursuitAction ?? queueAction : undefined;
+      if (!keepEditor) {
+        editor = undefined; editorReturnFocus = undefined;
+        if ((dueList || occasionList) && queueDraft && origin?.queueId === queueDraft.id) {
+          for (const name of pendingSave?.savedFields ?? []) queueDraft.values.delete(name);
+          if (!queueDraft.values.size) queueDraft = undefined;
+        } else if (origin?.queueId || proposalGroup) queueDraft = undefined;
+        dirty = queueDraft !== undefined;
+      }
       if (backToChat && doc.defaultView) { busy = false; doc.defaultView.location.hash = serializeChatAnswerAddress(backToChat); return; }
       if (createdAsset && doc.defaultView) { busy = false; doc.defaultView.location.hash = `#yours/asset/${encodeURIComponent(createdAsset)}`; return; }
-      busy = false; await refresh(true);
-      restoreEditorFocus(returnFocus);
-    } catch (value) { if (!disposed) showError(value); }
+      if (handoff) queueConfirmation = handoff;
+      else busy = false;
+      await refresh(true);
+      if (!handoff?.moved) restoreEditorFocus(returnFocus);
+    } catch (value) { if (!disposed) showError(value, queueId); }
     finally { busy = false; if (!disposed) {
       controls.forEach(({ node, disabled }) => { if (node.isConnected) node.disabled = disabled; });
       if (!doc.activeElement || doc.activeElement === doc.body) {
-        (focus?.isConnected ? focus : root.querySelector<HTMLElement>('[data-yours-heading]'))?.focus();
+        const target = !editor && queueId && previewId === queueId && queueAction ? focusAction(queueAction) : undefined;
+        (target ?? (focus?.isConnected ? focus : root.querySelector<HTMLElement>('[data-yours-heading]')))?.focus();
       }
       paintStatus();
     } }
@@ -514,7 +633,7 @@ export const bootstrapYoursRoute = (options: YoursRouteOptions) => {
     const current = () => !disposed && intent === editorIntent && draftAtStart === draftVersion;
     let value: Editor | undefined;
     try { value = await read(); if (current() && value) open(value, origin); }
-    catch (error) { if (current()) showError(error); }
+    catch (error) { if (current()) showError(error, desktopQueue() ? origin.queueId : undefined); }
     finally {
       if (openingIntent === intent) openingIntent = 0;
       if (control?.isConnected) { delete control.dataset.yoursOpening; setButtonLabel(control, title); control.disabled = busy; }
@@ -526,6 +645,15 @@ export const bootstrapYoursRoute = (options: YoursRouteOptions) => {
     const heading = parent.querySelector('h3')!; const row = el('div'); row.className = 'yours-section-heading'; parent.insertBefore(row, heading); row.append(heading); return yoursActions(row);
   };
   const placementFor = (ref: import('@recued/contracts').SituationRef) => snapshot?.sphere_placements.find(row => row.ref.collection === ref.collection && row.ref.id === ref.id);
+  const matchesSphere = (ref: import('@recued/contracts').SituationRef) => !sphereFilter || (placementFor(ref)?.sphere ?? 'unsorted') === sphereFilter;
+  const leaveQueueItem = () => {
+    if (queueDraft && doc.defaultView?.confirm && !doc.defaultView.confirm('Discard these unsaved Yours changes?')) return false;
+    queueDraft = undefined; dirty = false; editorIntent++;
+    if (queueErrorId && !queueConfirmation) setError('');
+    const why = root.querySelector<HTMLDetailsElement>('[data-yours-proposal-preview-pane] [data-yours-disclosure]');
+    if (why?.dataset.yoursDisclosure) openDisclosures.set(why.dataset.yoursDisclosure, why.open);
+    return true;
+  };
   const placementChip = (parent: HTMLElement, ref: import('@recued/contracts').SituationRef) => {
     const placement = placementFor(ref); const host = el('details', undefined, parent); host.dataset.yoursSphere = '';
     el('summary', placement?.sphere === 'personal' ? 'Personal' : placement?.sphere === 'professional' ? 'Work' : 'Unsorted', host);
@@ -540,7 +668,7 @@ export const bootstrapYoursRoute = (options: YoursRouteOptions) => {
   const card = (parent: HTMLElement, title: string, ref?: import('@recued/contracts').SituationRef, identity = ref ? [ref.collection, ref.id] : undefined) => {
     const node = el('article', undefined, parent); node.className = 'yours-card'; el('h3', title, node);
     if (identity) node.dataset.yoursFocusScope = JSON.stringify(identity);
-    if (ref) { node.hidden = !assetList && !!sphereFilter && (placementFor(ref)?.sphere ?? 'unsorted') !== sphereFilter; placementChip(node, ref); }
+    if (ref) { node.hidden = !assetList && !matchesSphere(ref); placementChip(node, ref); }
     return node;
   };
   // A transient field (a search box) holds off broadcast refreshes but is never an
@@ -549,6 +677,19 @@ export const bootstrapYoursRoute = (options: YoursRouteOptions) => {
     const host = el('label', title, parent); const input = el('input', undefined, host); input.type = type; input.name = name; input.value = value; input.dataset.yoursFocus = name;
     input.setAttribute('aria-label', title);
     input.addEventListener('input', () => { if (transient) typing = true; else dirty = true; }); return input;
+  };
+  const queueField = (parent: HTMLElement, id: string, title: string, name: string, value: string, type: string, inPreview: boolean) => {
+    const input = label(parent, title, name, value, type);
+    if (!inPreview && queueDraft?.id !== id) return input;
+    const saved = queueDraft?.id === id ? queueDraft.values.get(name) : undefined;
+    if (saved !== undefined) { input.value = saved; dirty = true; }
+    input.addEventListener('input', () => {
+      const values = queueDraft?.id === id ? queueDraft.values : new Map<string, string>();
+      if (input.value === value) values.delete(name); else values.set(name, input.value);
+      queueDraft = values.size ? { id, values } : undefined;
+      dirty = values.size > 0;
+    });
+    return input;
   };
   const select = (parent: HTMLElement, title: string, name: string, choices: Array<[string, string]>, value = '') => {
     const host = el('label', title, parent); const input = el('select', undefined, host); input.name = name; input.dataset.yoursFocus = name;
@@ -1582,42 +1723,73 @@ export const bootstrapYoursRoute = (options: YoursRouteOptions) => {
     label(node, 'What happened', 'title', own?.title ?? ''); label(node, 'From', 'from', own ? localDateTime(own.when.from) : '', 'datetime-local'); label(node, 'To', 'to', own ? localDateTime(own.when.to) : '', 'datetime-local');
     label(node, 'Place', 'place', own?.where?.name ?? ''); select(node, 'With', 'person', personChoices(), own?.people[0]); select(node, 'Sphere', 'episode-sphere', [['', 'Unsorted'], ['personal', 'Personal'], ['professional', 'Work']], own?.sphere); label(node, 'Notes', 'notes', own?.notes ?? ''); formActions(node);
   };
-  const renderOccurrence = (parent: HTMLElement, occurrence: YoursSnapshot['occurrences'][number]) => {
-    const item = card(parent, occurrence.title, occurrence.commitment
-      ? { collection: 'commitment', id: occurrence.commitment.id } : { collection: occurrence.subject_kind === 'occasion' ? 'occasion' : 'asset', id: occurrence.asset_id });
-    link(item, occurrence.subject_kind === 'occasion' ? 'Open occasion' : 'Open asset', occurrence.subject_kind === 'occasion'
+  type Occurrence = YoursSnapshot['occurrences'][number];
+  const occurrenceRef = (item: Occurrence): import('@recued/contracts').SituationRef => item.commitment
+    ? { collection: 'commitment', id: item.commitment.id } : { collection: item.subject_kind === 'occasion' ? 'occasion' : 'asset', id: item.asset_id };
+
+  const queueCardParts = (item: HTMLElement, closePreview: () => void) => {
+    const header = el('header'); header.className = 'yours-preview-header';
+    header.append(item.querySelector('h3')!); item.prepend(header);
+    button(header, 'Close preview', closePreview, 'close-preview');
+    const body = el('div', undefined, item); body.className = 'yours-preview-body';
+    const placement = item.querySelector<HTMLElement>('[data-yours-sphere]');
+    if (placement) body.append(placement);
+    const alert = el('p', undefined, item); alert.dataset.yoursQueueError = '';
+    alert.setAttribute('role', 'alert');
+    const footer = yoursActions(item); footer.classList.add('yours-preview-actions');
+    return { body, footer };
+  };
+
+  const renderOccurrence = (parent: HTMLElement, occurrence: Occurrence, closePreview?: () => void, occasionId?: string) => {
+    const item = card(parent, occurrence.title, occurrenceRef(occurrence), ['occurrence', occurrence.id]);
+    item.dataset.yoursOccurrence = occurrence.id;
+    const { body, footer } = closePreview ? queueCardParts(item, closePreview) : { body: item, footer: undefined };
+    const fieldOwner = occasionId ?? occurrence.id;
+    const keepsDraft = !!(closePreview || occasionId);
+    const save = (input: YoursCommand, field: HTMLInputElement) => write(() => options.change(input), false, { savedFields: [field.name] });
+    const meta = closePreview ? el('div', undefined, body) : body;
+    if (!occasionId || !desktopQueue()) link(meta, occurrence.subject_kind === 'occasion' ? 'Open occasion' : 'Open asset', occurrence.subject_kind === 'occasion'
       ? `#yours/occasions/occasion/${encodeURIComponent(occurrence.asset_id)}` : `#yours/asset/${encodeURIComponent(occurrence.asset_id)}`);
+    if (closePreview) {
+      meta.className = 'yours-due-meta';
+      const placement = body.querySelector<HTMLElement>('[data-yours-sphere]');
+      if (placement) meta.append(placement);
+    }
     if (occurrence.question) {
-      el('p', 'Last-done date unknown; no deadline has been assumed.', item); const date = label(item, 'Actual last-done date', `last-done-${occurrence.id}`, '', 'date');
-      button(item, 'Save date', () => change({ action: 'occurrence.last_done', id: occurrence.id, on: date.value }));
-      button(item, 'I don’t know', () => change({ action: 'occurrence.last_done', id: occurrence.id, on: null })); return;
+      el('p', 'Last-done date unknown; no deadline has been assumed.', body);
+      const date = queueField(body, fieldOwner, 'Actual last-done date', `last-done-${occurrence.id}`, '', 'date', keepsDraft);
+      button(footer ?? item, 'Save date', () => save({ action: 'occurrence.last_done', id: occurrence.id, on: date.value }, date));
+      button(footer ?? item, 'I don’t know', () => save({ action: 'occurrence.last_done', id: occurrence.id, on: null }, date)); return;
     }
     const commitment = occurrence.commitment;
-    if (!commitment) el('p', `Notice${occurrence.due_on ? ` · ${dueOnText(occurrence.due_on)}` : ''}`, item);
+    const deadline = commitment ? taskDueWords(commitment) : `Notice${occurrence.due_on ? ` · ${dueOnText(occurrence.due_on)}` : ''}`;
+    if (closePreview) meta.prepend(el('p', deadline)); else el('p', deadline, body);
     if (commitment) {
-      el('p', taskDueWords(commitment), item);
       // §15.7 (2026-10-24) — a renewal is done by its new date, never by Done alone: Done
       // kept the old date, and the clock that would have reminded again went quiet.
       const renewal = commitment.lifecycle_state === 'pending' ? occurrence.renewal : undefined;
-      const date = renewal ? label(item, renewalDateWords(renewal.field), `renewal-${occurrence.id}`, '', 'date') : null;
+      const date = renewal ? queueField(body, fieldOwner, renewalDateWords(renewal.field), `renewal-${occurrence.id}`, '', 'date', keepsDraft) : null;
       if (date && renewal) date.min = dayAfter(renewal.current) ?? '';
-      const actions = yoursActions(item);
+      const actions = footer ?? yoursActions(item);
       if (commitment.lifecycle_state === 'pending') for (const outcome of ['fulfill', 'cancel'] as const) button(actions, outcome === 'fulfill' ? 'Done' : 'Cancel', () => write(async () => {
         if (outcome === 'fulfill' && date) return options.change({ action: 'occurrence.renewed', id: occurrence.id, on: date.value });
         await options.closeCommitment({ id: commitment.id, outcome }); return { message: outcome === 'fulfill' ? 'Completed.' : 'Cancelled.' };
-      }), `${occurrence.id}-${outcome}`).className = outcome === 'fulfill' ? 'yours-primary' : '';
+      }, false, outcome === 'fulfill' && date ? { savedFields: [date.name] } : undefined), `${occurrence.id}-${outcome}`).className = outcome === 'fulfill' ? 'yours-primary' : '';
     }
     // Its next reminder at any day and time (`occurrence.later`): a reminder's "Later" offers a day, a week or a month,
     // and points here for the rest. Its deadline and schedule stay as they are.
     if (occurrence.later_until !== null) {
-      el('p', `Next reminder ${new Date(occurrence.later_until).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })}`, item)
+      el('p', `Next reminder ${new Date(occurrence.later_until).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })}`, body)
         .setAttribute(YOURS_OCCURRENCE_LATER_ATTR, '');
     }
-    const again = label(item, 'Remind me again on', `later-${occurrence.id}`, '', 'datetime-local');
+    const reminder = closePreview && commitment?.lifecycle_state === 'pending' ? el('div', undefined, body) : body;
+    if (reminder !== body) reminder.className = 'yours-due-reminder';
+    const again = queueField(reminder, fieldOwner, 'Remind me again on', `later-${occurrence.id}`, '', 'datetime-local', keepsDraft);
     const soon = new Date(Date.now() + 60_000);
     again.min = `${soon.getFullYear()}-${String(soon.getMonth() + 1).padStart(2, '0')}-${String(soon.getDate()).padStart(2, '0')}T${
       String(soon.getHours()).padStart(2, '0')}:${String(soon.getMinutes()).padStart(2, '0')}`;
-    button(item, 'Save reminder time', () => change({ action: 'occurrence.later', id: occurrence.id, until: Date.parse(again.value) }));
+    const reminderActions = reminder !== body ? reminder : footer ?? item;
+    button(reminderActions, 'Save reminder time', () => save({ action: 'occurrence.later', id: occurrence.id, until: Date.parse(again.value) }, again));
   };
   /** Opens a cited record where the app can; false when it cannot. */
   const sourceLink = (parent: HTMLElement, source: { collection: string; id: string }): boolean => {
@@ -1673,12 +1845,16 @@ export const bootstrapYoursRoute = (options: YoursRouteOptions) => {
     button(item, 'Correct', () => open({ type: 'episode', episode }), `correct-${episode.id}`);
     button(item, 'Hide', () => change({ action: 'episode.hide', id: episode.id }), `hide-${episode.id}`);
   };
-  const renderProposal = (parent: HTMLElement, proposal: ProactiveProposal) => {
+  const renderProposal = (parent: HTMLElement, proposal: ProactiveProposal, closePreview?: () => void) => {
     const item = card(parent, proposal.title, proposal.subject ?? proposal.sources[0], ['proposal', proposal.id]);
+    item.dataset.yoursProposal = proposal.id;
     item.classList.add('yours-proposal');
+    const { body, footer } = closePreview ? queueCardParts(item, closePreview) : { body: item, footer: undefined };
+    const draftField = (title: string, name: string, value: string, type: 'date' | 'number') =>
+      queueField(body, proposal.id, title, name, value, type, !!closePreview);
     const preview = proposalPreview(proposal, { assets: [...snapshot!.assets, ...snapshot!.related_assets], classes: snapshot!.classes, occasions: snapshot!.occasions });
     if (preview.subject || preview.lines.length || preview.changes.length) {
-      const change = el('div', undefined, item); change.className = 'yours-change-preview'; change.dataset.yoursProposalPreview = proposal.id;
+      const change = el('div', undefined, body); change.className = 'yours-change-preview'; change.dataset.yoursProposalPreview = proposal.id;
       if (preview.subject) link(change, preview.subject.name, preview.subject.href);
       for (const line of preview.lines) el('p', line, change);
       for (const difference of preview.changes) {
@@ -1688,27 +1864,29 @@ export const bootstrapYoursRoute = (options: YoursRouteOptions) => {
         }
       }
     }
-    const why = yoursDisclosure(item, 'Why suggested'); why.dataset.yoursDisclosure = `proposal:${proposal.id}:why`;
+    const why = yoursDisclosure(body, 'Why suggested'); why.dataset.yoursDisclosure = `proposal:${proposal.id}:why`;
+    why.open = openDisclosures.get(why.dataset.yoursDisclosure) ?? false;
+    why.querySelector('summary')!.dataset.yoursFocus = 'why-suggested';
     el('p', proposal.explanation, why);
     el('small', proposalWhyLine(proposal), why);
-    for (const source of proposal.sources) if (!sourceLink(item, source)) el('small', proposalSourceWords(source), item);
-    if (proposal.kind === 'last_done') { const date = label(item, 'Actual last-done date', `proposal-${proposal.id}-date`, '', 'date');
-      button(item, 'Save date', () => change({ action: 'occurrence.last_done', id: String(proposal.payload.occurrence_id), on: date.value }));
-      button(item, 'I don’t know', () => change({ action: 'occurrence.last_done', id: String(proposal.payload.occurrence_id), on: null })); return;
+    for (const source of proposal.sources) if (!sourceLink(body, source)) el('small', proposalSourceWords(source), body);
+    if (proposal.kind === 'last_done') { const date = draftField('Actual last-done date', `proposal-${proposal.id}-date`, '', 'date');
+      button(footer ?? item, 'Save date', () => change({ action: 'occurrence.last_done', id: String(proposal.payload.occurrence_id), on: date.value }));
+      button(footer ?? item, 'I don’t know', () => change({ action: 'occurrence.last_done', id: String(proposal.payload.occurrence_id), on: null })); return;
     }
     if (proposal.kind === 'completion') {
-      const date = label(item, 'Actual service date', `completion-${proposal.id}-date`, String(proposal.payload.on ?? ''), 'date');
-      const reading = proposal.payload.unit ? label(item, `Service reading (${proposal.payload.unit})`, `completion-${proposal.id}-reading`, String(proposal.payload.reading ?? ''), 'number') : null;
+      const date = draftField('Actual service date', `completion-${proposal.id}-date`, String(proposal.payload.on ?? ''), 'date');
+      const reading = proposal.payload.unit ? draftField(`Service reading (${proposal.payload.unit})`, `completion-${proposal.id}-reading`, String(proposal.payload.reading ?? ''), 'number') : null;
       if (reading) reading.step = 'any';
-      button(item, 'Confirm service details', () => write(async () => {
+      button(footer ?? item, 'Confirm service details', () => write(async () => {
         if (!date.value || reading && !reading.value.trim()) throw new Error('Enter the actual service date and reading');
         await options.change({ action: 'proposal.edit', id: proposal.id, payload: { ...proposal.payload, on: date.value, ...(reading ? { reading: Number(reading.value) } : {}) } });
         return options.change({ action: 'proposal.accept', ids: [proposal.id] });
       }));
-      button(item, 'I don’t know', () => change({ action: 'proposal.dismiss', id: proposal.id, code: 'not_this_one' })); return;
+      button(footer ?? item, 'I don’t know', () => change({ action: 'proposal.dismiss', id: proposal.id, code: 'not_this_one' })); return;
     }
-    if (proposal.kind === 'habit') { link(item, 'Review standing task in Contracts', '#contracts'); return; }
-    const actions = yoursActions(item);
+    if (proposal.kind === 'habit') { link(footer ?? item, 'Review standing task in Contracts', '#contracts'); return; }
+    const actions = footer ?? yoursActions(item);
     if (proposal.kind === 'trip') button(actions, 'Choose travellers', () => open({ type: 'trip', proposal })).className = 'yours-primary';
     else button(actions, proposal.kind === 'asset' ? 'Add asset' : proposal.kind === 'schedule' ? 'Apply reminder change'
       : proposal.kind === 'rule' ? proposal.payload.apply_class === true ? 'Apply template' : 'Switch on'
@@ -1751,8 +1929,566 @@ export const bootstrapYoursRoute = (options: YoursRouteOptions) => {
     button(more, 'Delete proposal', () => { if (!doc.defaultView?.confirm || doc.defaultView.confirm('Delete this proposal?')) return change({ action: 'proposal.delete', id: proposal.id }); }, undefined, 'delete').classList.add('yours-danger');
     if (proposal.merchant) button(more, `Stop proposing ${proposal.merchant}`, () => change({ action: 'merchant.stop', merchant: proposal.merchant! }));
   };
-  const render = () => {
+
+  const assetIdentity = (asset: Asset, result: YoursSnapshot): string =>
+    [result.classes.find(preset => preset.id === asset.class_id)?.name ?? asset.class_id, ASSET_STATUS_WORDS[asset.status]]
+      .filter(Boolean).join(' · ');
+
+  const renderAssetSummary = (parent: HTMLElement, asset: Asset, result: YoursSnapshot) => {
+    mountAssetSummary(parent, asset, result.asset_summaries?.find(summary => summary.asset_id === asset.id), fact => {
+      const [kind, field] = fact.path.split('.');
+      open({ type: kind === 'dates' ? 'date' : kind === 'readings' ? 'reading' : 'condition', asset, field: field! },
+        { key: `missing:${asset.id}:${fact.path}`, asset_id: asset.id, scope: JSON.stringify(['asset', asset.id]) });
+    });
+  };
+
+  const connectWorkspaceSelection = (roster: HTMLElement, pane: HTMLElement, controls: ReadonlyMap<string, HTMLButtonElement>,
+    renderPreview: (id: string | undefined, closePreview: () => void) => void, beforeChange?: () => boolean) => {
+    if (previewId && !controls.has(previewId)) previewId = undefined;
+    const visible = (control: HTMLButtonElement) => !control.closest('details:not([open])');
+    const updateTabStops = (focusedId = previewId) => {
+      const current = focusedId === undefined ? undefined : controls.get(focusedId);
+      const tabStops = new Map<Element | null, HTMLButtonElement>();
+      for (const control of controls.values()) {
+        const group = control.closest('details');
+        if (visible(control) && (control === current || !tabStops.has(group))) tabStops.set(group, control);
+      }
+      for (const [id, control] of controls) {
+        control.tabIndex = control === tabStops.get(control.closest('details')) ? 0 : -1;
+        if (id === previewId) control.setAttribute('aria-current', 'true');
+        else control.removeAttribute('aria-current');
+      }
+    };
+    const repaint = (focusedId = previewId) => {
+      updateTabStops(focusedId);
+      pane.replaceChildren();
+      pane.hidden = controls.size === 0;
+      renderPreview(previewId, closePreview);
+    };
+    const closePreview = () => {
+      if (!previewId || busy || beforeChange?.() === false) return;
+      const previous = previewId;
+      previewId = undefined;
+      repaint(previous);
+      focusListTarget(controls.get(previous));
+    };
+    const select = (id: string) => {
+      const control = controls.get(id);
+      if (busy || !control || !visible(control)) return;
+      if (id !== previewId) {
+        if (beforeChange?.() === false) { if (previewId) focusListTarget(controls.get(previewId)); return; }
+        previewId = id;
+        repaint();
+      }
+      focusListTarget(control);
+      control.scrollIntoView({ block: 'nearest' });
+    };
+    const escapePreview = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape' || event.defaultPrevented || event.isComposing || !previewId || busy) return;
+      event.preventDefault();
+      closePreview();
+    };
+    roster.addEventListener('keydown', event => {
+      escapePreview(event);
+      if (event.defaultPrevented || event.isComposing || event.altKey || event.ctrlKey || event.metaKey) return;
+      if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return;
+      const rows = [...controls].filter(([, control]) => visible(control));
+      const index = rows.findIndex(([, control]) => control === event.target);
+      if (index < 0) return;
+      event.preventDefault();
+      const next = rows[index + (event.key === 'ArrowDown' ? 1 : -1)];
+      if (next) select(next[0]);
+    });
+    pane.addEventListener('keydown', escapePreview);
+    repaint();
+    return { select, disclosureChanged() {
+      const current = previewId === undefined ? undefined : controls.get(previewId);
+      if (current && !visible(current)) { previewId = undefined; repaint(); }
+      else updateTabStops();
+    } };
+  };
+
+  const renderAssetWorkspace = (listParent: HTMLElement, pane: HTMLElement, assets: readonly Asset[], result: YoursSnapshot) => {
+    const roster = el('div', undefined, listParent);
+    roster.dataset.yoursAssetRoster = '';
+    roster.setAttribute('role', 'group');
+    roster.setAttribute('aria-label', 'Asset list');
+    const controls = new Map<string, HTMLButtonElement>();
+    const renderPreview = (id: string | undefined, closePreview: () => void) => {
+      const asset = assets.find(row => row.id === id);
+      pane.dataset.yoursAssetPreview = asset?.id ?? '';
+      if (!asset) {
+        delete pane.dataset.yoursFocusScope;
+        yoursEmpty(pane, 'Select an asset to see what needs attention.');
+        return;
+      }
+      pane.dataset.yoursFocusScope = JSON.stringify(['asset', asset.id]);
+      const header = el('header', undefined, pane); header.className = 'yours-preview-header';
+      const title = el('div', undefined, header);
+      el('h3', asset.name, title);
+      el('p', assetIdentity(asset, result), title).className = 'yours-muted';
+      button(header, 'Close preview', closePreview, 'close-preview');
+      const body = el('div', undefined, pane); body.className = 'yours-preview-body';
+      renderAssetSummary(body, asset, result);
+      const moreFacts = body.querySelector<HTMLDetailsElement>('[data-yours-more-facts]');
+      if (moreFacts) {
+        moreFacts.dataset.yoursDisclosure = `missing-facts:${asset.id}`;
+        moreFacts.open = openDisclosures.get(moreFacts.dataset.yoursDisclosure) ?? false;
+        moreFacts.querySelector('summary')!.dataset.yoursFocus = 'more-missing-facts';
+      }
+      placementChip(body, { collection: 'asset', id: asset.id });
+      const actions = yoursActions(pane); actions.classList.add('yours-preview-actions');
+      const openAsset = link(actions, 'Open asset', `#yours/asset/${encodeURIComponent(asset.id)}`);
+      openAsset.className = 'yours-button';
+      openAsset.dataset.yoursOpenAsset = '';
+      openAsset.dataset.yoursFocus = 'open-preview-asset';
+    };
+
+    const summaries = new Map(result.asset_summaries?.map(summary => [summary.asset_id, summary]));
+    for (const asset of assets) {
+      const row = el('article', undefined, roster);
+      row.dataset.yoursAsset = asset.id;
+      const trigger = button(el('h3', undefined, row), '', () => selection.select(asset.id), `preview-asset:${asset.id}`);
+      trigger.className = 'yours-asset-roster-row';
+      trigger.dataset.yoursPreviewAsset = '';
+      trigger.setAttribute('aria-label', asset.name);
+      trigger.setAttribute('aria-controls', ASSET_PREVIEW_ID);
+      trigger.setAttribute('aria-keyshortcuts', 'ArrowUp ArrowDown');
+      el('strong', asset.name, trigger).title = asset.name;
+      const summary = summaries.get(asset.id);
+      const due = summary?.next_due;
+      const attention = asset.sync_state !== 'live' ? 'Source unavailable'
+        : due?.state === 'overdue' ? (due.estimated ? 'Estimated overdue' : 'Overdue')
+        : summary?.missing.length ? 'Missing facts' : '';
+      if (attention) el('span', attention, trigger).className = 'yours-roster-attention';
+      el('small', assetIdentity(asset, result), trigger);
+      controls.set(asset.id, trigger);
+    }
+    const selection = connectWorkspaceSelection(roster, pane, controls, renderPreview);
+  };
+
+  const renderPursuitFacts = (parent: HTMLElement, pursuit: Asset, result: YoursSnapshot) => {
+    const lastOn = result.pursuit_activity?.[pursuit.id]?.last_on;
+    const goal = result.goal_progress?.find(row => row.pursuit_id === pursuit.id);
+    const facts = pursuitFacts(pursuit, 'line', goal);
+    if (!facts.length && !lastOn) return;
+    const terms = el('dl', undefined, parent); terms.className = 'yours-pursuit-facts';
+    for (const [name, value] of facts) { el('dt', name, terms); el('dd', value, terms); }
+    if (lastOn) { el('dt', 'Last worked on', terms); el('dd', yoursCalendarDate(lastOn), terms); }
+    return terms;
+  };
+
+  const renderPursuitActions = (actions: HTMLElement, asset: Asset, pursuits: readonly Asset[]) => {
+    if (!pursuitActive(asset)) {
+      button(actions, 'Bring back', () => bringBack(asset), `bring-back-${asset.id}`).setAttribute('aria-label', `Bring back ${asset.name}`);
+      return;
+    }
+    button(actions, 'Edit', () => open({ type: 'pursuit', asset, pursuits }), `edit-pursuit-${asset.id}`, 'rename').setAttribute('aria-label', `Edit ${asset.name}`);
+    button(actions, 'Add a part', () => open({ type: 'pursuit', pursuits, part_of: asset.id }), `part-pursuit-${asset.id}`).setAttribute('aria-label', `Add a part to ${asset.name}`);
+    const more = yoursMenu(actions, asset.name, ['pursuit', asset.id]);
+    button(more, 'Reached', () => endPursuit(asset, 'reached', pursuits), `reached-${asset.id}`);
+    button(more, 'Let go', () => endPursuit(asset, 'let_go', pursuits), `let-go-${asset.id}`);
+  };
+
+  const renderPursuitWorkspace = (index: HTMLElement, pane: HTMLElement, result: YoursSnapshot) => {
+    const pursuits = result.assets;
+    const byId = new Map(pursuits.map(pursuit => [pursuit.id, pursuit]));
+    const shown = (asset: Asset) => matchesSphere({ collection: 'asset', id: asset.id });
+    const active = pursuitTree(pursuits).filter(({ asset }) => shown(asset));
+    const ended = endedPursuits(pursuits).filter(shown);
+    const roster = el('div', undefined, index); roster.dataset.yoursPursuitRoster = '';
+    roster.setAttribute('role', 'group'); roster.setAttribute('aria-label', 'Pursuit outline');
+    const list = yoursList(roster); list.dataset.yoursPursuits = '';
+    if (!active.length) yoursEmpty(list, ended.length ? 'No active pursuits.' : sphereFilter ? 'No pursuits match this sphere.' : 'Nothing yet. Add a goal for this year, or a habit for life.');
+    const controls = new Map<string, HTMLButtonElement>();
+    const renderRow = (parent: HTMLElement, asset: Asset, depth = 0) => {
+      const row = el('article', undefined, parent); row.className = 'yours-pursuit'; row.dataset.yoursPursuit = asset.id;
+      row.dataset.yoursFocusScope = JSON.stringify(['pursuit', asset.id]);
+      if (depth) row.style.setProperty('--yours-pursuit-depth', String(Math.min(depth, 4)));
+      const trigger = button(row, '', () => selection.select(asset.id), `preview-pursuit:${asset.id}`);
+      trigger.className = 'yours-pursuit-roster-row'; trigger.dataset.yoursPreviewPursuit = '';
+      trigger.setAttribute('aria-label', asset.name);
+      trigger.setAttribute('aria-controls', PURSUIT_PREVIEW_ID);
+      trigger.setAttribute('aria-keyshortcuts', 'ArrowUp ArrowDown');
+      el('strong', asset.name, trigger);
+      const partOf = asset.belongs_to ? byId.get(asset.belongs_to) : undefined;
+      const description = !pursuitActive(asset) ? pursuitEndingWords(asset) : partOf ? `Part of ${partOf.name}` : '';
+      if (description) {
+        const meta = el('small', description, trigger); meta.id = `recued-yours-pursuit-parent-${encodeURIComponent(asset.id)}`;
+        if (partOf && pursuitActive(asset)) meta.dataset.yoursPursuitParent = partOf.id;
+        trigger.setAttribute('aria-describedby', meta.id);
+      }
+      controls.set(asset.id, trigger);
+    };
+    for (const { asset, depth } of active) renderRow(list, asset, depth);
+    let disclosure: HTMLDetailsElement | undefined;
+    if (ended.length) {
+      disclosure = yoursDisclosure(roster, `Ended · ${ended.length}`);
+      disclosure.dataset.yoursDisclosure = ENDED_PURSUITS;
+      if (ended.some(asset => asset.id === previewId)) openDisclosures.set(ENDED_PURSUITS, true);
+      disclosure.open = openDisclosures.get(ENDED_PURSUITS) ?? false;
+      const endedList = yoursList(disclosure);
+      for (const asset of ended) renderRow(endedList, asset);
+    }
+    const renderPreview = (id: string | undefined, closePreview: () => void) => {
+      const asset = id === undefined ? undefined : byId.get(id);
+      pane.dataset.yoursPursuitPreview = asset?.id ?? '';
+      if (!asset) {
+        delete pane.dataset.yoursFocusScope;
+        yoursEmpty(pane, 'Select a pursuit to see its progress.');
+        return;
+      }
+      pane.dataset.yoursFocusScope = JSON.stringify(['pursuit', asset.id]);
+      const header = el('header', undefined, pane); header.className = 'yours-preview-header';
+      const title = el('div', undefined, header);
+      el('h3', asset.name, title);
+      const partOf = asset.belongs_to ? byId.get(asset.belongs_to) : undefined;
+      if (partOf) el('p', `Part of ${partOf.name}`, title).className = 'yours-muted';
+      if (!pursuitActive(asset)) el('p', pursuitEndingWords(asset), title).className = 'yours-muted';
+      button(header, 'Close preview', closePreview, 'close-preview');
+      const body = el('div', undefined, pane); body.className = 'yours-preview-body';
+      if (!renderPursuitFacts(body, asset, result)) yoursEmpty(body, 'No progress or target recorded.');
+      if (pursuitActive(asset)) placementChip(body, { collection: 'asset', id: asset.id });
+      const actions = yoursActions(pane); actions.classList.add('yours-preview-actions');
+      renderPursuitActions(actions, asset, pursuits);
+      const openPursuit = link(actions, 'Open pursuit', `#yours/asset/${encodeURIComponent(asset.id)}`);
+      openPursuit.className = 'yours-button'; openPursuit.dataset.yoursFocus = 'open-preview-pursuit';
+    };
+    const selection = connectWorkspaceSelection(roster, pane, controls, renderPreview);
+    disclosure?.addEventListener('toggle', selection.disclosureChanged);
+  };
+
+  const groupedProposals = (proposals: readonly ProactiveProposal[]) => PROPOSAL_LANES.map(([lane, title]) => ({
+    lane, title, rows: proposals.filter(proposal => {
+      if ((proposal.lane ?? 'other') !== lane) return false;
+      const subject = proposal.subject ?? proposal.sources[0];
+      return subject ? matchesSphere(subject) : !sphereFilter || sphereFilter === 'unsorted';
+    }),
+  })).filter(group => group.rows.length);
+
+  const acceptProposalGroup = (host: HTMLElement, lane: typeof PROPOSAL_LANES[number][0], rows: readonly ProactiveProposal[]) => {
+    if (lane === 'other' || rows.length < 2) return;
+    const ids = rows.map(proposal => proposal.id);
+    const accept = button(host, `Accept all ${ids.length} proposals`, () => {
+      if (desktopQueue() && !leaveQueueItem()) return;
+      return write(() => options.change({ action: 'proposal.accept', ids }), false, { proposalGroup: ids });
+    }, `accept-proposal-group:${lane}`);
+    if (queueConfirmation) accept.disabled = true;
+  };
+
+  const reconcileQueueSelection = (ids: readonly string[], handoff: QueueWriteHandoff | undefined) => {
+    queueOrder = ids;
+    const visible = new Set(ids);
+    if (queueDraft && !visible.has(queueDraft.id)) { queueDraft = undefined; dirty = false; }
+    if (handoff?.failed?.length) {
+      const failed = handoff.failed.find(item => item.id === previewId && visible.has(item.id))
+        ?? (previewId === handoff.selected ? handoff.failed.find(item => visible.has(item.id)) : undefined);
+      if (failed) { previewId = failed.id; handoff.moved = true; }
+      setError(failed?.reason ?? handoff.failed.map(item => item.reason).join(' '), failed?.id);
+    } else if (handoff?.from && previewId === handoff.selected && !visible.has(handoff.from)) {
+      const at = handoff.order.indexOf(handoff.from);
+      previewId = handoff.order.slice(at + 1).find(id => visible.has(id))
+        ?? handoff.order.slice(0, Math.max(0, at)).reverse().find(id => visible.has(id)) ?? queueOrder[0];
+      handoff.moved = true;
+    }
+  };
+
+  const renderProposalWorkspace = (index: HTMLElement, pane: HTMLElement, result: YoursSnapshot, handoff?: QueueWriteHandoff) => {
+    const groups = groupedProposals(result.proposals);
+    const proposals = new Map(groups.flatMap(({ rows }) => rows.map(proposal => [proposal.id, proposal] as const)));
+    reconcileQueueSelection([...proposals.keys()], handoff);
+    const roster = el('div', undefined, index); roster.dataset.yoursProposalRoster = '';
+    roster.setAttribute('role', 'group'); roster.setAttribute('aria-label', 'Proposal queue');
+    if (!proposals.size) yoursEmpty(roster, result.proposals.length ? 'No proposals match this sphere.' : 'No proposals waiting.');
+    const controls = new Map<string, HTMLButtonElement>();
+    for (const { lane, title, rows } of groups) {
+      const group = el('section', undefined, roster); group.className = 'yours-queue-group';
+      const heading = el('header', undefined, group);
+      const label = el('h3', title, heading); label.id = `recued-yours-proposals-${lane}`; group.setAttribute('aria-labelledby', label.id);
+      acceptProposalGroup(heading, lane, rows);
+      const list = yoursList(group);
+      for (const proposal of rows) {
+        const trigger = button(list, '', () => selection.select(proposal.id), `preview-proposal:${proposal.id}`);
+        trigger.dataset.yoursProposalRow = proposal.id; trigger.className = 'yours-queue-row';
+        trigger.setAttribute('aria-controls', PROPOSAL_PREVIEW_ID);
+        trigger.setAttribute('aria-keyshortcuts', 'ArrowUp ArrowDown');
+        trigger.setAttribute('aria-label', proposal.title);
+        el('strong', proposal.title, trigger);
+        const detail = proposal.merchant ?? (lane === 'other' ? proposal.kind.replaceAll('_', ' ') : undefined);
+        if (detail) {
+          const meta = el('small', detail, trigger); meta.id = `recued-yours-proposal-meta-${encodeURIComponent(proposal.id)}`;
+          trigger.setAttribute('aria-describedby', meta.id);
+        }
+        controls.set(proposal.id, trigger);
+      }
+    }
+    const selection = connectWorkspaceSelection(roster, pane, controls, (id, closePreview) => {
+      const proposal = id === undefined ? undefined : proposals.get(id);
+      pane.dataset.yoursProposalPreviewPane = proposal?.id ?? '';
+      if (proposal) renderProposal(pane, proposal, closePreview);
+      else yoursEmpty(pane, 'Select a proposal to review its changes.');
+      paintStatus();
+    }, leaveQueueItem);
+    return handoff?.moved ? controls.get(previewId ?? '') ?? queueFilter() : undefined;
+  };
+
+  const renderDueWorkspace = (index: HTMLElement, pane: HTMLElement, result: YoursSnapshot, handoff?: QueueWriteHandoff) => {
+    const visible = result.occurrences.filter(item => matchesSphere(occurrenceRef(item)));
+    const groups = groupDueOccurrences(visible, Date.now(), Intl.DateTimeFormat().resolvedOptions().timeZone);
+    const occurrences = new Map(groups.flatMap(({ rows }) => rows.map(item => [item.id, item] as const)));
+    reconcileQueueSelection([...occurrences.keys()], handoff);
+    const roster = el('div', undefined, index); roster.dataset.yoursDueRoster = '';
+    roster.setAttribute('role', 'group'); roster.setAttribute('aria-label', 'Due queue');
+    if (!occurrences.size) yoursEmpty(roster, result.occurrences.length
+      ? 'No items match this sphere.' : 'Nothing is due. Tasks and notices from your rules appear here when they come up.');
+    const controls = new Map<string, HTMLButtonElement>();
+    for (const { title, rows } of groups) {
+      const group = el('section', undefined, roster); group.className = 'yours-queue-group'; group.setAttribute('aria-label', title);
+      el('h3', title, el('header', undefined, group));
+      const list = yoursList(group);
+      for (const item of rows) {
+        const trigger = button(list, '', () => selection.select(item.id), `preview-due:${item.id}`);
+        trigger.className = 'yours-queue-row'; trigger.dataset.yoursDueRow = item.id;
+        trigger.setAttribute('aria-controls', DUE_PREVIEW_ID);
+        trigger.setAttribute('aria-keyshortcuts', 'ArrowUp ArrowDown');
+        trigger.setAttribute('aria-label', item.title);
+        el('strong', item.title, trigger);
+        const detail = item.question ? 'Last-done date unknown' : item.commitment ? taskDueWords(item.commitment)
+          : item.due_on ? `Notice · ${dueOnText(item.due_on)}` : 'Notice';
+        const meta = el('small', detail, trigger); meta.id = `recued-yours-due-meta-${encodeURIComponent(item.id)}`;
+        trigger.setAttribute('aria-describedby', meta.id);
+        controls.set(item.id, trigger);
+      }
+    }
+    const selection = connectWorkspaceSelection(roster, pane, controls, (id, closePreview) => {
+      const item = id === undefined ? undefined : occurrences.get(id);
+      pane.dataset.yoursDuePreview = item?.id ?? '';
+      if (item) renderOccurrence(pane, item, closePreview);
+      else yoursEmpty(pane, 'Select an item to see its deadline and actions.');
+      paintStatus();
+    }, leaveQueueItem);
+    return handoff?.moved ? controls.get(previewId ?? '') ?? queueFilter() : undefined;
+  };
+
+  const renderOccasion = (parent: HTMLElement, occasion: Occasion, result: YoursSnapshot, day: string, closePreview?: () => void) => {
+    const item = card(parent, occasion.title, { collection: 'occasion', id: occasion.id });
+    item.classList.add('yours-event'); item.dataset.yoursOccasion = occasion.id;
+    const { body, footer } = closePreview ? queueCardParts(item, closePreview) : { body: item, footer: undefined };
+    const next = occasionNextDate(occasion, day);
+    const waiting = result.occasion_next === true ? occasionWaitingForNext(occasion, day) : undefined;
+    const held = result.occasion_events?.[occasion.id];
+    const calendar = result.settings.occasion_calendar;
+    const inChosenCalendar = occasion.in_calendar === true && calendar && !occasion.source && occasion.source_active !== false
+      && !(calendar.keeps_private === false && occasionIsPrivate(occasion));
+    const calendarStatus = held ? (held.error ? `not in ${held.name} yet: ${held.error}`
+      : held.appointment ? occasionHeldFrom(held) : `in ${held.name}`)
+      : closePreview && result.occasion_calendar_events === true ? (inChosenCalendar && next ? `waiting for ${calendar.name}` : 'in Recued only') : undefined;
+    const timing = closePreview ? el('div', undefined, body) : body;
+    el('p', `${next ? `Next ${yoursCalendarDate(next)}` : waiting ? `Last ${yoursCalendarDate(waiting)}` : 'No upcoming date'}${
+      occasion.time && next ? ` at ${occasion.time}${occasion.time_zone ? ` ${zoneName(occasion.time_zone, next)}` : ''}` : ''}${
+      occasion.time && next && occasion.alert_minutes !== undefined && result.occasion_alert === true ? ` · alert ${occasionAlertWords(occasion.alert_minutes)}` : ''}${
+      occasion.after_each === true ? ' · when the last one says' : ''}${occasion.muted ? ' · muted' : ''}${
+      calendarStatus ? ` · ${calendarStatus}` : ''}${result.occasion_privacy === true && occasionIsPrivate(occasion) ? ' · private' : ''}`, timing).className = 'yours-event-date';
+    if (closePreview) {
+      timing.className = 'yours-occasion-timing';
+      const placement = body.querySelector<HTMLElement>('[data-yours-sphere]');
+      if (placement) timing.append(placement);
+    }
+    // The next date is answered here as in Today: a date, or "No next one".
+    if (waiting && !occasion.muted) {
+      const ask = el('div', undefined, body); ask.setAttribute(YOURS_OCCASION_NEXT_ATTR, occasion.id);
+      el('p', 'When is the next one?', ask).className = 'yours-event-date';
+      const fields = closePreview ? el('div', undefined, ask) : ask;
+      if (closePreview) fields.className = 'yours-occasion-date-fields';
+      const dateName = `occasion-next-${occasion.id}`;
+      const nextField = (title: string, name: string, value: string, type: 'date' | 'time') => closePreview || queueDraft?.id === occasion.id
+        ? queueField(fields, occasion.id, title, name, value, type, !!closePreview)
+        : label(fields, title, name, value, type, true);
+      const on = nextField('Date of the next one', dateName, '', 'date');
+      const at = nextField('Time (optional)', `${dateName}-time`, occasion.time ?? '', 'time');
+      on.min = day;
+      const answers = yoursActions(ask); const savedFields = [on.name, at.name];
+      button(answers, 'Save', () => write(() => {
+        if (!on.value) throw new Error(`Choose the date of the next “${occasion.title}”, or No next one.`);
+        return options.change({ action: 'occasion.next', id: occasion.id, on: on.value, time: at.value || null });
+      }, false, { savedFields }), `${dateName}-save`).className = 'yours-primary';
+      button(answers, 'No next one', () => write(() => options.change({ action: 'occasion.next', id: occasion.id, on: null }), false, { savedFields }), `${dateName}-none`);
+    }
+    if (occasion.people.length) el('p', occasion.people.map(id => holderName(id)).join(', '), body);
+    if (occasion.source_active === false) el('p', 'Its source was removed or hidden. Reminders are suspended.', body);
+    const actions = footer ?? yoursActions(body);
+    button(actions, 'Edit occasion', () => open({ type: 'occasion', occasion }));
+    button(yoursMenu(actions, occasion.title, ['occasion', occasion.id]), 'Delete occasion', () => {
+      const floor = occasion.rules.some(rule => rule.enabled && rule.consequence === 'floor');
+      if (floor && doc.defaultView?.confirm && !doc.defaultView.confirm('Confirm removing this safety, legal or travel clock?')) return;
+      return change({ action: 'occasion.delete', id: occasion.id, confirm_floor_delete: floor });
+    });
+    button(actions, occasion.source_next_on !== undefined && !occasion.source ? 'Add reminder' : 'Add habit', () => open({ type: 'occasion_rule', occasion }));
+    if (footer) {
+      const openOccasion = link(footer, 'Open occasion', `#yours/occasions/occasion/${encodeURIComponent(occasion.id)}`);
+      openOccasion.className = 'yours-button'; openOccasion.dataset.yoursFocus = 'open-preview-occasion';
+    }
+    const occurrences = result.occurrences.filter(row => row.subject_kind === 'occasion' && row.asset_id === occasion.id);
+    const reminders = closePreview ? section(body, 'Reminders') : body;
+    if (closePreview && !occasion.rules.length && !occurrences.length) el('p', 'No reminders set.', reminders).className = 'yours-muted';
+    for (const rule of occasion.rules) {
+      const row = card(reminders, rule.title === occasion.title ? (occasion.source_next_on !== undefined && !occasion.source ? 'Reminder' : 'Annual reminder')
+        : rule.title, undefined, ['occasion-rule', occasion.id, rule.id]);
+      el('p', `${rule.reaction.occurrence === 'action' ? 'Task' : 'Notice'} · ${reminderTimingWords(rule.schedule, rule.expiry_policy)}${!rule.enabled ? ' · disabled' : rule.muted ? ' · muted' : ''}`, row);
+      button(row, 'Edit occasion rule', () => open({ type: 'occasion_rule', occasion, rule }));
+      button(row, rule.muted ? 'Resume' : 'Mute', () => {
+        const needs = rule.consequence === 'floor' && !rule.muted;
+        if (needs && doc.defaultView?.confirm && !doc.defaultView.confirm('Confirm stopping this safety, legal or travel clock?')) return;
+        return change({ action: 'occasion.save', occasion: { ...occasion, rules: occasion.rules.map(value => value.id === rule.id ? { ...value, muted: !value.muted, pinned: true } : value) }, confirm_floor_mute: needs });
+      });
+    }
+    for (const occurrence of occurrences) renderOccurrence(reminders, occurrence, undefined,
+      closePreview || queueDraft?.id === occasion.id ? occasion.id : undefined);
+    // The server reads the history and suggestions for the occasion's own address.
+    if (occasion.id === selectedOccasion) {
+      if (held?.appointment) {
+        const appointment = section(item, 'Appointment'); appointment.setAttribute(YOURS_OCCASION_APPOINTMENT_ATTR, occasion.id);
+        const at = held.appointment.is_all_day
+          ? new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeZone: 'UTC' }).format(held.appointment.start_at)
+          : new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(held.appointment.start_at);
+        el('p', `${held.appointment.title}, ${at}`, appointment).className = 'yours-event-date';
+        el('p', `${occasionHeldFrom(held)[0]!.toUpperCase()}${occasionHeldFrom(held).slice(1)}, in ${held.name}. The occasion follows it, and it stays as it is in your calendar.`, appointment);
+        if (held.appointment.booking) el('p', `Its booking: ${held.appointment.booking}`, appointment);
+      }
+      if (result.proposals.length) { const suggestions = section(item, 'Suggestions'); result.proposals.forEach(proposal => renderProposal(suggestions, proposal)); }
+      const history = section(item, 'History'); result.episodes.forEach(episode => renderCitedEpisode(history, episode));
+      if (!result.episodes.length) el('p', 'No episode of this occasion is recorded yet.', history);
+    }
+  };
+
+  const renderOccasionWorkspace = (index: HTMLElement, pane: HTMLElement, result: YoursSnapshot, day: string, handoff?: QueueWriteHandoff) => {
+    type OccasionRow = { occasion: Occasion; next: string | null };
+    const upcoming: OccasionRow[] = []; const needsDate: OccasionRow[] = []; const undated: OccasionRow[] = [];
+    for (const occasion of result.occasions) {
+      if (!matchesSphere({ collection: 'occasion', id: occasion.id })) continue;
+      const next = occasionNextDate(occasion, day);
+      const waiting = result.occasion_next === true ? occasionWaitingForNext(occasion, day) : undefined;
+      (next ? upcoming : waiting && !occasion.muted ? needsDate : undated).push({ occasion, next });
+    }
+    upcoming.sort((a, b) => a.next!.localeCompare(b.next!) || a.occasion.title.localeCompare(b.occasion.title));
+    const occasions = new Map([...upcoming, ...needsDate, ...undated].map(({ occasion }) => [occasion.id, occasion] as const));
+    reconcileQueueSelection([...occasions.keys()], handoff);
+    if (handoff?.from && handoff.from === previewId && handoff.order.indexOf(previewId) !== queueOrder.indexOf(previewId)) handoff.moved = true;
+    const roster = el('div', undefined, index); roster.dataset.yoursOccasionRoster = '';
+    roster.setAttribute('role', 'group'); roster.setAttribute('aria-label', 'Occasion list');
+    if (!occasions.size) yoursEmpty(roster, result.occasions.length ? 'No occasions match this sphere.'
+      : 'Add a yearly or one-time occasion. Birthdays also come from your contacts.');
+    const controls = new Map<string, HTMLButtonElement>();
+    for (const [title, rows] of [['Upcoming', upcoming], ['Needs a date', needsDate], ['No upcoming date', undated]] as const) {
+      if (!rows.length) continue;
+      const group = el('section', undefined, roster); group.className = 'yours-queue-group'; group.setAttribute('aria-label', title);
+      el('h3', title, el('header', undefined, group));
+      const list = yoursList(group);
+      for (const { occasion, next } of rows) {
+        const trigger = button(list, '', () => selection.select(occasion.id), `preview-occasion:${occasion.id}`);
+        trigger.className = 'yours-queue-row'; trigger.dataset.yoursOccasionRow = occasion.id;
+        trigger.setAttribute('aria-controls', OCCASION_PREVIEW_ID);
+        trigger.setAttribute('aria-keyshortcuts', 'ArrowUp ArrowDown');
+        trigger.setAttribute('aria-label', occasion.title);
+        el('strong', occasion.title, trigger);
+        const past = occasion.source_next_on;
+        const date = next ? yoursCalendarDate(next) : past && isAssetDate(past) && past < day ? `Last ${yoursCalendarDate(past)}` : '';
+        const detail = occasion.muted ? (date ? `${date} · muted` : 'Muted') : date;
+        if (detail) {
+          const meta = el('small', detail, trigger); meta.id = `recued-yours-occasion-meta-${encodeURIComponent(occasion.id)}`;
+          trigger.setAttribute('aria-describedby', meta.id);
+        }
+        controls.set(occasion.id, trigger);
+      }
+    }
+    const selection = connectWorkspaceSelection(roster, pane, controls, (id, closePreview) => {
+      const occasion = id === undefined ? undefined : occasions.get(id);
+      pane.dataset.yoursOccasionPreview = occasion?.id ?? '';
+      if (occasion) renderOccasion(pane, occasion, result, day, closePreview);
+      else yoursEmpty(pane, 'Select an occasion to see its date, reminders and calendar status.');
+      paintStatus();
+    }, leaveQueueItem);
+    return handoff?.moved ? controls.get(previewId ?? '') ?? queueFilter() : undefined;
+  };
+
+  const renderEpisodeCard = (parent: HTMLElement, episode: EpisodeInput, result: YoursSnapshot, closePreview?: () => void) => {
+    const item = card(parent, episode.title, episode.id ? { collection: 'episode', id: episode.id } : undefined);
+    item.dataset.yoursEpisode = episode.id ?? '';
+    const { body, footer } = closePreview ? queueCardParts(item, closePreview) : { body: item, footer: undefined };
+    renderEpisodeSummary(body, episode);
+    if (footer && episode.id) {
+      const openEpisode = link(footer, 'Open episode', `#yours/episodes/episode/${encodeURIComponent(episode.id)}`);
+      openEpisode.className = 'yours-button'; openEpisode.dataset.yoursFocus = 'open-preview-episode';
+      return;
+    }
+    if (!result.episodes.some(row => row.id === episode.id)) el('p', 'Assembled for this view. Kept only when you correct or annotate it, or a proposal cites it.', item);
+    // The record's own address still opens a hidden episode and explains its exclusion.
+    if (result.suppressions.some(row => row.kind === 'episode' && !row.of && row.value === episode.id)) el('p', 'You hid this episode. Remove its exclusion above to show it again.', item);
+    const actions = yoursActions(item);
+    button(actions, 'Correct or annotate', () => open({ type: 'episode', episode }));
+    button(yoursMenu(actions, episode.title, ['episode', episode.id!]), 'Delete and stop suggesting', () => change({ action: 'episode.delete', id: episode.id!, suppress: true })).className = 'yours-danger';
+  };
+
+  // Group by the day each episode happened, even when it was recorded later.
+  const renderEpisodeDays = <Row extends EpisodeInput>(parent: HTMLElement, episodes: readonly Row[], draw: (list: HTMLElement, episode: Row) => void) => {
+    let list = parent; let shownDay: string | undefined;
+    for (const episode of episodes) {
+      const day = episodeDay(episode.when.from);
+      if (day !== shownDay) {
+        shownDay = day;
+        const group = el('section', undefined, parent); group.className = 'yours-episode-day'; group.dataset.yoursEpisodeDay = day;
+        const title = episodeDayWords(episode.when.from);
+        group.setAttribute('aria-label', title);
+        el('h3', title, group); list = yoursList(group);
+      }
+      draw(list, episode);
+    }
+  };
+
+  const renderEpisodeWorkspace = (index: HTMLElement, pane: HTMLElement, result: YoursSnapshot, handoff?: QueueWriteHandoff) => {
+    const visible = result.episodes.filter(episode => matchesSphere({ collection: 'episode', id: episode.id }));
+    const episodes = new Map(visible.map(episode => [episode.id, episode] as const));
+    reconcileQueueSelection([...episodes.keys()], handoff);
+    const roster = el('div', undefined, index); roster.dataset.yoursEpisodeRoster = '';
+    roster.setAttribute('role', 'group'); roster.setAttribute('aria-label', 'Episode timeline');
+    if (!visible.length) yoursEmpty(roster, result.episodes.length ? 'No episodes match this sphere.' : NO_EPISODES);
+    const controls = new Map<string, HTMLButtonElement>();
+    renderEpisodeDays(roster, visible, (list, episode) => {
+      const trigger = button(list, '', () => selection.select(episode.id), `preview-episode:${episode.id}`);
+      trigger.className = 'yours-queue-row'; trigger.dataset.yoursEpisodeRow = episode.id;
+      trigger.setAttribute('aria-controls', EPISODE_PREVIEW_ID);
+      trigger.setAttribute('aria-keyshortcuts', 'ArrowUp ArrowDown');
+      trigger.setAttribute('aria-label', episode.title);
+      el('strong', episode.title, trigger);
+      const detail = [episode.outcome === 'skipped' ? 'Skipped' : undefined, episode.where?.name].filter(Boolean).join(' · ');
+      if (detail) {
+        const meta = el('small', detail, trigger); meta.id = `recued-yours-episode-meta-${encodeURIComponent(episode.id)}`;
+        trigger.setAttribute('aria-describedby', meta.id);
+      }
+      controls.set(episode.id, trigger);
+    });
+    const selection = connectWorkspaceSelection(roster, pane, controls, (id, closePreview) => {
+      const episode = id === undefined ? undefined : episodes.get(id);
+      pane.dataset.yoursEpisodePreview = episode?.id ?? '';
+      if (episode) renderEpisodeCard(pane, episode, result, closePreview);
+      else yoursEmpty(pane, 'Select an episode to see its notes and evidence.');
+      paintStatus();
+    }, leaveQueueItem);
+    return handoff?.moved ? controls.get(previewId ?? '') ?? queueFilter() : undefined;
+  };
+
+  const render = (queueHandoff?: QueueWriteHandoff) => {
     if (disposed) return;
+    const previousRoster = workspaceRoster();
+    if (previousRoster) {
+      const pane = root.querySelector<HTMLElement>('[data-yours-asset-preview], [data-yours-pursuit-preview], [data-yours-proposal-preview-pane], [data-yours-due-preview], [data-yours-occasion-preview], [data-yours-episode-preview]');
+      const body = pane?.querySelector<HTMLElement>('.yours-preview-body');
+      const id = pane?.dataset.yoursAssetPreview ?? pane?.dataset.yoursPursuitPreview ?? pane?.dataset.yoursProposalPreviewPane ?? pane?.dataset.yoursDuePreview ?? pane?.dataset.yoursOccasionPreview ?? pane?.dataset.yoursEpisodePreview;
+      const page = readListScroll(scrollHost);
+      workspacePosition = { list: readListScroll(previousRoster), page,
+        ...((pursuitList || queueList) && page.top > 0 ? { outlineTop: readOutlineTop(previousRoster) } : {}),
+        ...(id && body ? { preview: { id, scroll: readListScroll(body) } } : {}) };
+    }
     typing = false;
     refreshContext = undefined;
     assetPickers.splice(0).forEach(picker => picker.destroy());
@@ -1823,10 +2559,16 @@ export const bootstrapYoursRoute = (options: YoursRouteOptions) => {
       const back = link(content, 'Back to chat', serializeChatAnswerAddress(proposalsReturnToChat)); back.dataset.yoursBackToChat = '';
     }
     let filterToolbar: HTMLElement | undefined;
+    let assetListParent = content;
+    let pagedQueueIndex: HTMLElement | undefined;
+    let queueFocus: HTMLElement | null | undefined;
     if (!assetList && !selected && !selectedOccasion && !selectedEpisode && !classesView) {
       const toolbar = filterToolbar = yoursToolbar(content); toolbar.classList.add('yours-compact-filter');
       const filter = select(toolbar, 'Sphere on this page', 'sphere-filter', [['', 'All spheres'], ['personal', 'Personal'], ['professional', 'Work'], ['unsorted', 'Unsorted']], sphereFilter);
-      filter.addEventListener('change', () => { sphereFilter = filter.value; dirty = false; render(); root.querySelector<HTMLSelectElement>('[name=sphere-filter]')?.focus(); });
+      filter.addEventListener('change', () => {
+        if (queueList && (desktopQueue() || queueDraft) && !leaveQueueItem()) { filter.value = sphereFilter; return; }
+        sphereFilter = filter.value; dirty = false; render(); root.querySelector<HTMLSelectElement>('[name=sphere-filter]')?.focus();
+      });
     }
     if (selected) {
       const asset = snapshot.assets[0]; if (!asset) { yoursEmpty(content, 'Asset not found.'); paintStatus(); restoreInteraction(); return; }
@@ -2330,7 +3072,16 @@ export const bootstrapYoursRoute = (options: YoursRouteOptions) => {
           if (preset.origin === 'owner') button(yoursMenu(actions, preset.name, ['class', preset.id]), 'Delete class', () => { if (!doc.defaultView?.confirm || doc.defaultView.confirm('Delete this preset? Existing assets keep their own rules.')) return change({ action: 'class.delete', id: preset.id }); }).className = 'yours-danger'; }
       }
       else { button(pageHeader!.actions, 'Create asset', () => open({ type: 'asset' })).className = 'yours-primary';
-        const toolbar = yoursToolbar(content); toolbar.classList.add('yours-asset-toolbar');
+        renderedAssetListHash = assetListHash(page);
+        let preview: HTMLElement | undefined;
+        if (desktopMedia?.matches) {
+          const workspace = el('div', undefined, content); workspace.dataset.yoursAssetWorkspace = '';
+          assetListParent = el('div', undefined, workspace); assetListParent.className = 'yours-asset-index';
+          preview = el('section', undefined, workspace);
+          preview.id = ASSET_PREVIEW_ID;
+          preview.setAttribute('aria-label', 'Asset preview');
+        }
+        const toolbar = yoursToolbar(assetListParent); toolbar.classList.add('yours-asset-toolbar');
         const searchRow = el('div', undefined, toolbar); searchRow.className = 'yours-search-row';
         const query = label(searchRow, 'Find assets', 'search', search, 'search', true);
         const applySearch = () => { search = query.value.trim(); return navigateAssets(); };
@@ -2342,32 +3093,39 @@ export const bootstrapYoursRoute = (options: YoursRouteOptions) => {
         const sphere = select(filters, 'Asset sphere', 'asset-sphere', [['', 'All spheres'], ['personal', 'Personal'], ['professional', 'Work'], ['unsorted', 'Unsorted']], assetSphere);
         sphere.addEventListener('change', () => { assetSphere = sphere.value as typeof assetSphere; search = query.value.trim(); void navigateAssets(); });
         const applied = assetFiltersApplied(snapshot);
-        if (assetFilter && snapshot.asset_filter?.kind !== assetFilter) el('p', 'Asset filters are unavailable on this server. Choose All assets to view your assets.', content);
-        if (assetSphere && snapshot.asset_sphere !== assetSphere) el('p', 'Asset sphere filters are unavailable on this server. Choose All spheres to view your assets.', content);
-        const meta = el('div', undefined, content); meta.className = 'yours-list-meta';
+        if (assetFilter && snapshot.asset_filter?.kind !== assetFilter) el('p', 'Asset filters are unavailable on this server. Choose All assets to view your assets.', assetListParent);
+        if (assetSphere && snapshot.asset_sphere !== assetSphere) el('p', 'Asset sphere filters are unavailable on this server. Choose All spheres to view your assets.', assetListParent);
+        const meta = el('div', undefined, assetListParent); meta.className = 'yours-list-meta';
         if (applied) {
           const count = el('p', `${snapshot.total_assets} ${search || assetFilter || assetSphere ? 'matching ' : ''}asset${snapshot.total_assets === 1 ? '' : 's'}`, meta); count.dataset.yoursAssetCount = '';
         }
         for (const text of [assetFilter === 'missing_facts' ? 'Missing facts' : assetFilter ? 'Overdue dates' : '', assetSphere === 'personal' ? 'Personal' : assetSphere === 'professional' ? 'Work' : assetSphere ? 'Unsorted' : '', search ? `“${search}”` : ''].filter(Boolean)) el('span', text, meta).className = 'yours-filter-chip';
         if (assetFilter || assetSphere || search) button(meta, 'Clear filters', () => { assetFilter = ''; assetSphere = ''; search = ''; return navigateAssets(); }).className = 'yours-quiet';
         if (applied) {
-          if (assetFilter) el('p', assetFilter === 'missing_facts' ? 'Facts required by enabled rules.' : 'Due dates before today. Estimates are labelled on each card.', content);
-          if (assetFilter && snapshot.asset_filter?.unavailable) el('p', `${snapshot.asset_filter.unavailable} asset${snapshot.asset_filter.unavailable === 1 ? '' : 's'} could not be checked. Choose All assets to review ${snapshot.asset_filter.unavailable === 1 ? 'it' : 'them'}.`, content);
-          if (!snapshot.assets.length) yoursEmpty(content, search || assetFilter || assetSphere ? 'No assets match these filters.' : 'No assets yet. Create one, or review the proposals from local receipts.');
+          if (assetFilter) el('p', assetFilter === 'missing_facts' ? 'Facts required by enabled rules.'
+            : preview ? 'Due dates before today. Estimated dates are labelled in the preview.'
+            : 'Due dates before today. Estimates are labelled on each card.', assetListParent);
+          if (assetFilter && snapshot.asset_filter?.unavailable) el('p', `${snapshot.asset_filter.unavailable} asset${snapshot.asset_filter.unavailable === 1 ? '' : 's'} could not be checked. Choose All assets to review ${snapshot.asset_filter.unavailable === 1 ? 'it' : 'them'}.`, assetListParent);
+          if (!snapshot.assets.length) yoursEmpty(assetListParent, search || assetFilter || assetSphere ? 'No assets match these filters.' : 'No assets yet. Create one, or review the proposals from local receipts.');
         }
-        if (assetFilter) link(content, 'Remove attention filter', assetListHash(0, ''));
-        const list = yoursList(content);
-        for (const asset of applied ? snapshot.assets : []) { const item = card(list, '', { collection: 'asset', id: asset.id }); item.dataset.yoursAsset = asset.id;
-          link(item.querySelector('h3')!, asset.name, `#yours/asset/${encodeURIComponent(asset.id)}`).dataset.yoursAssetName = '';
-          const identity = el('div', undefined, item); identity.className = 'yours-asset-identity';
-          el('p', [snapshot.classes.find(preset => preset.id === asset.class_id)?.name ?? asset.class_id, ASSET_STATUS_WORDS[asset.status]].filter(Boolean).join(' · '), identity).className = 'yours-asset-meta';
-          const sphere = item.querySelector<HTMLElement>('[data-yours-sphere]'); if (sphere) identity.append(sphere);
-          mountAssetSummary(item, asset, snapshot.asset_summaries?.find(summary => summary.asset_id === asset.id), fact => {
-            const [kind, field] = fact.path.split('.');
-            open({ type: kind === 'dates' ? 'date' : kind === 'readings' ? 'reading' : 'condition', asset, field: field! },
-              { key: `missing:${asset.id}:${fact.path}`, asset_id: asset.id, scope: JSON.stringify(['asset', asset.id]) });
-          });
-          const openAsset = link(item, '›', `#yours/asset/${encodeURIComponent(asset.id)}`); openAsset.setAttribute('aria-label', 'Open asset'); openAsset.title = `Open ${asset.name}`; openAsset.dataset.yoursOpenAsset = ''; } }
+        if (assetFilter) link(assetListParent, 'Remove attention filter', assetListHash(0, ''));
+        const assets = applied ? snapshot.assets : [];
+        if (preview) renderAssetWorkspace(assetListParent, preview, assets, snapshot);
+        else {
+          const list = yoursList(content);
+          for (const asset of assets) {
+            const item = card(list, '', { collection: 'asset', id: asset.id }); item.dataset.yoursAsset = asset.id;
+            const href = `#yours/asset/${encodeURIComponent(asset.id)}`;
+            link(item.querySelector('h3')!, asset.name, href).dataset.yoursAssetName = '';
+            const identity = el('div', undefined, item); identity.className = 'yours-asset-identity';
+            el('p', assetIdentity(asset, snapshot), identity).className = 'yours-asset-meta';
+            const sphere = item.querySelector<HTMLElement>('[data-yours-sphere]'); if (sphere) identity.append(sphere);
+            renderAssetSummary(item, asset, snapshot);
+            const openAsset = link(item, '›', href);
+            openAsset.setAttribute('aria-label', 'Open asset'); openAsset.title = `Open ${asset.name}`; openAsset.dataset.yoursOpenAsset = '';
+          }
+        }
+      }
     } else if (tab === 'pursuits') {
       // D-342 §7 — active pursuits as a tree by parent; ended ones folded away below. A server
       // that does not echo the filter has no pursuits, and its list would hold every asset.
@@ -2375,46 +3133,55 @@ export const bootstrapYoursRoute = (options: YoursRouteOptions) => {
       else {
         const pursuits = snapshot.assets;
         button(pageHeader!.actions, 'Add pursuit', () => open({ type: 'pursuit', pursuits })).className = 'yours-primary';
-        const rows = pursuitTree(pursuits);
-        if (!rows.length) yoursEmpty(content, 'Nothing yet. Add a goal for this year, or a habit for life.');
-        const list = yoursList(content); list.dataset.yoursPursuits = '';
-        for (const { asset, depth } of rows) {
-          const item = card(list, '', { collection: 'asset', id: asset.id }, ['pursuit', asset.id]); item.dataset.yoursPursuit = asset.id;
-          item.classList.add('yours-pursuit'); if (depth) item.style.setProperty('--yours-pursuit-depth', String(Math.min(depth, 4)));
-          link(item.querySelector('h3')!, asset.name, `#yours/asset/${encodeURIComponent(asset.id)}`).dataset.yoursAssetName = '';
-          // The indent shows a part; the words say it for a screen reader too.
-          const parent = depth ? pursuits.find(row => row.id === asset.belongs_to) : undefined;
-          if (parent) { const part = el('p', `Part of ${parent.name}`); part.className = 'yours-muted'; part.dataset.yoursPursuitParent = parent.id; item.querySelector('h3')!.after(part); }
-          // D-343 slice 5 (§7) — and when the owner last recorded working on it, in Close the day.
-          const lastOn = snapshot.pursuit_activity?.[asset.id]?.last_on;
-          const facts: Array<readonly [string, string, string?]> = [...pursuitFacts(asset, 'line', snapshot.goal_progress?.find(row => row.pursuit_id === asset.id)), ...(lastOn ? [['Last worked on', yoursCalendarDate(lastOn)] as const] : [])];
-          if (facts.length) { const terms = el('dl', undefined, item); terms.className = 'yours-pursuit-facts';
-            for (const [name, value] of facts) { el('dt', name, terms); el('dd', value, terms); } }
-          const actions = yoursActions(item);
-          button(actions, 'Edit', () => open({ type: 'pursuit', asset, pursuits }), `edit-pursuit-${asset.id}`, 'rename').setAttribute('aria-label', `Edit ${asset.name}`);
-          button(actions, 'Add a part', () => open({ type: 'pursuit', pursuits, part_of: asset.id }), `part-pursuit-${asset.id}`).setAttribute('aria-label', `Add a part to ${asset.name}`);
-          const more = yoursMenu(actions, asset.name, ['pursuit', asset.id]);
-          button(more, 'Reached', () => endPursuit(asset, 'reached', pursuits), `reached-${asset.id}`);
-          button(more, 'Let go', () => endPursuit(asset, 'let_go', pursuits), `let-go-${asset.id}`);
-        }
-        const ended = endedPursuits(pursuits);
-        if (ended.length) {
-          const host = yoursDisclosure(content, `Ended · ${ended.length}`); host.dataset.yoursDisclosure = 'pursuits:ended';
-          for (const asset of ended) {
-            const item = card(host, '', undefined, ['pursuit', asset.id]); item.dataset.yoursPursuit = asset.id;
-            link(item.querySelector('h3')!, asset.name, `#yours/asset/${encodeURIComponent(asset.id)}`).dataset.yoursAssetName = '';
-            el('p', pursuitEndingWords(asset), item).className = 'yours-state';
-            button(yoursActions(item), 'Bring back', () => bringBack(asset), `bring-back-${asset.id}`).setAttribute('aria-label', `Bring back ${asset.name}`);
+        if (desktopMedia?.matches) {
+          renderedPursuitWorkspace = true;
+          const workspace = el('div', undefined, content); workspace.dataset.yoursPursuitWorkspace = '';
+          const index = el('div', undefined, workspace); index.className = 'yours-pursuit-index';
+          if (filterToolbar) index.append(filterToolbar);
+          const preview = el('section', undefined, workspace); preview.id = PURSUIT_PREVIEW_ID;
+          preview.setAttribute('aria-label', 'Pursuit preview');
+          renderPursuitWorkspace(index, preview, snapshot);
+        } else {
+          const pursuitLink = (item: HTMLElement, asset: Asset) => {
+            const name = link(item.querySelector('h3')!, asset.name, `#yours/asset/${encodeURIComponent(asset.id)}`);
+            name.dataset.yoursAssetName = ''; name.dataset.yoursFocus = `preview-pursuit:${asset.id}`;
+          };
+          const rows = pursuitTree(pursuits);
+          if (!rows.length) yoursEmpty(content, 'Nothing yet. Add a goal for this year, or a habit for life.');
+          const list = yoursList(content); list.dataset.yoursPursuits = '';
+          for (const { asset, depth } of rows) {
+            const item = card(list, '', { collection: 'asset', id: asset.id }, ['pursuit', asset.id]); item.dataset.yoursPursuit = asset.id;
+            item.classList.add('yours-pursuit'); if (depth) item.style.setProperty('--yours-pursuit-depth', String(Math.min(depth, 4)));
+            pursuitLink(item, asset);
+            // The indent shows a part; the words say it for a screen reader too.
+            const parent = depth ? pursuits.find(row => row.id === asset.belongs_to) : undefined;
+            if (parent) { const part = el('p', `Part of ${parent.name}`); part.className = 'yours-muted'; part.dataset.yoursPursuitParent = parent.id; item.querySelector('h3')!.after(part); }
+            renderPursuitFacts(item, asset, snapshot);
+            renderPursuitActions(yoursActions(item), asset, pursuits);
+          }
+          const ended = endedPursuits(pursuits);
+          if (ended.length) {
+            const host = yoursDisclosure(content, `Ended · ${ended.length}`); host.dataset.yoursDisclosure = ENDED_PURSUITS;
+            for (const asset of ended) {
+              const item = card(host, '', undefined, ['pursuit', asset.id]); item.dataset.yoursPursuit = asset.id;
+              pursuitLink(item, asset);
+              el('p', pursuitEndingWords(asset), item).className = 'yours-state';
+              renderPursuitActions(yoursActions(item), asset, pursuits);
+            }
           }
         }
         if (snapshot.total_assets > pursuits.length) el('p', `The first ${pursuits.length} of ${snapshot.total_assets} pursuits are shown.`, content).className = 'yours-muted';
       }
     } else if (tab === 'proposals') {
+      const desktop = desktopQueue();
+      const management = desktop ? el('div') : content; if (desktop) management.className = 'yours-proposal-settings';
       const kind = select(filterToolbar ?? content, 'Proposal kind', 'proposal-kind', [['', 'All kinds'], ...PROACTIVE_PROPOSAL_KINDS.map(value => [value, value.replaceAll('_', ' ')] as [string, string])], proposalKind);
-      kind.addEventListener('change', () => { proposalKind = kind.value as typeof proposalKind; page = 0; dirty = false;
+      kind.addEventListener('change', () => {
+        if ((desktop || queueDraft) && !leaveQueueItem()) { kind.value = proposalKind; return; }
+        proposalKind = kind.value as typeof proposalKind; page = 0; dirty = false;
         if (doc.defaultView?.location) doc.defaultView.location.hash = `#yours/proposals${proposalKind ? `/kind/${proposalKind}` : ''}`; else void refresh(true); });
       if (snapshot.subscribers?.length) {
-        const host = el('details', undefined, content); el('summary', 'Event subscribers', host);
+        const host = el('details', undefined, management); el('summary', 'Event subscribers', host);
         el('p', 'Select the contract each subscriber uses for event values and subsequent reads. A revoked selection stops access. Review grants in Contracts.', host);
         for (const subscriber of snapshot.subscribers) {
           const choices: Array<[string, string]> = [['', 'Ordinary owner automation'], ...(snapshot.subscriber_contracts ?? []).map(row => [row.id, row.name] as [string, string])];
@@ -2425,7 +3192,7 @@ export const bootstrapYoursRoute = (options: YoursRouteOptions) => {
       }
       // §15.4 — what the owner answered on Today stays restorable here.
       if (snapshot.situation_dismissals?.length) {
-        const host = el('details', undefined, content); host.dataset.yoursDismissals = ''; el('summary', `Hidden from Today · ${snapshot.situation_dismissals.length}`, host);
+        const host = el('details', undefined, management); host.dataset.yoursDismissals = ''; el('summary', `Hidden from Today · ${snapshot.situation_dismissals.length}`, host);
         for (const row of snapshot.situation_dismissals) {
           const item = el('p', `${row.scope === 'kind' ? `Every ${row.kind.replaceAll('_', ' ')} item` : row.label} · ${row.code === 'not_now' && row.until
             ? `until ${new Date(row.until).toLocaleString()}` : row.code === 'never_this_kind' ? 'never this kind' : 'not this one'}`, host);
@@ -2441,95 +3208,63 @@ export const bootstrapYoursRoute = (options: YoursRouteOptions) => {
           return change({ action: 'subscriber.reconciled', subscriber_id: issue.subscriber_id, revision: issue.revision, run_id: issue.run_id });
         });
       }
-      const trust = yoursDisclosure(content, 'What is read'); el('p', 'Recued checks stored mail facts on this server for likely durable purchases. Unaccepted proposals stay here until you decide. Pharmacy and health purchases are excluded. Accepted assets remain yours.', trust);
+      const trust = yoursDisclosure(management, 'What is read'); el('p', 'Recued checks stored mail facts on this server for likely durable purchases. Unaccepted proposals stay here until you decide. Pharmacy and health purchases are excluded. Accepted assets remain yours.', trust);
       el('p', `${snapshot.intake.emails_read} emails read locally · ${snapshot.intake.receipts_found} source records checked · ${snapshot.intake.likely_assets} likely assets`, trust);
       for (const source of snapshot.sources) { const input = checked(trust, source.name, `source-${source.id}`, source.enabled); input.addEventListener('change', () => { void change({ action: 'source.set', id: source.id, enabled: input.checked }); }); }
       for (const suppression of snapshot.suppressions.filter(row => row.kind === 'merchant')) { const item = el('p', `Stopped: ${suppression.value}`, trust); button(item, 'Allow again', () => change({ action: 'suppression.delete', id: suppression.id })); }
       button(trust, 'Check local receipts', () => change({ action: 'intake.scan' }));
       button(trust, 'Forget unaccepted extractions', () => { if (doc.defaultView?.confirm && !doc.defaultView.confirm('Forget unaccepted extractions? Emails and assets you accepted remain yours.')) return; return change({ action: 'intake.forget', confirmed: true }); });
-      for (const lane of ['likely_asset', 'gift', 'return', 'pickup', 'bundle', 'other']) {
-        const proposals = snapshot.proposals.filter(proposal => {
-          if (lane === 'other' ? !!proposal.lane : proposal.lane !== lane) return false;
-          const ref = proposal.subject ?? proposal.sources[0];
-          return !sphereFilter || (ref ? placementFor(ref)?.sphere ?? 'unsorted' : 'unsorted') === sphereFilter;
-        }); if (!proposals.length) continue;
-        const host = section(content, { likely_asset: 'Likely assets', gift: 'Gifts', return: 'Returns', pickup: 'Pickups', bundle: 'Bundles', other: 'Other proposals and questions' }[lane]!);
-        if (lane !== 'other' && proposals.length > 1) button(host, `Accept all ${proposals.length} proposals`, () => change({ action: 'proposal.accept', ids: proposals.map(proposal => proposal.id) }));
-        proposals.forEach(proposal => renderProposal(host, proposal));
+      if (desktop) {
+        renderedPagedQueue = true;
+        const workspace = el('div', undefined, content); workspace.dataset.yoursProposalWorkspace = '';
+        const index = pagedQueueIndex = el('div', undefined, workspace); index.className = 'yours-proposal-index';
+        if (filterToolbar) { filterToolbar.prepend(kind.parentElement!); index.append(filterToolbar); }
+        const preview = el('section', undefined, workspace); preview.id = PROPOSAL_PREVIEW_ID;
+        preview.setAttribute('aria-label', 'Proposal preview');
+        queueFocus = renderProposalWorkspace(index, preview, snapshot, queueHandoff);
+        content.append(management);
+      } else {
+        for (const { lane, title, rows } of groupedProposals(snapshot.proposals)) {
+          const host = section(content, title);
+          acceptProposalGroup(host, lane, rows);
+          rows.forEach(proposal => renderProposal(host, proposal));
+        }
+        if (!snapshot.proposals.length) yoursEmpty(content, 'No proposals waiting.');
+        content.append(trust);
       }
-      if (!snapshot.proposals.length) yoursEmpty(content, 'No proposals waiting.');
-      content.append(trust);
     } else if (tab === 'occurrences') {
-      el('p', 'Everything still open, including what is more than seven days away.', content);
-      [...snapshot.occurrences].sort((a, b) => (a.due_on ?? '9999').localeCompare(b.due_on ?? '9999')).forEach(item => renderOccurrence(content, item));
-      if (!snapshot.occurrences.length) yoursEmpty(content, 'Nothing is due. Tasks and notices from your rules appear here when they come up.');
+      if (desktopQueue()) {
+        renderedDueWorkspace = true;
+        const workspace = el('div', undefined, content); workspace.dataset.yoursDueWorkspace = '';
+        const index = el('div', undefined, workspace); index.className = 'yours-due-index';
+        if (filterToolbar) index.append(filterToolbar);
+        const preview = el('section', undefined, workspace); preview.id = DUE_PREVIEW_ID;
+        preview.setAttribute('aria-label', 'Due preview');
+        queueFocus = renderDueWorkspace(index, preview, snapshot, queueHandoff);
+      } else {
+        el('p', 'Everything still open, including what is more than seven days away.', content);
+        [...snapshot.occurrences].sort((a, b) => (a.due_on ?? '9999').localeCompare(b.due_on ?? '9999')).forEach(item => renderOccurrence(content, item));
+        if (!snapshot.occurrences.length) yoursEmpty(content, 'Nothing is due. Tasks and notices from your rules appear here when they come up.');
+      }
     } else if (tab === 'occasions') {
       button(pageHeader!.actions, 'Create occasion', () => open({ type: 'occasion' })).className = 'yours-primary';
-      // D-407 slice 4 (Q3) — the one calendar occasions put their events in, chosen here, never by the AI.
-      if (snapshot.occasion_calendar_events === true) occasionCalendarChoice(content, snapshot.settings.occasion_calendar ?? null);
-      for (const occasion of snapshot.occasions) { const item = card(content, occasion.title, { collection: 'occasion', id: occasion.id });
-        item.classList.add('yours-event');
-        // This device's day, as Today's: a UTC day is tomorrow's for an evening west of Greenwich.
-        const day = localDay(new Date());
-        const next = occasionNextDate(occasion, day);
-        const waiting = snapshot.occasion_next === true ? occasionWaitingForNext(occasion, day) : undefined;
-        el('p', `${next ? `Next ${yoursCalendarDate(next)}` : waiting ? `Last ${yoursCalendarDate(waiting)}` : 'No upcoming date'}${
-          occasion.time && next ? ` at ${occasion.time}${occasion.time_zone ? ` ${zoneName(occasion.time_zone, next)}` : ''}` : ''}${
-          occasion.time && next && occasion.alert_minutes !== undefined && snapshot.occasion_alert === true ? ` · alert ${occasionAlertWords(occasion.alert_minutes)}` : ''}${
-          occasion.after_each === true ? ' · when the last one says' : ''}${occasion.muted ? ' · muted' : ''}${
-          snapshot.occasion_events?.[occasion.id] ? (snapshot.occasion_events[occasion.id]!.error
-            ? ` · not in ${snapshot.occasion_events[occasion.id]!.name} yet: ${snapshot.occasion_events[occasion.id]!.error}`
-            // D-407 slice 5 (U2) — an event it holds but did not write: where it came from, one appointment.
-            : snapshot.occasion_events[occasion.id]!.appointment
-              ? ` · ${occasionHeldFrom(snapshot.occasion_events[occasion.id]!)}`
-              : ` · in ${snapshot.occasion_events[occasion.id]!.name}`) : ''}${
-          snapshot.occasion_privacy === true && occasionIsPrivate(occasion) ? ' · private' : ''}`, item).className = 'yours-event-date';
-        // D-407 slice 2 — "When is the next one?", answered here as in Today: its date, or "No next one".
-        if (waiting && !occasion.muted) {
-          const ask = el('div', undefined, item); ask.setAttribute(YOURS_OCCASION_NEXT_ATTR, occasion.id);
-          el('p', 'When is the next one?', ask).className = 'yours-event-date';
-          const on = label(ask, 'Date of the next one', `occasion-next-${occasion.id}`, '', 'date', true);
-          on.min = day;
-          const at = label(ask, 'Time (optional)', `occasion-next-${occasion.id}-time`, occasion.time ?? '', 'time', true);
-          const answers = yoursActions(ask);
-          button(answers, 'Save', () => write(() => {
-            if (!on.value) throw new Error(`Choose the date of the next “${occasion.title}”, or No next one.`);
-            return options.change({ action: 'occasion.next', id: occasion.id, on: on.value, time: at.value || null });
-          }), `occasion-next-${occasion.id}-save`).className = 'yours-primary';
-          button(answers, 'No next one', () => write(() => options.change({ action: 'occasion.next', id: occasion.id, on: null })), `occasion-next-${occasion.id}-none`);
-        }
-        if (occasion.people.length) el('p', occasion.people.map(id => holderName(id)).join(', '), item);
-        if (occasion.source_active === false) el('p', 'Its source was removed or hidden. Reminders are suspended.', item);
-        const actions = yoursActions(item); button(actions, 'Edit occasion', () => open({ type: 'occasion', occasion })); button(yoursMenu(actions, occasion.title, ['occasion', occasion.id]), 'Delete occasion', () => { const floor = occasion.rules.some(rule => rule.enabled && rule.consequence === 'floor');
-          if (floor && doc.defaultView?.confirm && !doc.defaultView.confirm('Confirm removing this safety, legal or travel clock?')) return; return change({ action: 'occasion.delete', id: occasion.id, confirm_floor_delete: floor }); });
-        button(actions, occasion.source_next_on !== undefined && !occasion.source ? 'Add reminder' : 'Add habit', () => open({ type: 'occasion_rule', occasion }));
-        for (const rule of occasion.rules) { const row = card(item, rule.title === occasion.title ? (occasion.source_next_on !== undefined && !occasion.source ? 'Reminder' : 'Annual reminder') : rule.title, undefined, ['occasion-rule', occasion.id, rule.id]); el('p', `${rule.reaction.occurrence === 'action' ? 'Task' : 'Notice'} · ${reminderTimingWords(rule.schedule, rule.expiry_policy)}${!rule.enabled ? ' · disabled' : rule.muted ? ' · muted' : ''}`, row);
-          button(row, 'Edit occasion rule', () => open({ type: 'occasion_rule', occasion, rule }));
-          button(row, rule.muted ? 'Resume' : 'Mute', () => { const needs = rule.consequence === 'floor' && !rule.muted; if (needs && doc.defaultView?.confirm && !doc.defaultView.confirm('Confirm stopping this safety, legal or travel clock?')) return;
-            return change({ action: 'occasion.save', occasion: { ...occasion, rules: occasion.rules.map(value => value.id === rule.id ? { ...value, muted: !value.muted, pinned: true } : value) }, confirm_floor_mute: needs }); }); }
-        for (const occurrence of snapshot.occurrences.filter(row => row.subject_kind === 'occasion' && row.asset_id === occasion.id)) renderOccurrence(item, occurrence);
-        // §15.2, P44 — on its own page an occasion shows the suggestions that would change
-        // it, and its history, where each episode can be corrected or hidden. The server
-        // reads both for this occasion alone; the list's reads are not about it.
-        if (occasion.id === selectedOccasion) {
-          // D-407 slice 5 (U2) — the event it holds and the booking the same invite made: one appointment, never three
-          // records to manage.
-          const held = snapshot.occasion_events?.[occasion.id];
-          if (held?.appointment) {
-            const appointment = section(item, 'Appointment'); appointment.setAttribute(YOURS_OCCASION_APPOINTMENT_ATTR, occasion.id);
-            const at = held.appointment.is_all_day
-              ? new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeZone: 'UTC' }).format(held.appointment.start_at)
-              : new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(held.appointment.start_at);
-            el('p', `${held.appointment.title}, ${at}`, appointment).className = 'yours-event-date';
-            el('p', `${occasionHeldFrom(held)[0]!.toUpperCase()}${occasionHeldFrom(held).slice(1)}, in ${held.name}. The occasion follows it, and it stays as it is in your calendar.`, appointment);
-            if (held.appointment.booking) el('p', `Its booking: ${held.appointment.booking}`, appointment);
-          }
-          if (snapshot.proposals.length) { const suggestions = section(item, 'Suggestions'); snapshot.proposals.forEach(proposal => renderProposal(suggestions, proposal)); }
-          const history = section(item, 'History'); snapshot.episodes.forEach(episode => renderCitedEpisode(history, episode));
-          if (!snapshot.episodes.length) el('p', 'No episode of this occasion is recorded yet.', history);
-        }
+      // This device's day, as Today's: a UTC day is tomorrow's for an evening west of Greenwich.
+      const day = localDay(new Date());
+      if (desktopQueue()) {
+        renderedPagedQueue = true;
+        const workspace = el('div', undefined, content); workspace.dataset.yoursOccasionWorkspace = '';
+        const index = el('div', undefined, workspace); index.className = 'yours-occasion-index';
+        if (filterToolbar) index.append(filterToolbar);
+        const preview = el('section', undefined, workspace); preview.id = OCCASION_PREVIEW_ID;
+        preview.setAttribute('aria-label', 'Occasion preview');
+        queueFocus = renderOccasionWorkspace(index, preview, snapshot, day, queueHandoff);
+        if (snapshot.occasion_calendar_events === true) occasionCalendarChoice(content, snapshot.settings.occasion_calendar ?? null);
+      } else {
+        if (snapshot.occasion_calendar_events === true) occasionCalendarChoice(content, snapshot.settings.occasion_calendar ?? null);
+        const occasions = allOccasions ? snapshot.occasions.slice(page * 50, (page + 1) * 50) : snapshot.occasions;
+        for (const occasion of occasions) renderOccasion(content, occasion, snapshot, day);
+        if (!occasions.length) yoursEmpty(content, 'Add a yearly or one-time occasion. Birthdays also come from your contacts.');
       }
-      if (!snapshot.occasions.length) yoursEmpty(content, 'Add a yearly or one-time occasion. Birthdays also come from your contacts.');
     } else {
       button(pageHeader!.actions, 'Record episode', () => open({ type: 'episode' })).className = 'yours-primary';
       const management = section(content, 'Memory settings');
@@ -2571,37 +3306,57 @@ export const bootstrapYoursRoute = (options: YoursRouteOptions) => {
         return change({ action: 'history.forget', confirmed: true }); });
       for (const evidence of snapshot.history_evidence ?? []) { const row = card(content, evidence.title); el('p', `${episodeDateWords(evidence.when)} · ${evidence.where?.name ?? 'place unknown'} · retained ${evidence.retained_at ? new Date(evidence.retained_at).toLocaleDateString() : 'unknown'}`, row);
         el('p', 'Kept before raw mail retention.', row); renderEvidence(row, evidence.sources); }
-      // P44 — the list holds stored episodes only. A derived one shows only at its own
-      // address, where a proposal or occasion cites it, never as a lifelog.
-      const episodes = [...snapshot.episodes, ...(selectedEpisode ? (snapshot.derived_episodes ?? []).filter(row => !snapshot!.episodes.some(value => value.id === row.id)) : [])];
-      const episodeList = yoursList(content); content.insertBefore(episodeList, management);
-      // D-343 slice 5 — by the day each happened, the latest first, under that day's heading, so a day
-      // closed days later sits on its own day. An episode's own address shows it alone.
-      let dayList = episodeList; let shownDay: string | undefined;
-      for (const episode of episodes) {
-        if (!selectedEpisode && episodeDay(episode.when.from) !== shownDay) {
-          shownDay = episodeDay(episode.when.from);
-          const day = el('section', undefined, episodeList); day.className = 'yours-episode-day'; day.dataset.yoursEpisodeDay = shownDay;
-          el('h3', episodeDayWords(episode.when.from), day); dayList = yoursList(day);
-        }
-        const item = card(dayList, episode.title, episode.id ? { collection: 'episode', id: episode.id } : undefined);
-        item.dataset.yoursEpisode = episode.id ?? '';
-        renderEpisodeSummary(item, episode);
-        if (!snapshot.episodes.some(row => row.id === episode.id)) el('p', 'Assembled for this view. Kept only when you correct or annotate it, or a proposal cites it.', item);
-        // Only its own address shows a hidden episode, so its address says so.
-        if (snapshot.suppressions.some(row => row.kind === 'episode' && !row.of && row.value === episode.id)) el('p', 'You hid this episode. Remove its exclusion above to show it again.', item);
-        const actions = yoursActions(item); button(actions, 'Correct or annotate', () => open({ type: 'episode', episode }));
-        button(yoursMenu(actions, episode.title, ['episode', episode.id!]), 'Delete and stop suggesting', () => change({ action: 'episode.delete', id: episode.id!, suppress: true })).className = 'yours-danger';
+      if (episodeList && desktopQueue()) {
+        renderedPagedQueue = true;
+        const workspace = el('div', undefined, content); workspace.dataset.yoursEpisodeWorkspace = '';
+        const index = pagedQueueIndex = el('div', undefined, workspace); index.className = 'yours-episode-index';
+        if (filterToolbar) index.append(filterToolbar);
+        const preview = el('section', undefined, workspace); preview.id = EPISODE_PREVIEW_ID;
+        preview.setAttribute('aria-label', 'Episode preview');
+        queueFocus = renderEpisodeWorkspace(index, preview, snapshot, queueHandoff);
+      } else {
+        // P44 — the journal shows stored episodes. A derived one opens at its cited address.
+        const result = snapshot;
+        const derived = selectedEpisode ? (result.derived_episodes ?? []).filter(row => !result.episodes.some(value => value.id === row.id)) : [];
+        const episodes = [...result.episodes, ...derived];
+        const list = yoursList(content); content.insertBefore(list, management);
+        if (selectedEpisode) for (const episode of episodes) renderEpisodeCard(list, episode, result);
+        else renderEpisodeDays(list, episodes, (day, episode) => renderEpisodeCard(day, episode, result));
+        if (!episodes.length) yoursEmpty(list, NO_EPISODES);
       }
-      if (!episodes.length) yoursEmpty(episodeList, 'Only episodes you record, correct, annotate or keep for a proposal or occasion are stored here.');
       content.append(management);
     }
-    if (!selected && !classesView && assetFiltersApplied(snapshot)) { const pageRoute = tab === 'proposals' && proposalKind ? `${tab}/kind/${proposalKind}` : tab; const pagination = el('nav', undefined, content); pagination.className = 'yours-pages'; pagination.setAttribute('aria-label', 'Pages'); if (page > 0) link(pagination, 'Previous', assetList ? assetListHash(page - 1) : `#yours/${pageRoute}/page/${page}`);
-      const more = tab === 'proposals' ? (page + 1) * 50 < (snapshot.matching_proposals ?? snapshot.total_proposals) : tab === 'assets' ? (page + 1) * 50 < snapshot.total_assets : (tab === 'episodes' ? snapshot.episodes.length + (snapshot.derived_episodes?.length ?? 0) : tab === 'occasions' ? snapshot.occasions.length : 0) === 50;
-      if (more) link(pagination, 'Next', assetList ? assetListHash(page + 1) : `#yours/${pageRoute}/page/${page + 2}`); }
+    if (!selected && !classesView && !((pursuitList || dueList || occasionList) && desktopMedia?.matches) && assetFiltersApplied(snapshot)) {
+      const more = tab === 'proposals' ? (page + 1) * 50 < (snapshot.matching_proposals ?? snapshot.total_proposals)
+        : tab === 'assets' ? (page + 1) * 50 < snapshot.total_assets
+        : tab === 'occasions' ? (allOccasions ? (page + 1) * 50 < snapshot.occasions.length : snapshot.occasions.length === 50)
+        : tab === 'episodes' && snapshot.episodes.length + (snapshot.derived_episodes?.length ?? 0) === 50;
+      const pagesParent = pagedQueueIndex ?? assetListParent;
+      if (page > 0 || more || pagesParent === content) {
+        const pageRoute = tab === 'proposals' && proposalKind ? `${tab}/kind/${proposalKind}` : tab;
+        const pagination = el('nav', undefined, pagesParent);
+        pagination.className = 'yours-pages'; pagination.setAttribute('aria-label', 'Pages');
+        const pageHref = (target: number) => assetList ? assetListHash(target) : episodeList && desktopQueue() ? episodeListHash(target) : `#yours/${pageRoute}/page/${target + 1}`;
+        if (page > 0) link(pagination, 'Previous', pageHref(page - 1));
+        if (more) link(pagination, 'Next', pageHref(page + 1));
+      }
+    }
     if (snapshot.unmatched_replies.length) { const replies = section(content, 'Unmatched replies'); for (const reply of snapshot.unmatched_replies) { const item = card(replies, reply.reason.replaceAll('_', ' ')); el('p', reply.text, item); button(item, 'Dismiss reply', () => change({ action: 'unmatched.dismiss', id: reply.id })); } }
     for (const disclosure of root.querySelectorAll<HTMLDetailsElement>('[data-yours-disclosure]')) if (openDisclosures.has(disclosure.dataset.yoursDisclosure!)) disclosure.open = openDisclosures.get(disclosure.dataset.yoursDisclosure!)!;
     paintStatus(); restoreInteraction();
+    const roster = workspaceRoster();
+    if (roster && workspacePosition) {
+      restoreListScroll(roster, workspacePosition.list);
+      restoreWorkspaceScroll(roster, workspacePosition.page, workspacePosition.outlineTop);
+      if (workspacePosition.preview?.id === previewId) {
+        const previewBody = root.querySelector<HTMLElement>('.yours-preview-body');
+        if (previewBody) restoreListScroll(previewBody, workspacePosition.preview?.scroll);
+      }
+    }
+    if (queueFocus) {
+      focusListTarget(queueFocus);
+      queueFocus.scrollIntoView({ block: 'nearest' });
+    }
     // D-325 — source links focus their exact saved input once. Later broadcasts
     // preserve what the owner is doing instead of pulling focus back to it.
     if (selected && !editor && !inputAddressFocused && ['reading', 'rule', 'field'].includes(segments[4] ?? '') && segments[5]) {
@@ -2612,38 +3367,101 @@ export const bootstrapYoursRoute = (options: YoursRouteOptions) => {
       if (target) { target.tabIndex = -1; target.focus({ preventScroll: true }); target.scrollIntoView({ block: 'nearest' }); }
       else { message = 'That saved input is no longer on file. Review the current item below.'; paintStatus(); }
     }
-    if (assetList && restoreListPosition) {
-      restoreListPosition = false; const remembered = readListContinuity<string>(doc, continuityKey);
-      if (remembered?.filter === assetListHash(page)) doc.defaultView?.requestAnimationFrame(() => {
-        if (disposed || editor) return;
-        const asset = [...root.querySelectorAll<HTMLElement>('[data-yours-asset]')].find(node => node.dataset.yoursAsset === remembered.focusedId);
-        focusListTarget(asset?.querySelector<HTMLElement>(remembered.focusKind === 'name' ? '[data-yours-asset-name]' : '[data-yours-open-asset]'));
-        restoreListScroll(scrollHost, remembered.scroll);
+    if ((assetList || pursuitList || queueList) && restoreListPosition) {
+      restoreListPosition = false;
+      const remembered = dueList ? rememberedDue : pagedQueueKey ? rememberedPagedQueue?.filter?.hash === pagedQueueHash ? rememberedPagedQueue : null
+        : pursuitList ? rememberedPursuits : rememberedAssetList?.filter === assetListHash(page) ? rememberedAssetList : null;
+      const initialFocus = doc.activeElement;
+      if (remembered) doc.defaultView?.requestAnimationFrame(() => {
+        if (disposed || editor || doc.activeElement !== initialFocus) return;
+        const list = workspaceRoster();
+        const row = queueList ? queueRow(remembered.focusedId) : undefined;
+        if (queueList) {
+          if (remembered.focusedId) focusListTarget(row ?? queueFilter());
+        }
+        else if (pursuitList) {
+          const target = pursuitRow(remembered.focusedId)?.querySelector<HTMLElement>(list ? '[data-yours-preview-pursuit]' : '[data-yours-asset-name]');
+          if (target && !target.closest('[hidden], details:not([open])')) focusListTarget(target);
+          else if (remembered.focusedId) focusListTarget(root.querySelector<HTMLElement>('[name="sphere-filter"]'));
+        } else {
+          const selector = list ? '[data-yours-preview-asset]' : remembered.focusKind === 'name' ? '[data-yours-asset-name]' : '[data-yours-open-asset]';
+          focusListTarget(assetRow(remembered.focusedId)?.querySelector<HTMLElement>(selector));
+        }
+        if (list) restoreListScroll(list, remembered.listScroll);
+        restoreWorkspaceScroll(list, remembered.scroll, rememberedPursuits?.filter?.outlineTop ?? rememberedPagedQueue?.filter?.outlineTop ?? rememberedDue?.filter?.outlineTop);
+        // A corrected episode may have moved outside the saved scroll position.
+        const previousFrom = rememberedPagedQueue?.filter?.episodeFrom;
+        if (episodeList && row && previousFrom !== undefined
+          && snapshot?.episodes.find(episode => episode.id === remembered.focusedId)?.when.from !== previousFrom) row.scrollIntoView({ block: 'nearest' });
       });
     }
   };
+  // The server pages by last update. Read the later pages before sorting by date on desktop.
+  const readRemainingOccasions = async (first: YoursSnapshot, current: () => boolean): Promise<YoursSnapshot> => {
+    const occasions = [...first.occasions];
+    const spherePlacements = [...first.sphere_placements];
+    const seen = new Set(occasions.map(occasion => occasion.id));
+    const limit = 200;
+    for (let offset = first.occasions.length; current(); offset += limit) {
+      const result = await options.read({ limit, offset });
+      if (!current()) break;
+      const added = result.occasions.filter(occasion => !seen.has(occasion.id));
+      if (!added.length) break;
+      const ids = new Set(added.map(occasion => occasion.id));
+      for (const id of ids) seen.add(id);
+      occasions.push(...added);
+      spherePlacements.push(...result.sphere_placements.filter(row => row.ref.collection === 'occasion' && ids.has(row.ref.id)));
+      if (result.occasions.length < limit) break;
+    }
+    return { ...first, occasions, sphere_placements: spherePlacements };
+  };
   const refresh = (force = false): Promise<void> => {
     if (disposed) return Promise.resolve();
+    if (queueList && busy && !force) return Promise.resolve();
     // A broadcast never rebuilds the page over what the owner is typing, in an
     // editor or any other field; the owner's own save, search or Refresh does.
     if ((editor || dirty || typing) && !force) { message = editor ? 'Updates are available. Save or cancel your edit to refresh.'
       : 'Updates are available. They appear when you save what you typed, or press Refresh.'; paintStatus(); return Promise.resolve(); }
-    if (!editor) { dirty = false; typing = false; }
+    if (!editor) { dirty = queueDraft !== undefined; typing = false; }
+    const queueHandoff = queueConfirmation;
     const editorAtStart = editor; const draftAtStart = draftVersion; const errorAtStart = errorVersion;
     // A pending read must not rebuild a form opened or a search typed meanwhile.
     const newerDraft = () => (editor !== undefined && editor !== editorAtStart) || draftVersion !== draftAtStart;
     const version = ++generation; loading = true;
     if (!snapshot) render(); else paintStatus();
     pending = (async () => {
+      let received = false;
       try {
-        const result = await options.read({ ...(selected ? { asset_id: selected, include_reading_trends: true } : {}), ...(selectedOccasion ? { occasion_id: selectedOccasion } : {}),
+        const desktopOccasions = occasionList && desktopQueue();
+        const episodeReturn = episodeList && desktopQueue() && restoreListPosition && rememberedPagedQueue?.filter?.hash === pagedQueueHash
+          ? rememberedPagedQueue : null;
+        const episodeAnchor = episodeReturn?.previewId;
+        const current = () => !disposed && version === generation && !newerDraft();
+        let result = await options.read({ ...(selected ? { asset_id: selected, include_reading_trends: true } : {}), ...(selectedOccasion ? { occasion_id: selectedOccasion } : {}),
           // D-342 — the Assets tab leaves pursuits out, and the Pursuits tab reads all of them at once.
           ...(assetList ? { include_asset_summaries: true, pursuits: 'exclude' as const, ...(assetFilter ? { asset_filter: assetFilter } : {}), ...(assetSphere ? { asset_sphere: assetSphere } : {}) } : {}),
           ...(pursuitList ? { pursuits: 'only' as const } : {}),
           ...(selectedEpisode ? { episode_id: selectedEpisode } : {}), ...(selectedTrace ? { trace_id: selectedTrace } : {}), ...(tab === 'episodes' && selectedEpisode ? { include_derived: true } : {}),
-          limit: pursuitList ? 200 : 50, offset: pursuitList ? 0 : page * 50,
+          ...(episodeAnchor ? { episode_anchor: episodeAnchor } : {}),
+          limit: pursuitList ? 200 : 50, offset: pursuitList || desktopOccasions ? 0 : page * 50,
           proposal_offset: tab === 'proposals' ? page * 50 : 0, ...(proposalKind ? { proposal_kind: proposalKind } : {}), ...(search ? { search } : {}), mark_shown: tab === 'proposals' || !!selected || !!selectedOccasion });
-        if (disposed || version !== generation || newerDraft()) return;
+        if (!current()) return;
+        const view = doc.defaultView;
+        const episodeOffset = result.episode_page_offset;
+        if (view && episodeReturn?.filter && episodeAnchor && episodeOffset !== undefined && Number.isSafeInteger(episodeOffset)
+          && episodeOffset >= 0 && episodeOffset % 50 === 0 && episodeOffset !== page * 50
+          && result.episodes.some(episode => episode.id === episodeAnchor)) {
+          const targetPage = episodeOffset / 50;
+          const hash = episodeListHash(targetPage);
+          updateListContinuity<PagedListView>(doc, episodeContinuityKey, { page: targetPage, filter: { ...episodeReturn.filter, hash } });
+          // Replace the return entry so Back still leaves the list in one step.
+          generation++;
+          view.location.replace(hash);
+          return;
+        }
+        const firstPageComplete = occasionList && page === 0 && result.occasions.length < 50;
+        if (desktopOccasions && result.occasions.length >= 50) result = await readRemainingOccasions(result, current);
+        if (!current()) return;
         if (assetList && page > 0 && assetFiltersApplied(result) && page * 50 >= result.total_assets) {
           // Back must not reopen this invalid page and redirect again.
           void navigateAssets(Math.max(0, Math.ceil(result.total_assets / 50) - 1), true); return;
@@ -2658,19 +3476,28 @@ export const bootstrapYoursRoute = (options: YoursRouteOptions) => {
         const extra = await Promise.allSettled([options.contacts?.() ?? Promise.resolve([]), selected ? options.links?.(selected) ?? Promise.resolve([]) : Promise.resolve([]),
           selected ? options.timeline?.({ entity_id: `asset:${selected}`, limit: 30 }) ?? Promise.resolve(undefined) : Promise.resolve(undefined)]);
         const claimsRead = await claimsPending;
-        if (disposed || version !== generation || newerDraft()) return;
+        if (!current()) return;
         // A reply with no list (a server that answers wrongly) shows no section.
         relationships = 'found' in claimsRead && Array.isArray(claimsRead.found?.claims) ? claimsRead.found : undefined;
         relationshipsFailed = 'failed' in claimsRead && claimsRead.failed === true;
         snapshot = result;
+        allOccasions = desktopOccasions || firstPageComplete;
+        received = true;
         contacts = extra[0].status === 'fulfilled' ? extra[0].value : []; files = extra[1].status === 'fulfilled' ? extra[1].value : []; timeline = extra[2].status === 'fulfilled' ? extra[2].value : undefined;
         filesAvailable = options.links !== undefined && extra[1].status === 'fulfilled';
         fileMetadata.clear();
         const failures = extra.filter(result => result.status === 'rejected');
         if (failures.length) setError('Some contacts, file links or history could not be read. Refresh to retry.');
         else if (errorVersion === errorAtStart) setError('');
-      } catch (value) { if (!disposed && version === generation && !newerDraft()) setError(value instanceof Error ? value.message : String(value)); }
+      } catch (value) {
+        if (!disposed && version === generation && !newerDraft()) {
+          const reason = value instanceof Error ? value.message : String(value);
+          if (queueHandoff) setError(`${reason} Refresh to load the current ${episodeList ? 'episodes' : occasionList ? 'occasions' : dueList ? 'due items' : 'proposals'}.`, previewId);
+          else setError(reason);
+        }
+      }
       finally { if (!disposed && version === generation) { loading = false;
+        if (queueHandoff) { busy = false; if (received) queueConfirmation = undefined; }
         if (newerDraft()) { message = editor ? 'Updates are available. Save or cancel your edit to refresh.' : 'Updates are available. Search or press Refresh to update the list.'; paintStatus(); }
         else {
           // This refresh may open its route's form; it must not replace a form
@@ -2714,7 +3541,8 @@ export const bootstrapYoursRoute = (options: YoursRouteOptions) => {
             void options.appleHealth.state().then(state => { if (!disposed && !editor) open({ type: 'apple_health', asset: setupFor, state, ...(back ? { returnToChat: back } : {}) }); },
               value => { if (!disposed) showError(value); });
           }
-          render();
+          render(received ? queueHandoff : undefined);
+          if (received && occasionList && desktopQueue() && !allOccasions) void refresh(true);
           if (!openedRecorded && selected && snapshot?.assets.some(asset => asset.id === selected)) { openedRecorded = true; options.recordOpened?.({ collection: 'asset', id: selected }); }
         }
       } }
@@ -2728,12 +3556,77 @@ export const bootstrapYoursRoute = (options: YoursRouteOptions) => {
   // Initial loading can precede the socket handshake. A connected transition
   // also recovers a failed read; refresh keeps active drafts intact.
   if (options.subscribeReady) unsubscribe.push(options.subscribeReady(() => { void refresh(); }));
+  const onDesktopMediaChange = () => {
+    if (disposed || editor || busy || !snapshot) return;
+    if (desktopQueue()) {
+      const card = doc.activeElement?.closest<HTMLElement>(queueCardSelector);
+      const id = queueItemId(card ?? null);
+      if (card && root.contains(card) && id) {
+        previewId = id;
+        if ((dirty || occasionList && typing) && !queueDraft) {
+          const values = new Map([...card.querySelectorAll<HTMLInputElement>('input[type="date"], input[type="time"], input[type="number"], input[type="datetime-local"]')].map(input => [input.name, input.value]));
+          if (values.size) queueDraft = { id: previewId, values };
+        }
+      }
+    }
+    const query = assetList && typing ? root.querySelector<HTMLInputElement>('input[name="search"]') : null;
+    render();
+    if (occasionList && desktopQueue() && !allOccasions) void refresh(true);
+    if (query) {
+      const input = root.querySelector<HTMLInputElement>('input[name="search"]');
+      if (input) {
+        input.value = query.value;
+        if (query.selectionStart !== null && query.selectionEnd !== null) {
+          input.setSelectionRange(query.selectionStart, query.selectionEnd, query.selectionDirection ?? undefined);
+        }
+        typing = true;
+      }
+    }
+  };
+  desktopMedia?.addEventListener('change', onDesktopMediaChange);
   void refresh();
   return { dispose() { disposed = true; routeAbort.abort(); generation += 1; if (broadcastTimer !== undefined) clearTimeout(broadcastTimer);
-    if (assetList) updateListContinuity(doc, continuityKey, { filter: assetListHash(page), page,
-      focusedId: openedAsset?.id ?? (doc.activeElement as HTMLElement | null)?.closest<HTMLElement>('[data-yours-asset]')?.dataset.yoursAsset,
-      focusKind: openedAsset?.kind,
-      scroll: readListScroll(scrollHost) });
+    desktopMedia?.removeEventListener('change', onDesktopMediaChange);
+    if (renderedAssetListHash) {
+      const list = workspaceRoster();
+      const active = doc.activeElement as HTMLElement | null;
+      updateListContinuity(doc, continuityKey, { filter: renderedAssetListHash, page,
+        focusedId: openedAsset?.id ?? active?.closest<HTMLElement>('[data-yours-asset]')?.dataset.yoursAsset ?? previewId,
+        focusKind: openedAsset?.kind, previewId: openedAsset?.id ?? previewId ?? null,
+        listScroll: list ? readListScroll(list) : desktopMedia?.matches ? workspacePosition?.list : undefined,
+        scroll: readListScroll(scrollHost) });
+    }
+    if (renderedPursuitWorkspace) {
+      const list = workspaceRoster();
+      const ended = root.querySelector<HTMLDetailsElement>(`[data-yours-disclosure="${ENDED_PURSUITS}"]`);
+      const id = openedPursuitId ?? previewId;
+      const scroll = readListScroll(scrollHost);
+      updateListContinuity<PursuitListView>(doc, pursuitContinuityKey, {
+        filter: { sphere: sphereFilter, endedOpen: ended?.open ?? openDisclosures.get(ENDED_PURSUITS) ?? false,
+          ...(list && scroll.top > 0 ? { outlineTop: readOutlineTop(list) } : {}) },
+        focusedId: id, previewId: id ?? null,
+        listScroll: list ? readListScroll(list) : workspacePosition?.list,
+        scroll,
+      });
+    }
+    if (renderedPagedQueue && pagedQueueKey !== undefined && pagedQueueHash !== undefined) {
+      const list = workspaceRoster(); const scroll = readListScroll(scrollHost);
+      const episodeFrom = episodeList ? snapshot?.episodes.find(episode => episode.id === previewId)?.when.from : undefined;
+      updateListContinuity<PagedListView>(doc, pagedQueueKey, {
+        filter: { hash: pagedQueueHash, sphere: sphereFilter, ...(episodeFrom !== undefined ? { episodeFrom } : {}),
+          ...(list && scroll.top > 0 ? { outlineTop: readOutlineTop(list) } : {}) },
+        focusedId: previewId, previewId: previewId ?? null,
+        listScroll: list ? readListScroll(list) : workspacePosition?.list, scroll,
+      });
+    }
+    if (renderedDueWorkspace) {
+      const list = workspaceRoster(); const scroll = readListScroll(scrollHost);
+      updateListContinuity<SphereListView>(doc, dueContinuityKey, {
+        filter: { sphere: sphereFilter, ...(list && scroll.top > 0 ? { outlineTop: readOutlineTop(list) } : {}) },
+        focusedId: previewId, previewId: previewId ?? null,
+        listScroll: list ? readListScroll(list) : workspacePosition?.list, scroll,
+      });
+    }
     assetPickers.splice(0).forEach(picker => picker.destroy());
     navigationDisposers.splice(0).forEach(dispose => dispose());
     writerSetup?.dispose(); unsubscribe.forEach(unsubscribe => unsubscribe()); root.remove(); }, refresh,

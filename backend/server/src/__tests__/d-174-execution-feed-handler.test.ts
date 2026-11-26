@@ -31,6 +31,7 @@ import type { WsClient } from '../ws-server.js';
 import {
   handleExecutionGet,
   handleExecutionList,
+  handleExecutionSearch,
   makeExecutionFeedHandlers,
   type ExecutionFeedRpcDeps,
 } from '../execution-feed-handler.js';
@@ -636,6 +637,7 @@ describe('D-174 execution.* slice posture', () => {
     const slice = makeExecutionFeedHandlers(deps)!;
     expect(slice.methods).toEqual([
       'execution.list',
+      'execution.search',
       'execution.get',
       'execution.action.get',
       'execution.action.list',
@@ -677,5 +679,76 @@ describe('History item-result projection', () => {
     await append('invalid', 100, { run_yield: { steps_run: 1, steps_skipped: 0, items_total: 2, items_failed: 3 } });
     const out = await handleExecutionList(deps, {});
     expect(out.runs[0]).not.toHaveProperty('run_yield');
+  });
+});
+
+describe('run history search', () => {
+  it('filters the recorded outcome rather than treating succeeded item errors, stops or unconfirmed work as run failures', async () => {
+    const tally = { steps_run: 1, steps_skipped: 0, items_total: 5, items_failed: 2, stopped_at: null };
+    await append('partial', 100, { run_yield: tally });
+    await append('refused', 100, { run_yield: { ...tally, items_failed: 5 } });
+    await append('failed', 100, { commit_status: 'failed', run_yield: tally, error_category: 'timeout' });
+    await append('unknown', 100, { commit_status: 'in_doubt', run_yield: tally });
+    await append('approval', 100, { commit_status: 'awaiting_approval', run_yield: tally });
+    await append('peer', 100, { commit_status: 'awaiting_peer', run_yield: tally });
+    await append('stopped', 100, { commit_status: 'failed', error_category: 'killed' });
+    await append('cancelled', 100, { commit_status: 'failed', error_category: 'cancelled_before_dispatch' });
+    await append('early-stop', 100, { run_yield: { ...tally, items_failed: 0, stopped_at: 'stop-condition' } });
+    await append('finished-legacy', 100);
+    await append('malformed-tally', 100, { run_yield: { ...tally, items_failed: 8 } });
+    for (const [outcome, expected] of [['failed', 'failed'], ['partial', 'partial'], ['refused', 'refused'], ['unknown', 'unknown'], ['waiting-owner', 'approval']] as const) {
+      const filters = { outcome };
+      const page = await handleExecutionSearch(deps, { query: 'recipe-a', filters });
+      expect(page.runs.map(row => row.run_id)).toEqual([expected]); expect(page.applied_filters).toEqual(filters);
+    }
+  });
+
+  it('applies start-time bounds across sparse history pages even when an old run has recent activity', async () => {
+    await auditLog.append({ ...entry('old-but-active', 5, { commit_status: 'failed' }), event_at: 10000 });
+    await append('lower-bound', 20, { commit_status: 'failed' });
+    await append('upper-bound', 40, { commit_status: 'failed' });
+    for (let index = 0; index < 510; index++) await append('noise-' + index, 100 + index);
+    const filters = { outcome: 'failed' as const, started_from: 20, started_before: 40 };
+    const first = await handleExecutionSearch(deps, { query: '', filters });
+    expect(first.runs).toEqual([]); expect(first.next_cursor).toBeDefined(); expect(first.applied_filters).toEqual(filters);
+    const second = await handleExecutionSearch(deps, { query: '', filters, cursor: first.next_cursor });
+    expect(second.runs.map(row => row.run_id)).toEqual(['lower-bound']); expect(second.next_cursor).toBeUndefined();
+    for (const invalid of [{ outcome: 'all' }, { started_from: NaN }, { started_before: Infinity }, { started_from: 40, started_before: 20 }, { time_range: '7d' }])
+      await expect(handleExecutionSearch(deps, { query: '', filters: invalid as never })).rejects.toMatchObject({ code: 'bad_request' });
+  });
+
+  it('matches readable recipe names and IDs literally, excluding payloads and private source identities', async () => {
+    deps.recipeNameOf = id => id === 'named' ? 'Café ﬁle <review>' : undefined;
+    await append('named-run', 100, { recipe_id: 'named', config_snapshot: { query: 'private-config' },
+      output_string: 'private-output', execution_source: userSource });
+    await append('other-run', 200, { recipe_id: 'other' });
+    expect((await handleExecutionSearch(deps, { query: 'CAFÉ FILE <review>' })).runs.map(row => row.run_id)).toEqual(['named-run']);
+    expect((await handleExecutionSearch(deps, { query: 'named-run' })).runs.map(row => row.run_id)).toEqual(['named-run']);
+    for (const query of ['private-config', 'private-output', 'client-secret-token-id', '.*', '%'])
+      expect((await handleExecutionSearch(deps, { query })).runs).toEqual([]);
+    const result = JSON.stringify(await handleExecutionSearch(deps, { query: 'named' }));
+    expect(result).not.toContain('private-'); expect(result).not.toContain('client-secret');
+    expect(JSON.parse(result).runs[0]).toMatchObject({ name: 'Café ﬁle <review>', recipe_id: 'named', status: 'succeeded' });
+  });
+
+  it('continues beyond a sparse recent window and honors timestamp ties without duplicates', async () => {
+    await append('old-match', 0, { recipe_id: 'needle' });
+    for (let i = 0; i < 650; i++) await append('noise-' + String(i).padStart(4, '0'), 100 + i);
+    const first = await handleExecutionSearch(deps, { query: 'needle' });
+    expect(first.runs).toEqual([]); expect(first.next_cursor).toBeDefined();
+    const second = await handleExecutionSearch(deps, { query: 'needle', cursor: first.next_cursor });
+    expect(second.runs.map(row => row.run_id)).toEqual(['old-match']); expect(second.next_cursor).toBeUndefined();
+    await append('tie-z', 2000, { recipe_id: 'ties' }); await append('tie-a', 2000, { recipe_id: 'ties' });
+    const tie = await handleExecutionSearch(deps, { query: 'ties', limit: 1 });
+    expect(tie.runs.map(row => row.run_id)).toEqual(['tie-z']);
+    expect((await handleExecutionSearch(deps, { query: 'ties', limit: 1, cursor: tie.next_cursor })).runs.map(row => row.run_id)).toEqual(['tie-a']);
+  });
+
+  it('validates search reads and registers the paired-client-only method', async () => {
+    for (const args of [{ query: 7 }, { query: 'x'.repeat(2001) }, { query: '', limit: 0 }, { query: '', cursor: { last_event_at: NaN, last_run_id: 'a' } }])
+      await expect(handleExecutionSearch(deps, args as never)).rejects.toMatchObject({ code: 'bad_request' });
+    expect(SERVER_RPC_METHOD_SET.has('execution.search')).toBe(true); expect(isMcpToolName('execution.search')).toBe(false);
+    const slice = makeExecutionFeedHandlers(deps)!;
+    await expect(slice.handlers['execution.search']({ query: '' }, { instance_id: null } as unknown as WsClient)).rejects.toMatchObject({ code: 'unauthorized' });
   });
 });

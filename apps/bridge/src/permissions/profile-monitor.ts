@@ -45,6 +45,11 @@ export interface ChromePermissionsApi {
  *  can't supply on its own (software / browser version, optional UA). The
  *  bootstrap captures these once at boot + threads them through. */
 export interface BridgeCapabilityProfileSnapshot {
+  horizontal_scroll?: boolean;
+  generated_download_wait?: boolean;
+  double_click?: boolean;
+  file_drop?: boolean;
+  text_paste?: boolean;
   dom_readiness?: boolean;
   guarded_links?: boolean;
   wait_read?: boolean;
@@ -109,6 +114,11 @@ export const buildCapabilityProfile = async (deps: {
   if (s.user_agent !== undefined) profile.user_agent = s.user_agent;
   if (s.dom_documents !== undefined) profile.dom_documents = s.dom_documents;
   if (s.dom_readiness !== undefined) profile.dom_readiness = s.dom_readiness;
+  if (s.horizontal_scroll !== undefined) profile.horizontal_scroll = s.horizontal_scroll;
+  if (s.generated_download_wait !== undefined) profile.generated_download_wait = s.generated_download_wait;
+  if (s.double_click !== undefined) profile.double_click = s.double_click;
+  if (s.file_drop !== undefined) profile.file_drop = s.file_drop;
+  if (s.text_paste !== undefined) profile.text_paste = s.text_paste;
   if (s.guarded_links !== undefined) profile.guarded_links = s.guarded_links;
   if (s.wait_read !== undefined) profile.wait_read = s.wait_read;
   if (s.structural_reads !== undefined) profile.structural_reads = s.structural_reads;

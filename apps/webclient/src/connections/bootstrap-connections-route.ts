@@ -55,6 +55,7 @@ import {
   type AccountsLanePanelMount,
   type CalendarLaneCallers,
   type FileLaneCallers,
+  type FileWorkspacePosition,
   type MailLaneCallers,
   type AccountsOAuthEnv,
   type OAuthClientConfigResult,
@@ -63,6 +64,8 @@ import type { FoundationalOAuthContinuity } from './foundational-oauth-continuit
 import { accountSetupEnrollment, type AccountSetupContinuity } from './account-setup-continuity.js';
 import {
   connectionsAccountAddress,
+  connectionsInventoryAddress,
+  connectionsWebhookAddress,
   connectionsEnrollAddress,
   connectionsOAuthAppsAddress,
   connectionsOAuthAppAddress,
@@ -76,6 +79,7 @@ import {
   isConnectionsTabId,
   isFoundationalConnectionsLane,
   type ConnectionsAddress,
+  type ConnectionInventorySelection,
   type ConnectionsTabId,
   type ConnectionOAuthAppReview,
   type ConnectionAccessResultReference,
@@ -123,7 +127,7 @@ import {
   type ConnectionsSuggestSetupCaller,
   type CredentialRotationServerUpdateTarget,
 } from '../settings/connections-enroll-panel.js';
-import { serializeChatAnswerAddress, serializeShellRoute } from '../shell/route.js';
+import { parseShellRoute, serializeChatAnswerAddress, serializeShellRoute } from '../shell/route.js';
 import { createHierarchicalHistory } from '../shell/hierarchical-navigation.js';
 import { serializeChatConnectedSource } from '../chat/connected-source-handoff.js';
 import {
@@ -496,6 +500,23 @@ export const CONNECTIONS_ROUTE_STYLES = [
   CONNECTIONS_ROUTE_CHROME_STYLES,
 ].join('\n');
 
+interface AccountWorkspaceVisit {
+  readonly key: string;
+  readonly listHash: string;
+  readonly detailHash: string;
+  readonly slug: string;
+}
+
+interface FileWorkspaceReturn {
+  readonly hash: string;
+  readonly visit: AccountWorkspaceVisit | undefined;
+  readonly position: FileWorkspacePosition;
+}
+
+// The shell content root outlives route remounts. Keep filters and scroll in
+// that shell's memory and use an opaque History marker to identify the visit.
+const fileWorkspaceReturns = new WeakMap<HTMLElement, Map<string, FileWorkspaceReturn>>();
+
 export interface BootstrapConnectionsRouteOptions {
   sourceSpheres?: SourceSpheresOptions;
   authenticationIncidentHistoryCaller?: import('@recued/contracts').AuthenticationIncidentHistoryCaller;
@@ -521,7 +542,8 @@ export interface BootstrapConnectionsRouteOptions {
    * available for narrow/test mounts; production passes this typed address. */
   initialAddress?: ConnectionsAddress;
   /** D-322 §24 — open a fresh saved editor; consent remains owner-triggered. */
-  initialConnectionAccessReview?: { name: string };
+  initialConnectionAccessReview?: { name: string; reviewOnly?: boolean };
+  searchReturn?: { hash: string; destinationHash: string; retire?: () => void };
   initialFileAuthenticationSwitch?: { name: string };
   initialPermissionRepair?: import('../settings/reconnect-worklist-continuity.js').ConnectionPermissionRepair;
   permissionRepairUnavailable?: boolean;
@@ -719,6 +741,7 @@ export interface ConnectionsRoute {
   webhooksPanel(): WebhooksPanelMount | null;
   /** Active lane's initial authoritative read. */
   whenLoaded(): Promise<void>;
+  navigateDeepLink?(hash: string): boolean;
   getRecoveryContextFreshness(): 'current' | 'unavailable';
   /** Re-read the active lane without reopening an editor or restoring its
    * credential-bearing draft. Absent when the lane has no readable panel. */
@@ -774,7 +797,13 @@ export const bootstrapConnectionsRoute = (
   const initialEnrollVendor = typedSelection === null
     ? opts.initialEnrollVendor
     : typedSelection.enrollVendor ?? undefined;
-  const mountedConnectionsAddress = opts.initialAddress?.kind === 'account'
+  const initialInventorySelection = opts.initialAddress?.kind === 'connection' ? opts.initialAddress.selection : undefined;
+  const initialWebhook = opts.initialAddress?.kind === 'webhook' ? opts.initialAddress.ingressId : undefined;
+  const mountedConnectionsAddress = initialInventorySelection
+    ? connectionsInventoryAddress(initialInventorySelection)
+    : initialWebhook !== undefined
+    ? connectionsWebhookAddress(initialWebhook)
+    : opts.initialAddress?.kind === 'account'
     ? connectionsAccountAddress(
         opts.initialAddress.lane,
         opts.initialAddress.slug,
@@ -782,6 +811,8 @@ export const bootstrapConnectionsRoute = (
     : opts.initialAddress?.kind === 'enroll'
       ? connectionsEnrollAddress(opts.initialAddress.vendor, opts.initialAddress.pack)
       : connectionsLaneAddress(activeTab);
+  let searchBack: HTMLAnchorElement | null = null;
+  const retireSearchReturn = () => { searchBack?.remove(); searchBack = null; opts.searchReturn?.retire?.(); };
   const connectionsHistory = createHierarchicalHistory({
     initial: opts.initialAddress !== undefined
       ? mountedConnectionsAddress
@@ -789,7 +820,10 @@ export const bootstrapConnectionsRoute = (
         ? connectionsAccountAddress(activeTab, initialDetailSlug)
         : connectionsLaneAddress(activeTab),
     history: () => doc.defaultView?.history,
-    onCommit: (address) => opts.onHashSync?.(address.hash),
+    onCommit: (address) => {
+      if (opts.searchReturn && address.hash !== opts.searchReturn.destinationHash) retireSearchReturn();
+      opts.onHashSync?.(address.hash);
+    },
   });
 
   const routeRoot = doc.createElement('div');
@@ -818,6 +852,14 @@ export const bootstrapConnectionsRoute = (
     back.href = serializeChatAnswerAddress(returnToChat);
     back.textContent = 'Back to chat';
     header.appendChild(back);
+  }
+  if (opts.searchReturn) {
+    searchBack = doc.createElement('a');
+    searchBack.className = 'connections-route-back-to-chat';
+    searchBack.setAttribute('data-search-connection-return', '');
+    searchBack.href = opts.searchReturn.hash;
+    searchBack.textContent = 'Back to search';
+    header.appendChild(searchBack);
   }
   routeRoot.appendChild(header);
 
@@ -881,6 +923,7 @@ export const bootstrapConnectionsRoute = (
   routeRoot.appendChild(content);
 
   let accountsPanel: AccountsLanePanelMount | null = null;
+  let navigateWorkspaceHistory: ((hash: string) => boolean) | undefined;
   let connectionsEnroll: ConnectionsEnrollPanelMount | null = null;
   let brokerPanel: ReturnType<typeof createManagedOAuthPanel> | null = null;
   let oauthAppsPanel: ReturnType<typeof createOAuthAppsPanel> | null = null;
@@ -964,6 +1007,66 @@ export const bootstrapConnectionsRoute = (
     }
   } else if (isFoundationalLane(activeTab)) {
     const lane = activeTab;
+    const useAccountWorkspace = !opts.initialAccountAuthentication && !opts.searchReturn;
+    const rememberFileWorkspace = useAccountWorkspace && lane === 'file';
+    const view = doc.defaultView;
+    const laneAddress = connectionsLaneAddress(lane);
+    const entryKey = (): string | undefined => {
+      const value: unknown = view?.history?.state?.recuedAccountWorkspaceVisit;
+      return typeof value === 'string' ? value : undefined;
+    };
+    const savedKey = rememberFileWorkspace && initialDetailSlug !== undefined ? entryKey() : undefined;
+    const saved = savedKey === undefined ? undefined : fileWorkspaceReturns.get(opts.root)?.get(savedKey);
+    const fileReturn = saved?.hash === view?.location?.hash ? saved : undefined;
+    let visit = fileReturn?.visit;
+    const rememberFileReturn = (position: FileWorkspacePosition): void => {
+      if (!view?.history) return;
+      let key = entryKey();
+      if (key === undefined) {
+        key = Math.random().toString(36).slice(2);
+        try {
+          // Direct links may have no roster entry behind them.
+          view.history.replaceState({ ...view.history.state, recuedAccountWorkspaceVisit: key }, '');
+        } catch {
+          return;
+        }
+      }
+      let returns = fileWorkspaceReturns.get(opts.root);
+      if (!returns) {
+        returns = new Map();
+        fileWorkspaceReturns.set(opts.root, returns);
+      }
+      const hash = view.location.hash;
+      returns.set(key, { hash, position, visit: visit?.detailHash === hash ? visit : undefined });
+    };
+    let closingAccountDetails = false;
+    const backToRoster = (): boolean => {
+      if (!visit || view?.location.hash !== visit.detailHash) return false;
+      if (closingAccountDetails) return true;
+      closingAccountDetails = true;
+      try {
+        view.history.back();
+        return true;
+      } catch {
+        closingAccountDetails = false;
+        return false;
+      }
+    };
+    if (useAccountWorkspace) {
+      navigateWorkspaceHistory = (hash): boolean => {
+        if (!visit || !accountsPanel) return false;
+        if (hash === visit.listHash && accountsPanel.getState().detailSlug === visit.slug) {
+          closingAccountDetails = false;
+          if (!accountsPanel.navigateAccountWorkspace(null)) return false;
+          connectionsHistory.adopt({ ...laneAddress, hash });
+          return true;
+        }
+        if (hash !== visit.detailHash || entryKey() !== visit.key
+          || connectionsHistory.current().hash !== visit.listHash || !accountsPanel.navigateAccountWorkspace(visit.slug)) return false;
+        connectionsHistory.adopt(connectionsAccountAddress(lane, visit.slug));
+        return true;
+      };
+    }
     // The account list knows each source better than its key does: the
     // mailbox address, the provider, a cloud source's own name.
     const describeLaneSource = (source: string): { title?: string; detail?: string } | undefined => {
@@ -987,14 +1090,34 @@ export const bootstrapConnectionsRoute = (
       host: content,
       document: doc,
       initialLane: activeTab,
+      ...(useAccountWorkspace ? { accountWorkspace: {
+        scrollRoot: opts.root,
+        backToRoster,
+        ...(rememberFileWorkspace ? { rememberFileReturn } : {}),
+        ...(fileReturn ? { returnPosition: fileReturn.position } : {}),
+      } } : {}),
       ...(laneSpheres !== null ? { listFooter: () => laneSpheres.supported() ? laneSpheres.element : null } : {}),
       oauthReturnHref: connectionsLaneAddress(activeTab).hash,
-      onNavigate: (lane, detailSlug) => {
-        connectionsHistory.navigate(
-          detailSlug === null
-            ? connectionsLaneAddress(lane)
-            : connectionsAccountAddress(lane, detailSlug),
-        );
+      onNavigate: (lane, detailSlug, fromAccountWorkspace) => {
+        const address = detailSlug === null ? laneAddress : connectionsAccountAddress(lane, detailSlug);
+        const current = connectionsHistory.current();
+        if (fromAccountWorkspace && detailSlug !== null) {
+          const fromRoster = current.levels.length === laneAddress.levels.length;
+          const switching = visit && current.hash === visit.detailHash ? visit : undefined;
+          if (fromRoster || switching) {
+            const next = {
+              key: switching?.key ?? Math.random().toString(36).slice(2),
+              listHash: switching?.listHash ?? view?.location.hash ?? laneAddress.hash,
+              detailHash: address.hash,
+              slug: detailSlug,
+            };
+            const result = connectionsHistory.navigate(address, { state: { recuedAccountWorkspaceVisit: next.key } });
+            if (result.committed && (switching || result.mode === 'push')) visit = next;
+            return;
+          }
+        }
+        visit = undefined;
+        connectionsHistory.navigate(address);
       },
       // D-405 slice 7 — opened from a chat answer, its chat is that answer, and the first mailbox's
       // Proposals (D-325's first session) carry it on, so they offer the way back too.
@@ -1055,9 +1178,66 @@ export const bootstrapConnectionsRoute = (
       && opts.webhooksEnableCaller !== undefined
       && opts.webhooksDisableCaller !== undefined;
     if (canMountWebhooks) {
+      const view = doc.defaultView;
+      const listAddress = connectionsLaneAddress('webhooks');
+      let visit: { key: string; listHash: string; detailHash: string; ingressId: string } | undefined;
+      let closingDetails = false;
+      const backToRoster = (): boolean => {
+        if (!view || !visit || view.location.hash !== visit.detailHash) return false;
+        if (closingDetails) return true;
+        try {
+          closingDetails = true;
+          view.history.back();
+          return true;
+        } catch {
+          closingDetails = false;
+          return false;
+        }
+      };
+      const selectWebhook = (ingressId: string | null): void => {
+        if (ingressId === null) {
+          visit = undefined;
+          connectionsHistory.navigate(listAddress);
+          return;
+        }
+        const detail = connectionsWebhookAddress(ingressId);
+        const current = connectionsHistory.current();
+        const switching = visit?.detailHash === current.hash ? visit : undefined;
+        const next = {
+          key: switching?.key ?? Math.random().toString(36).slice(2),
+          listHash: switching?.listHash ?? (view?.location?.hash || listAddress.hash),
+          detailHash: detail.hash,
+          ingressId,
+        };
+        const result = connectionsHistory.navigate(detail, { state: { recuedWebhookWorkspaceVisit: next.key } });
+        if (result.committed && (switching || result.mode === 'push')) visit = next;
+      };
+      // Saved-view returns still focus a card by its existing marker on the lane list.
+      const useWorkspace = !opts.searchReturn || initialWebhook !== undefined;
+      if (useWorkspace) navigateWorkspaceHistory = (hash) => {
+        if (!visit || !webhooksPanel) return false;
+        const current = connectionsHistory.current().hash;
+        if (hash === visit.listHash && current === visit.detailHash) {
+          closingDetails = false;
+          if (!webhooksPanel.selectWebhook(null)) return false;
+          connectionsHistory.adopt({ ...listAddress, hash });
+          return true;
+        }
+        if (hash !== visit.detailHash || current !== visit.listHash
+          || view?.history?.state?.recuedWebhookWorkspaceVisit !== visit.key
+          || !webhooksPanel.selectWebhook(visit.ingressId)) return false;
+        connectionsHistory.adopt(connectionsWebhookAddress(visit.ingressId));
+        return true;
+      };
       webhooksPanel = mountWebhooksPanel({
         host: content,
         document: doc,
+        ...(useWorkspace ? { workspace: {
+          scrollRoot: opts.root,
+          onSelect: selectWebhook,
+          backToRoster,
+          ...(initialWebhook !== undefined ? { initialSelection: initialWebhook } : {}),
+        } } : {}),
         runList: opts.webhooksListCaller!,
         runCreate: opts.webhooksCreateCaller!,
         runCredentialWrite: opts.webhooksCredentialWriteCaller!,
@@ -1272,9 +1452,68 @@ export const bootstrapConnectionsRoute = (
       const enrollHost = doc.createElement('div');
       enrollHost.setAttribute(CONNECTIONS_ROUTE_ENROLL_HOST_ATTR, '');
       content.appendChild(enrollHost);
+      const view = doc.defaultView;
+      const inventoryAddress = connectionsLaneAddress('others');
+      const openedHash = parseShellRoute(view?.location?.hash || inventoryAddress.hash);
+      const useInventory = !opts.searchReturn && (initialInventorySelection !== undefined
+        || (openedHash.surface === 'connections' && openedHash.segments.length === 1 && openedHash.segments[0] === 'others'));
+      let visit: { key: string; listHash: string; detailHash: string; selection: ConnectionInventorySelection } | undefined;
+      let closingDetails = false;
+      const backToInventory = (): boolean => {
+        if (!visit || view?.location?.hash !== visit.detailHash) return false;
+        if (closingDetails) return true;
+        try {
+          closingDetails = true;
+          view.history.back();
+          return true;
+        } catch {
+          closingDetails = false;
+          return false;
+        }
+      };
+      const selectConnection = (selection: ConnectionInventorySelection | null): void => {
+        if (!selection) {
+          visit = undefined;
+          connectionsHistory.navigate(inventoryAddress);
+          return;
+        }
+        const detail = connectionsInventoryAddress(selection);
+        const current = connectionsHistory.current();
+        const switching = visit?.detailHash === current.hash ? visit : undefined;
+        if (!switching && current.levels.length !== inventoryAddress.levels.length) {
+          connectionsHistory.navigate(detail);
+          return;
+        }
+        const next = {
+          key: switching?.key ?? Math.random().toString(36).slice(2),
+          listHash: switching?.listHash ?? (view?.location?.hash || inventoryAddress.hash),
+          detailHash: detail.hash, selection,
+        };
+        const result = connectionsHistory.navigate(detail, { state: { recuedConnectionInventoryVisit: next.key } });
+        if (result.committed && (switching || result.mode === 'push')) visit = next;
+      };
+      if (useInventory) navigateWorkspaceHistory = (hash) => {
+        if (!visit || !connectionsEnroll) return false;
+        const current = connectionsHistory.current().hash;
+        if (hash === visit.listHash && current === visit.detailHash) {
+          closingDetails = false;
+          if (!connectionsEnroll.selectInventoryConnection(null)) return false;
+          connectionsHistory.adopt({ ...inventoryAddress, hash });
+          return true;
+        }
+        if (hash !== visit.detailHash || current !== visit.listHash
+          || view?.history?.state?.recuedConnectionInventoryVisit !== visit.key
+          || !connectionsEnroll.selectInventoryConnection(visit.selection)) return false;
+        connectionsHistory.adopt(connectionsInventoryAddress(visit.selection));
+        return true;
+      };
       connectionsEnroll = mountConnectionsEnrollPanel({
         host: enrollHost,
         document: doc,
+        ...(useInventory ? { inventoryWorkspace: {
+          scrollRoot: opts.root, onSelect: selectConnection, backToInventory,
+          ...(initialInventorySelection ? { initialSelection: initialInventorySelection } : {}),
+        } } : {}),
         runList: opts.connectionsEnrollListCaller as ConnectionsEnrollListCaller,
         runEnroll: opts.connectionsEnrollCaller as ConnectionsEnrollCaller,
         runUpdate: opts.connectionsUpdateCaller as ConnectionsUpdateCaller,
@@ -1395,6 +1634,7 @@ export const bootstrapConnectionsRoute = (
         ...(opts.initialAddress?.kind === 'enroll' && opts.initialAddress.pack !== undefined
           ? { initialPack: opts.initialAddress.pack } : {}),
         ...(opts.initialConnectionAccessReview ? { initialConnectionAccessReview: opts.initialConnectionAccessReview } : {}),
+        ...(opts.searchReturn ? { onAccessReviewRetired: retireSearchReturn } : {}),
         ...(opts.initialFileAuthenticationSwitch ? { initialFileAuthenticationSwitch: opts.initialFileAuthenticationSwitch } : {}),
         ...(opts.initialPermissionRepair ? { initialPermissionRepair: opts.initialPermissionRepair } : {}),
         ...(opts.permissionRepairUnavailable ? { permissionRepairUnavailable: true } : {}),
@@ -1574,6 +1814,7 @@ export const bootstrapConnectionsRoute = (
       connectionsEnroll?.setPostSafeStopProfileContext(context);
     },
     webhooksPanel: () => webhooksPanel,
+    ...(navigateWorkspaceHistory ? { navigateDeepLink: navigateWorkspaceHistory } : {}),
     whenLoaded: async () => { await Promise.all([
       accessVerification?.whenLoaded() ?? incidentHistory?.whenLoaded() ?? accountsPanel?.whenLoaded() ?? connectionsEnroll?.whenLoaded() ?? webhooksPanel?.whenLoaded(),
       oauthAppsPanel?.whenLoaded(),

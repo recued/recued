@@ -90,9 +90,12 @@ import {
   renderApprovalLinkHtml,
   renderApprovalLinkPlaceholderHtml,
   renderApprovalLinkSuccessHtml,
-  renderApprovalLinkUnavailableHtml,
   type ApprovalLinkRenderInput,
 } from './approval-link-render.js';
+import {
+  writeReceptionLinkHtmlResponse as writeHtmlResponse,
+  writeReceptionLinkUnavailableResponse,
+} from './reception-link-response.js';
 import type { ReceptionEndpointContext } from '../redacted-packet.js';
 import type { ReceptionKindHandler } from './types.js';
 import type { PublicEndpointRegistryStore } from '../../../storage/public-endpoint-registry-store.js';
@@ -135,21 +138,6 @@ export const createInMemoryApprovalLinkNonceStore = (): ApprovalLinkNonceStore =
 // ────────────────────────────────────────────────────────────────
 // Response helpers
 // ────────────────────────────────────────────────────────────────
-
-const writeHtmlResponse = (res: ServerResponse, body: string, status = 200): void => {
-  res.statusCode = status;
-  res.setHeader('content-type', 'text/html; charset=utf-8');
-  res.setHeader('cache-control', 'no-store');
-  res.setHeader('referrer-policy', 'no-referrer');
-  res.setHeader('x-content-type-options', 'nosniff');
-  res.setHeader('x-frame-options', 'DENY');
-  res.setHeader('content-length', String(Buffer.byteLength(body, 'utf8')));
-  res.end(body);
-};
-
-export const writeApprovalLinkUnavailableResponse = (res: ServerResponse): void => {
-  writeHtmlResponse(res, renderApprovalLinkUnavailableHtml(), 410);
-};
 
 const writeErrorPage = (
   res: ServerResponse,
@@ -334,7 +322,7 @@ export const createApprovalLinkPacketHandler = (
     }
 
     if (!row.enabled || row.revoked_at !== null || row.expires_at !== null && row.expires_at <= deps.now()) {
-      writeApprovalLinkUnavailableResponse(res); return;
+      writeReceptionLinkUnavailableResponse(res); return;
     }
 
     const intent = deps.getApprovalIntentStore().findByEndpoint(endpoint_id);

@@ -1,5 +1,9 @@
 import { expect, test, type Page } from '@playwright/test';
 
+const sourceDetails = async (page: Page) => {
+  const details = page.locator('.rq-sources');
+  if (!await details.evaluate(el => (el as HTMLDetailsElement).open)) await details.locator('summary').click();
+};
 const input = (page: Page) => page.getByRole('searchbox', { name: 'Search everything' });
 const calls = (page: Page, kind: string) => page.evaluate(kind =>
   window.__universalSearch.calls.filter(call => call.kind === kind).map(call => call.query), kind);
@@ -12,12 +16,20 @@ const localEmpty = async (page: Page, index = 0) => {
   await expect(page.getByRole('button', { name: /Look for .+ in the marketplace/ })).toBeVisible();
 };
 
+const pauseSearchClock = async (page: Page) => {
+  // install() alone keeps time running. Hold edits and stale-control clicks
+  // before the debounce until the test explicitly advances it with runFor().
+  await page.clock.install({ time: new Date('2026-01-01T00:00:00Z') });
+  await page.clock.pauseAt(new Date('2026-01-01T01:00:00Z'));
+};
+
 const pageErrors: string[] = [];
 test.beforeEach(async ({ page }) => {
   pageErrors.length = 0;
   page.on('pageerror', error => pageErrors.push(error.message));
   await page.goto('/universal-search-harness.html');
   await page.waitForFunction(() => window.__universalSearch?.ready === true);
+  await sourceDetails(page);
 });
 test.afterEach(() => expect(pageErrors).toEqual([]));
 
@@ -75,7 +87,7 @@ for (const outcome of ['match', 'error'] as const) {
     await expect.poll(() => calls(page, 'marketplace')).toEqual(['alpha', 'beta']);
     await input(page).focus();
     await release(page, 'marketplace', 0, outcome);
-    await expect(page.getByRole('status')).toHaveText('Asking the marketplace…');
+    await expect(page.getByRole('status').filter({ hasText: 'Asking the marketplace…' })).toHaveText('Asking the marketplace…');
     await expect(page.getByText(/Marketplace for alpha|Failed marketplace for alpha/)).toHaveCount(0);
     await release(page, 'marketplace', 1, 'match');
     await expect(page.getByRole('button', { name: /Marketplace for beta/ })).toBeVisible();
@@ -85,7 +97,7 @@ for (const outcome of ['match', 'error'] as const) {
 }
 
 test('editing away and back invalidates a pending reply before the debounce fires', async ({ page }) => {
-  await page.clock.install();
+  await pauseSearchClock(page);
   await input(page).fill('alpha');
   await page.clock.runFor(200);
   expect(await calls(page, 'records')).toEqual(['alpha']);
@@ -135,11 +147,12 @@ test('leaving Search retires a pending marketplace request and allows another ex
 });
 
 test('an outdated marketplace offer cannot send the newly typed query during the debounce', async ({ page }) => {
-  await page.clock.install();
+  await pauseSearchClock(page);
   await input(page).fill('alpha');
   await page.clock.runFor(200);
   await localEmpty(page);
   await input(page).fill('beta');
+  expect(await calls(page, 'records')).toEqual(['alpha']);
   await page.getByRole('button', { name: 'Look for “alpha” in the marketplace' }).click();
   expect(await calls(page, 'marketplace')).toEqual([]);
   await page.clock.runFor(200);
@@ -151,7 +164,7 @@ test('an outdated marketplace offer cannot send the newly typed query during the
 });
 
 test('editing away and back also retires a marketplace reply for those same words', async ({ page }) => {
-  await page.clock.install();
+  await pauseSearchClock(page);
   await input(page).fill('alpha');
   await page.clock.runFor(200);
   await localEmpty(page);
@@ -189,6 +202,7 @@ test('native work results page, open the right kind, and return from edits to th
   await page.setViewportSize({ width: 390, height: 900 });
   await page.goto('/universal-search-harness.html?native=1');
   await page.waitForFunction(() => window.__universalSearch?.ready === true);
+  await sourceDetails(page);
   await input(page).fill('kestrel');
   const group = (kind: string) => page.locator(`[data-work-search-group="${kind}"]`);
   const result = (kind: string, id: string) => group(kind).locator(`[data-search-work-id="${id}"]`);
@@ -272,6 +286,7 @@ test('native work results page, open the right kind, and return from edits to th
 test('native work failures and late replies preserve other results without sending the query to the marketplace', async ({ page }) => {
   await page.goto('/universal-search-harness.html?native=manual');
   await page.waitForFunction(() => window.__universalSearch?.ready === true);
+  await sourceDetails(page);
   await input(page).fill('kestrel'); await expect.poll(() => calls(page, 'work')).toEqual(['kestrel']);
   await input(page).fill('project'); await expect.poll(() => calls(page, 'work')).toEqual(['kestrel', 'project']);
   await release(page, 'records', 1, 'match');
@@ -322,7 +337,8 @@ test('native work failures and late replies preserve other results without sendi
 test('a server that cannot search tasks and notes says what it searched and still completes the search', async ({ page }) => {
   await page.goto('/universal-search-harness.html?native=manual');
   await page.waitForFunction(() => window.__universalSearch?.ready === true);
-  const scope = page.locator('#rq-search-scope');
+  await sourceDetails(page);
+  const scope = page.locator('.rq-source-body > .rq-subtle').first();
   await input(page).fill('unfindable'); await expect.poll(() => calls(page, 'work')).toEqual(['unfindable']);
   await release(page, 'work', 0, 'unsupported'); await localEmpty(page);
   await expect(scope).toHaveText('Contacts, mail, calendar, files, installed recipes and packs. Update your Recued server to search tasks, notes, projects, commitments and bookings too.');
@@ -338,6 +354,7 @@ test('a server that cannot search tasks and notes says what it searched and stil
 test('contact search settles independently, retains failed pages, and retires late pages and old-server replies', async ({ page }) => {
   await page.goto('/universal-search-harness.html?contacts=manual');
   await page.waitForFunction(() => window.__universalSearch?.ready === true);
+  await sourceDetails(page);
   const group = page.getByRole('region', { name: 'Contact search results' });
   const results = group.locator('[data-search-contact-email]');
   await input(page).fill('Northwind');

@@ -25,10 +25,12 @@ import {
   type ServerRpcRegistry,
 } from '@recued/contracts';
 import type { RecordsStore } from './records/store.js';
+import type { CustomerDecisionWatchService } from './customer-decision-watch.js';
 import type { WsClient } from './ws-server.js';
 
 export interface RecordsRpcDeps {
   store: RecordsStore;
+  customerWatches?: CustomerDecisionWatchService;
   /** The owning pack's name, for `records.namespace.list` (`display_name`). Null or absent ⇒
    *  the namespace is listed without one; a throw names none rather than failing the list. */
   packName?: (owner: RecordsPackRef) => string | null;
@@ -113,6 +115,10 @@ type RecordsRpcMethods =
   | 'records.kind.list'
   | 'records.search'
   | 'records.get'
+  | 'records.decision_watch.accounts'
+  | 'records.decision_watch.read'
+  | 'records.decision_watch.change'
+  | 'records.decision_watch.reviews'
   | 'records.delete'
   | 'records.quota.set'
   | 'records.quota.set_global'
@@ -132,6 +138,10 @@ const METHODS: readonly RecordsRpcMethods[] = [
   'records.kind.list',
   'records.search',
   'records.get',
+  'records.decision_watch.accounts',
+  'records.decision_watch.read',
+  'records.decision_watch.change',
+  'records.decision_watch.reviews',
   'records.delete',
   'records.quota.set',
   'records.quota.set_global',
@@ -151,6 +161,12 @@ export const makeRecordsRpcHandlers = (
   deps: RecordsRpcDeps | undefined,
 ): HandlerSlice<ServerRpcRegistry, RecordsRpcMethods, WsClient> | undefined => {
   if (!deps) return undefined;
+  const watches = (client: WsClient) => {
+    requireRegisteredClient(client);
+    if (client.client_kind !== 'webclient') throw new RpcError('unauthorized', 'A paired webclient is required.', 401);
+    if (!deps.customerWatches) throw new RpcError('not_configured', 'Customer decision watches are unavailable on this server.', 503);
+    return deps.customerWatches;
+  };
   return {
     methods: [...METHODS],
     handlers: {
@@ -189,6 +205,10 @@ export const makeRecordsRpcHandlers = (
           raw.id,
         ));
       },
+      'records.decision_watch.accounts': async (args, client) => watches(client).accounts(args?.query),
+      'records.decision_watch.read': async (args, client) => fromStore(() => watches(client).read(args)),
+      'records.decision_watch.change': async (args, client) => fromStore(() => watches(client).change(args)),
+      'records.decision_watch.reviews': async (_args, client) => fromStore(() => watches(client).reviews()),
       'records.delete': async (args, client) => {
         requireRegisteredClient(client);
         const raw = requireObject(args, 'records.delete') as unknown as RecordsOwnerDeleteRequest;

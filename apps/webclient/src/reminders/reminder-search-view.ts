@@ -13,17 +13,16 @@ export interface ReminderSearchTriageView {
   writing: boolean;
   selection: (row: ReminderView) => string;
 }
-export const renderReminderSearch = (state: ReminderSearchState | undefined, actionAttr: string, status?: ReminderSearchStatus, datesHtml = '', triage?: ReminderSearchTriageView): string => {
+export const renderReminderSearch = (state: ReminderSearchState | undefined, actionAttr: string, status?: ReminderSearchStatus, datesHtml = '', triage?: ReminderSearchTriageView, showFilters = true): string => {
   if (!state) return '';
   return `<section class="rq-group" aria-label="Reminder search results" aria-busy="${state.loading}">
     <h3 class="rq-group-head"><span class="rq-group-name">Reminders</span><span class="rq-group-count" role="status">${state.unsupported ? 'Update required'
       : state.loading && !state.matches.length ? 'Searching' : state.error && !state.matches.length ? 'Unavailable' : `${state.matches.length} of ${state.total}`}</span></h3>
-    <div class="rq-type-controls"><label for="rq-reminder-state">Reminder status</label><select id="rq-reminder-state" ${SEARCH_REMINDER_STATUS_ATTR}${triage?.writing ? ' disabled' : ''}>
+    ${showFilters ? `<div class="rq-type-controls"><label for="rq-reminder-state">Reminder status</label><select id="rq-reminder-state" ${SEARCH_REMINDER_STATUS_ATTR}${triage?.writing ? ' disabled' : ''}>
       ${Object.entries(REMINDER_STATUS_LABELS).map(([value, label]) => `<option value="${value}"${value === (status ?? state.input.state) ? ' selected' : ''}>${label}</option>`).join('')}
     </select></div>
-    <p class="rq-subtle">Searches waiting reminders and retained 30-day history. Times use each reminder’s stated time zone.</p>
+    <p class="rq-subtle">Searches waiting reminders and retained 30-day history. Times use each reminder’s stated time zone.</p>${datesHtml}` : '<p class="rq-subtle">' + e(REMINDER_STATUS_LABELS[status ?? state.input.state]) + (state.input.from !== undefined || state.input.before !== undefined ? ' · Dates filtered' : '') + ' · Choose Reminders to change filters.</p>'}
     ${state.unsupported ? '<p class="rq-subtle" role="status">Update your Recued server to search reminders and their history here.</p>' : ''}
-    ${datesHtml}
     ${triage?.html ?? ''}
     ${state.error ? `<p class="rq-error" role="alert">${e(state.error)}</p>` : ''}
     ${state.loading ? '<p class="rq-hint" role="status">Searching reminders…</p>' : ''}

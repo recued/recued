@@ -17,6 +17,7 @@ import {
   APPROVAL_CARD_STYLES,
   ASK_CARD_OPTION_ATTR,
   CHAT_PLAN_CARD_ACTION_ATTR,
+  formatAskAge,
   renderApprovalCard,
   renderAskCard,
   renderChatPlanCard,
@@ -193,6 +194,9 @@ export interface BootstrapApprovalsRouteOptions {
   initialFocusId?: string;
   searchReturnHash?: string;
   initialDecisionKind?: DecisionKind;
+  /** Search's readable-text query seeds the native filters. Review navigation
+   * stays within this mount so drafts and the original Search return survive. */
+  initialDecisionQuery?: string;
   /** Bootstrap-scoped durable Chat approval inbox. It owns all-session
    * recovery plus live-event reconciliation across reconnects. */
   chatPlans?: {
@@ -259,6 +263,11 @@ type DecisionRow =
   | { kind: 'gate'; sortAt: number; id: string; approval: ServerPendingApproval }
   | { kind: 'ask'; sortAt: number; id: string; ask: ServerPendingAsk }
   | { kind: 'plan'; sortAt: number; id: string; plan: PendingChatPlan };
+
+const PENDING_QUEUE_MEDIA = '(min-width: 1280px) and (hover: hover) and (pointer: fine)';
+const PENDING_QUEUE_KEY_ATTR = 'data-recued-approvals-queue-key';
+const PENDING_REVIEW_ID = 'recued-approvals-pending-review';
+const DECISION_KIND_LABEL = { gate: 'Action', ask: 'Question', plan: 'Chat plan' } as const;
 
 const clearChildren = (node: HTMLElement): void => {
   while (node.firstChild) node.removeChild(node.firstChild);
@@ -377,12 +386,25 @@ export const bootstrapApprovalsRoute = (
   searchLanding.setAttribute('data-decision-search-landing', ''); searchLanding.setAttribute('role', 'status');
   if (opts.searchReturnHash) routeRoot.appendChild(searchLanding);
 
-  let decisionFilter: DecisionFilter = 'all', decisionQuery = '';
-  let renderedCards: Array<{ id: string; kind: DecisionKind; card: HTMLElement; text: string }> = [];
+  let decisionFilter: DecisionFilter = 'all', decisionQuery = (opts.initialDecisionQuery ?? '').slice(0, 512);
+  type RenderedDecision = {
+    id: string; kind: DecisionKind; card: HTMLElement; text: string; title: string; sortAt: number;
+  };
+  const decisionKey = (row: { id: string; kind: DecisionKind }): string => `${row.kind}:${row.id}`;
+  let renderedCards: RenderedDecision[] = [];
+  const reviewingSearch = opts.searchReturnHash !== undefined && opts.initialDecisionKind !== undefined;
+  const desktopBreakpoint = opts.searchReturnHash === undefined
+    ? doc.defaultView?.matchMedia?.(PENDING_QUEUE_MEDIA)
+    : undefined;
+  let desktopSelection: string | null = null;
+  let reviewedKey = opts.initialFocusId && opts.initialDecisionKind
+    ? decisionKey({ id: opts.initialFocusId, kind: opts.initialDecisionKind }) : null;
+  let arrivalReviewed = false;
+  let pendingSearchLabels = Number(!!opts.recipeNamesCaller) + Number(!!opts.pairListCaller);
   const filters = doc.createElement('section'); filters.className = 'approvals-filters'; filters.setAttribute('aria-label', 'Filter pending decisions');
   const searchRow = doc.createElement('div'); searchRow.className = 'approvals-search-row';
   const searchLabel = doc.createElement('label'); searchLabel.className = 'approvals-search-label'; searchLabel.textContent = 'Search pending decisions';
-  const searchInput = doc.createElement('input'); searchInput.type = 'search'; searchInput.value = ''; searchInput.maxLength = 512;
+  const searchInput = doc.createElement('input'); searchInput.type = 'search'; searchInput.value = decisionQuery; searchInput.maxLength = 512;
   searchInput.autocomplete = 'off'; searchInput.placeholder = 'Recipe, tool, or request text'; searchInput.className = 'approvals-search-input';
   searchInput.setAttribute('aria-label', 'Search pending decisions'); searchLabel.appendChild(searchInput); searchRow.appendChild(searchLabel);
   const clearFilters = doc.createElement('button'); clearFilters.type = 'button'; clearFilters.className = 'approvals-filter-button';
@@ -397,6 +419,17 @@ export const bootstrapApprovalsRoute = (
     filterButtons.set(kind, button); typeFilters.appendChild(button);
   }
   filters.appendChild(searchRow); filters.appendChild(typeFilters); routeRoot.appendChild(filters);
+
+  const reviewNavigation = doc.createElement('section'); reviewNavigation.className = 'approvals-review-navigation';
+  reviewNavigation.setAttribute('aria-label', 'Matching decision navigation');
+  const reviewCount = doc.createElement('p'); reviewCount.className = 'approvals-review-count'; reviewCount.tabIndex = -1;
+  reviewCount.setAttribute('role', 'status'); reviewCount.setAttribute('aria-live', 'polite'); reviewCount.setAttribute('aria-atomic', 'true');
+  const previousDecision = doc.createElement('button'); previousDecision.type = 'button'; previousDecision.className = 'approvals-filter-button';
+  previousDecision.textContent = 'Previous matching decision';
+  const nextDecision = doc.createElement('button'); nextDecision.type = 'button'; nextDecision.className = 'approvals-filter-button';
+  nextDecision.textContent = 'Next matching decision';
+  reviewNavigation.append(reviewCount, previousDecision, nextDecision);
+  if (reviewingSearch) routeRoot.appendChild(reviewNavigation);
 
   const summary = doc.createElement('p');
   summary.className = 'approvals-summary';
@@ -438,7 +471,21 @@ export const bootstrapApprovalsRoute = (
   list.setAttribute(APPROVALS_ROUTE_LIST_ATTR, '');
   list.setAttribute('role', 'list');
   list.setAttribute('aria-labelledby', listHeadingId);
-  routeRoot.appendChild(list);
+  const workspace = doc.createElement('div');
+  workspace.className = 'approvals-workspace';
+  const queue = doc.createElement('div');
+  queue.className = 'approvals-queue';
+  queue.hidden = true;
+  queue.setAttribute('role', 'tablist');
+  queue.setAttribute('aria-label', 'Pending decision queue');
+  queue.setAttribute('aria-orientation', 'vertical');
+  const reviewPane = doc.createElement('div');
+  reviewPane.className = 'approvals-review-pane';
+  reviewPane.id = PENDING_REVIEW_ID;
+  reviewPane.appendChild(list);
+  workspace.appendChild(queue);
+  workspace.appendChild(reviewPane);
+  routeRoot.appendChild(workspace);
 
   const empty = doc.createElement('p');
   empty.className = 'approvals-empty';
@@ -522,7 +569,13 @@ export const bootstrapApprovalsRoute = (
   };
 
   const focusPlanResolutionHandoff = (planId: string): void => {
+    if (reviewingSearch) return;
     if (latestPlanResolution()?.plan_id !== planId) return;
+    if (desktopBreakpoint?.matches) {
+      const active = doc.activeElement;
+      // The receipt can take focus once the queue reaches its heading.
+      if (!queue.hidden || (active && active !== heading && active !== doc.body)) return;
+    }
     const focusable = planResolutionPrimaryAction as unknown as {
       focus?: (options?: FocusOptions) => void;
     } | null;
@@ -582,6 +635,7 @@ export const bootstrapApprovalsRoute = (
   type DecisionActionTarget = { attr: string; value: string };
   let actionFocusOwner: {
     rowId: string;
+    kind: DecisionKind;
     action: DecisionActionTarget | null;
   } | null = null;
   let requestedApprovalActionFocus: {
@@ -589,16 +643,18 @@ export const bootstrapApprovalsRoute = (
     action: string;
   } | null = null;
   const runDecisionAction = async (
+    kind: DecisionKind,
     id: string,
     decisionAction: DecisionActionTarget | null,
     action: () => Promise<void>,
   ): Promise<void> => {
-    const owner = { rowId: id, action: decisionAction };
+    const owner = { rowId: id, kind, action: decisionAction };
     actionFocusOwner = owner;
     try {
       await action();
     } finally {
       if (actionFocusOwner === owner) actionFocusOwner = null;
+      if (!disposed) renderChrome();
     }
   };
 
@@ -619,6 +675,7 @@ export const bootstrapApprovalsRoute = (
       {
         onResolve: (decision) =>
           runDecisionAction(
+            'gate',
             approval.approval_id,
             {
               attr: APPROVAL_CARD_ACTION_ATTR,
@@ -710,6 +767,7 @@ export const bootstrapApprovalsRoute = (
         // reason was typed and thrown away, with nothing reporting it.
         onAnswer: (optionId, note) =>
           runDecisionAction(
+            'ask',
             ask.ask_id,
             { attr: ASK_CARD_OPTION_ATTR, value: optionId },
             () => submitAskFromCard(ask.ask_id, optionId, note),
@@ -718,6 +776,7 @@ export const bootstrapApprovalsRoute = (
         ...(opts.runGiveSecret !== undefined ? { onSecret: async (value: string, remember: boolean) => {
           if (disposed || !routeRoot.contains(card) || resolvingSecrets.has(ask.ask_id) || resolvingAsks.has(ask.ask_id)) return false;
           resolvingSecrets.set(ask.ask_id, remember); secretErrors.delete(ask.ask_id);
+          renderChrome();
           const rememberError = (message: string): void => {
             if (!disposed && context !== null && askSnapshot.asks.some(current => current.ask_id === ask.ask_id && canonicalJSONStringify(current) === context)) {
               secretErrors.set(ask.ask_id, { context, message });
@@ -735,6 +794,7 @@ export const bootstrapApprovalsRoute = (
             // The connected form settles itself. A replacement never inherits
             // its value, but still needs the pending state and current error.
             if (!disposed && !routeRoot.contains(card)) renderDecisions();
+            else if (!disposed) renderChrome();
           }
         } } : {}),
       },
@@ -776,6 +836,7 @@ export const bootstrapApprovalsRoute = (
       {
         onResolve: (decision) =>
           runDecisionAction(
+            'plan',
             plan.plan_id,
             { attr: CHAT_PLAN_CARD_ACTION_ATTR, value: decision },
             () => resolvePlanFromCard(plan.plan_id, decision),
@@ -808,28 +869,151 @@ export const bootstrapApprovalsRoute = (
     );
     if (target === undefined || target.hidden) return;
     focusApplied = true;
+    arrivalReviewed = true;
     if (typeof target.scrollIntoView === 'function') {
       target.scrollIntoView({ block: 'center' });
     }
     target.focus?.({ preventScroll: true });
   };
 
-  const focusDecisionSuccessor = (id: string | null): void => {
-    const target = id === null
-      ? undefined
-      : (Array.from(list.children) as HTMLElement[]).find(
-          (el) => !el.hidden && el.getAttribute?.(APPROVALS_ROUTE_FOCUS_ATTR) === id,
-        );
-    if (target !== undefined) {
-      target.setAttribute('tabindex', '-1');
-      target.focus?.({ preventScroll: true });
+  const focusDecisionSuccessor = (key: string | null): void => {
+    const target = renderedCards.find(row => !row.card.hidden && decisionKey(row) === key);
+    if (target) {
+      if (reviewingSearch) { reviewedKey = key; arrivalReviewed = true; }
+      if (desktopBreakpoint?.matches && desktopSelection !== key) {
+        desktopSelection = key;
+        renderDesktopQueue();
+      }
+      target.card.setAttribute('tabindex', '-1');
+      if (reviewingSearch || desktopBreakpoint?.matches) target.card.scrollIntoView?.({ block: 'nearest' });
+      target.card.focus?.({ preventScroll: true });
       return;
     }
-    heading.setAttribute('tabindex', '-1');
-    heading.focus?.({ preventScroll: true });
+    const fallback = reviewingSearch ? reviewCount : heading;
+    fallback.setAttribute('tabindex', '-1');
+    if (reviewingSearch) fallback.scrollIntoView?.({ block: 'nearest' });
+    fallback.focus?.({ preventScroll: true });
   };
 
-  let renderedDecisionIds: string[] = [];
+  let renderedDecisionKeys: string[] = [];
+
+  const nearestDecisionKey = (key: string, currentKeys: readonly string[]): string | undefined => {
+    const index = renderedDecisionKeys.indexOf(key);
+    return renderedDecisionKeys.slice(index + 1).find(candidate => currentKeys.includes(candidate))
+      ?? renderedDecisionKeys.slice(0, index).reverse().find(candidate => currentKeys.includes(candidate));
+  };
+
+  const queueButton = (key: string | null): HTMLElement | undefined =>
+    (Array.from(queue.children) as HTMLElement[]).find(button => button.getAttribute(PENDING_QUEUE_KEY_ATTR) === key);
+
+  const revealReviewTop = (): void => {
+    const contentTop = opts.root.getBoundingClientRect?.().top ?? 0;
+    if (reviewPane.getBoundingClientRect().top < contentTop) {
+      reviewPane.scrollIntoView?.({ block: 'start' });
+    }
+  };
+
+  const selectQueueDecision = (key: string): void => {
+    if (disposed || !desktopBreakpoint?.matches || !visibleDecisionKeys().includes(key)) return;
+    focusApplied = true;
+    if (desktopSelection !== key) {
+      desktopSelection = key;
+      renderDesktopQueue();
+      revealReviewTop();
+    }
+    const button = queueButton(key);
+    button?.focus({ preventScroll: true });
+    button?.scrollIntoView?.({ block: 'nearest' });
+  };
+
+  const renderDesktopQueue = (): void => {
+    if (!desktopBreakpoint?.matches) {
+      if (queue.hidden) return;
+      queue.hidden = true;
+      workspace.removeAttribute('data-approvals-queue-layout');
+      reviewPane.removeAttribute('role');
+      reviewPane.removeAttribute('aria-labelledby');
+      reviewPane.removeAttribute('tabindex');
+      return;
+    }
+    const matching = renderedCards.filter(row => !row.card.hidden);
+    const keys = matching.map(decisionKey);
+    const requested = !focusApplied && focusId !== undefined
+      ? matching.find(row => row.id === focusId && (!opts.initialDecisionKind || opts.initialDecisionKind === row.kind))
+      : undefined;
+    if (requested) desktopSelection = decisionKey(requested);
+    if (!desktopSelection || !keys.includes(desktopSelection)) {
+      desktopSelection = (desktopSelection ? nearestDecisionKey(desktopSelection, keys) : undefined) ?? keys[0] ?? null;
+    }
+
+    const focusedTab = (doc.activeElement as HTMLElement | null)?.getAttribute?.(PENDING_QUEUE_KEY_ATTR) ?? null;
+    const scrollTop = queue.scrollTop;
+    clearChildren(queue);
+    queue.hidden = desktopSelection === null;
+    if (desktopSelection === null) {
+      workspace.removeAttribute('data-approvals-queue-layout');
+      reviewPane.removeAttribute('role');
+      reviewPane.removeAttribute('aria-labelledby');
+      reviewPane.removeAttribute('tabindex');
+      if (focusedTab !== null) focusDecisionSuccessor(null);
+      return;
+    }
+    workspace.setAttribute('data-approvals-queue-layout', '');
+    reviewPane.setAttribute('role', 'tabpanel');
+    reviewPane.tabIndex = 0;
+    const timestamp = now();
+    for (const row of matching) {
+      const key = decisionKey(row);
+      const selected = key === desktopSelection;
+      if (selected) row.card.setAttribute('data-approvals-queue-selected', '');
+      else row.card.removeAttribute('data-approvals-queue-selected');
+      const button = doc.createElement('button');
+      button.type = 'button';
+      button.id = `recued-approvals-queue-${encodeURIComponent(key)}`;
+      button.setAttribute(PENDING_QUEUE_KEY_ATTR, key);
+      button.setAttribute('role', 'tab');
+      button.setAttribute('aria-controls', PENDING_REVIEW_ID);
+      button.setAttribute('aria-selected', String(selected));
+      button.tabIndex = selected ? 0 : -1;
+      const title = doc.createElement('span');
+      title.className = 'approvals-queue-title';
+      title.textContent = row.title;
+      const meta = doc.createElement('span');
+      meta.className = 'approvals-queue-meta';
+      const age = formatAskAge(row.sortAt, timestamp);
+      meta.textContent = age ? `${DECISION_KIND_LABEL[row.kind]} · ${age}` : DECISION_KIND_LABEL[row.kind];
+      button.appendChild(title);
+      button.appendChild(meta);
+      button.addEventListener('click', () => selectQueueDecision(key));
+      queue.appendChild(button);
+      if (selected) reviewPane.setAttribute('aria-labelledby', button.id);
+    }
+    queue.scrollTop = scrollTop;
+    if (focusedTab !== null) (queueButton(focusedTab) ?? queueButton(desktopSelection))?.focus({ preventScroll: true });
+  };
+
+  const onQueueKeyDown = (event: KeyboardEvent): void => {
+    const rows = visibleDecisionKeys();
+    const index = rows.indexOf(desktopSelection ?? '');
+    const key = event.key === 'ArrowDown' ? rows[index + 1]
+      : event.key === 'ArrowUp' ? rows[index - 1]
+      : event.key === 'Home' ? rows[0]
+      : event.key === 'End' ? rows.at(-1) : undefined;
+    if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return;
+    event.preventDefault();
+    if (key) selectQueueDecision(key);
+  };
+  const onDesktopBreakpointChange = (): void => {
+    if (disposed) return;
+    const active = doc.activeElement as HTMLElement | null;
+    const wasQueueTab = active?.getAttribute?.(PENDING_QUEUE_KEY_ATTR) ?? null;
+    const focusedRow = active ? decisionCardContaining(active) : undefined;
+    if (desktopBreakpoint?.matches && focusedRow) desktopSelection = decisionKey(focusedRow);
+    renderDesktopQueue();
+    if (!desktopBreakpoint?.matches && wasQueueTab !== null) focusDecisionSuccessor(wasQueueTab);
+  };
+  queue.addEventListener('keydown', onQueueKeyDown);
+  desktopBreakpoint?.addEventListener?.('change', onDesktopBreakpointChange);
 
   const containsElement = (
     root: HTMLElement,
@@ -841,14 +1025,8 @@ export const bootstrapApprovalsRoute = (
     );
   };
 
-  const decisionCardIdContaining = (target: HTMLElement): string | null => {
-    const card = (Array.from(list.children) as HTMLElement[]).find(
-      (candidate) =>
-        candidate.getAttribute?.(APPROVALS_ROUTE_FOCUS_ATTR) !== null
-        && containsElement(candidate, target),
-    );
-    return card?.getAttribute?.(APPROVALS_ROUTE_FOCUS_ATTR) ?? null;
-  };
+  const decisionCardContaining = (target: HTMLElement): RenderedDecision | undefined =>
+    renderedCards.find(row => containsElement(row.card, target));
 
   const findDescendantByAttr = (
     root: HTMLElement,
@@ -864,16 +1042,13 @@ export const bootstrapApprovalsRoute = (
   };
 
   const restoreDecisionActionFocus = (
-    target: ({ rowId: string } & DecisionActionTarget) | null,
+    target: ({ rowId: string; kind: DecisionKind } & DecisionActionTarget) | null,
   ): void => {
     if (target === null) return;
-    const card = (Array.from(list.children) as HTMLElement[]).find(
-        (candidate) =>
-          !candidate.hidden && candidate.getAttribute?.(APPROVALS_ROUTE_FOCUS_ATTR) === target.rowId,
-    );
-    if (card === undefined) return;
+    const row = renderedCards.find(candidate => !candidate.card.hidden && candidate.id === target.rowId && candidate.kind === target.kind);
+    if (!row || (desktopBreakpoint?.matches && decisionKey(row) !== desktopSelection)) return;
     findDescendantByAttr(
-      card,
+      row.card,
       target.attr,
       target.value,
     )?.focus?.({ preventScroll: true });
@@ -884,33 +1059,20 @@ export const bootstrapApprovalsRoute = (
    *  card in the prior queue order, then the previous one, then the heading.
    *  Keeping this at the unified renderer covers gates, asks, and Chat plans. */
   const reconcileDecisionFocus = (
-    focusedCardId: string | null,
-    decisionRows: ReadonlyArray<DecisionRow>,
+    focusedKey: string | null,
   ): void => {
-    const currentIds = decisionRows.map((row) => row.id);
-    if (focusedCardId !== null) {
-      const replacement = (Array.from(list.children) as HTMLElement[]).find(
-        (el) => !el.hidden && el.getAttribute?.(APPROVALS_ROUTE_FOCUS_ATTR) === focusedCardId,
-      );
-      if (replacement !== undefined) {
-        replacement.focus?.({ preventScroll: true });
-      } else {
-        const priorIndex = renderedDecisionIds.indexOf(focusedCardId);
-        if (priorIndex >= 0) {
-          const currentIdSet = new Set(currentIds);
-          const successorId = renderedDecisionIds
-            .slice(priorIndex + 1)
-            .find((id) => currentIdSet.has(id))
-            ?? renderedDecisionIds
-              .slice(0, priorIndex)
-              .reverse()
-              .find((id) => currentIdSet.has(id))
-            ?? null;
-          focusDecisionSuccessor(successorId);
-        }
-      }
+    const currentKeys = visibleDecisionKeys();
+    const successor = (key: string): string | null => nearestDecisionKey(key, currentKeys)
+      ?? (reviewingSearch || desktopBreakpoint?.matches ? currentKeys[0] ?? null : null);
+    if (reviewingSearch && reviewedKey && !currentKeys.includes(reviewedKey) && renderedDecisionKeys.includes(reviewedKey)) {
+      reviewedKey = successor(reviewedKey);
     }
-    renderedDecisionIds = currentIds;
+    if (focusedKey !== null) {
+      const replacement = renderedCards.find(row => !row.card.hidden && decisionKey(row) === focusedKey);
+      if (replacement) replacement.card.focus?.({ preventScroll: true });
+      else if (renderedDecisionKeys.includes(focusedKey)) focusDecisionSuccessor(successor(focusedKey));
+    }
+    renderedDecisionKeys = currentKeys;
   };
 
   /** Re-paint the whole unified list + the summary / empty chrome. Called on
@@ -920,18 +1082,16 @@ export const bootstrapApprovalsRoute = (
     const noteFocus = askNoteDrafts.capture(askSnapshot.asks);
     const activeElement = doc.activeElement as HTMLElement | null | undefined;
     const filterOwnsFocus = activeElement === searchInput || activeElement === clearFilters
-      || [...filterButtons.values()].some(button => button === activeElement);
-    const focusedCard = activeElement?.closest?.(
-      `[${APPROVALS_ROUTE_FOCUS_ATTR}]`,
-    );
-    const focusedCardId = activeElement?.getAttribute?.(
-      APPROVALS_ROUTE_FOCUS_ATTR,
-    ) ?? focusedCard?.getAttribute?.(APPROVALS_ROUTE_FOCUS_ATTR)
-      ?? (activeElement === null || activeElement === undefined
-        ? null
-        : decisionCardIdContaining(activeElement))
-      ?? (filterOwnsFocus ? null : actionFocusOwner?.rowId)
-      ?? null;
+      || [...filterButtons.values()].some(button => button === activeElement)
+      || activeElement?.getAttribute?.(PENDING_QUEUE_KEY_ATTR) != null
+      || (reviewingSearch && activeElement !== null && activeElement !== undefined
+        && containsElement(routeRoot, activeElement) && !decisionCardContaining(activeElement));
+    const focusedRow = activeElement ? decisionCardContaining(activeElement) : undefined;
+    const pendingOwner = actionFocusOwner && { id: actionFocusOwner.rowId, kind: actionFocusOwner.kind };
+    const ownsSelectedDecision = pendingOwner && (!desktopBreakpoint?.matches || decisionKey(pendingOwner) === desktopSelection);
+    const focusOwner = focusedRow ?? (!filterOwnsFocus && ownsSelectedDecision ? pendingOwner : null);
+    const focusedCardId = focusOwner?.id ?? null;
+    const focusedKey = focusOwner ? decisionKey(focusOwner) : null;
     const focusedApprovalAction = activeElement?.closest?.(
       `[${APPROVAL_CARD_ACTION_ATTR}]`,
     );
@@ -949,25 +1109,29 @@ export const bootstrapApprovalsRoute = (
     const decisionActionFocus = filterOwnsFocus ? null : requestedApprovalActionFocus !== null
       ? {
           rowId: requestedApprovalActionFocus.rowId,
+          kind: 'gate' as const,
           attr: APPROVAL_CARD_ACTION_ATTR,
           value: requestedApprovalActionFocus.action,
         }
       : focusedCardId !== null && focusedApprovalActionId !== null
         ? {
             rowId: focusedCardId,
+            kind: focusOwner!.kind,
             attr: APPROVAL_CARD_ACTION_ATTR,
             value: focusedApprovalActionId,
           }
         : focusedCardId !== null && focusedPlanActionId !== null
           ? {
               rowId: focusedCardId,
+              kind: focusOwner!.kind,
               attr: CHAT_PLAN_CARD_ACTION_ATTR,
               value: focusedPlanActionId,
             }
           : actionFocusOwner !== null
               && focusedCardId === actionFocusOwner.rowId
+              && focusOwner?.kind === actionFocusOwner.kind
               && actionFocusOwner.action !== null
-            ? { rowId: actionFocusOwner.rowId, ...actionFocusOwner.action }
+            ? { rowId: actionFocusOwner.rowId, kind: actionFocusOwner.kind, ...actionFocusOwner.action }
             : null;
     requestedApprovalActionFocus = null;
     for (const [id, error] of secretErrors) {
@@ -1066,7 +1230,8 @@ export const bootstrapApprovalsRoute = (
       loading.textContent = 'Loading what is waiting for you…';
       nextNodes.push(loading);
       askNoteDrafts.render(list, nextNodes);
-      reconcileDecisionFocus(focusedCardId, decisionRows);
+      renderDesktopQueue();
+      reconcileDecisionFocus(focusedKey);
       renderChrome();
       return;
     }
@@ -1078,15 +1243,6 @@ export const bootstrapApprovalsRoute = (
           : row.kind === 'ask'
             ? renderAskRow(row.ask)
             : renderPlanCard(row.plan);
-      for (const child of Array.from(card.children)) {
-        if (
-          child.className === 'rx-approval-card-title'
-          || child.className === 'rx-ask-card-title'
-        ) {
-          child.setAttribute('role', 'heading');
-          child.setAttribute('aria-level', '3');
-        }
-      }
       // R17 — uniform focus hook + highlight for the run-scoped deep link. The
       // attr is set on EVERY card (so `applyFocus` can find the target); the
       // highlight flag only on the match (re-applied each paint while it lives).
@@ -1104,23 +1260,27 @@ export const bootstrapApprovalsRoute = (
       if (focusId !== undefined && row.id === focusId && (!opts.initialDecisionKind || opts.initialDecisionKind === row.kind)) {
         card.setAttribute('data-focused', 'true');
         card.setAttribute('tabindex', '-1');
-      } else if (focusedCardId === row.id) {
+      } else if (focusedKey === decisionKey(row)) {
         card.setAttribute('tabindex', '-1');
       }
-      renderedCards.push({ id: row.id, kind: row.kind, card, text: decisionSearchText(card) });
+      renderedCards.push({
+        id: row.id, kind: row.kind, card, text: decisionSearchText(card),
+        title: cardTitle?.textContent?.trim() || card.getAttribute('aria-label') || DECISION_KIND_LABEL[row.kind],
+        sortAt: row.sortAt,
+      });
       nextNodes.push(card);
     }
     askNoteDrafts.render(list, nextNodes);
     applyFilters();
+    renderDesktopQueue();
     const noteFocusRestored = askNoteDrafts.restore(noteFocus);
-    const visible = visibleDecisionIds();
-    reconcileDecisionFocus(noteFocusRestored ? null : focusedCardId, decisionRows.filter(row => visible.has(row.id)));
+    reconcileDecisionFocus(noteFocusRestored ? null : focusedKey);
     applyFocus();
     restoreDecisionActionFocus(decisionActionFocus);
     renderChrome();
   };
 
-  const visibleDecisionIds = (): Set<string> => new Set(renderedCards.filter(entry => !entry.card.hidden).map(entry => entry.id));
+  const visibleDecisionKeys = (): string[] => renderedCards.filter(entry => !entry.card.hidden).map(decisionKey);
   const filtersActive = (): boolean => decisionFilter !== 'all' || decisionSearchTerms(decisionQuery).length > 0;
   const applyFilters = (): number => {
     const terms = decisionSearchTerms(decisionQuery); let shown = 0;
@@ -1134,7 +1294,12 @@ export const bootstrapApprovalsRoute = (
     if (disposed) return;
     // Explicit navigation supersedes a deep link still waiting for its read.
     focusApplied = true; owner.focus?.({ preventScroll: true });
-    applyFilters(); renderedDecisionIds = [...visibleDecisionIds()]; renderChrome();
+    arrivalReviewed = true;
+    applyFilters();
+    renderDesktopQueue();
+    renderedDecisionKeys = visibleDecisionKeys();
+    if (reviewedKey && !renderedDecisionKeys.includes(reviewedKey)) reviewedKey = null;
+    renderChrome();
   };
   const onSearchInput = (): void => { decisionQuery = searchInput.value.slice(0, 512); changeFilters(searchInput); };
   const onClearFilters = (): void => { decisionFilter = 'all'; decisionQuery = ''; searchInput.value = ''; changeFilters(searchInput); };
@@ -1144,7 +1309,32 @@ export const bootstrapApprovalsRoute = (
   for (const [kind, button] of filterButtons) button.addEventListener('click', () => { decisionFilter = kind; changeFilters(button); });
   searchInput.addEventListener('input', onSearchInput); searchInput.addEventListener('keydown', onSearchKeydown); clearFilters.addEventListener('click', onClearFilters);
 
+  const reviewBusy = (): boolean => refreshingQueue || actionFocusOwner !== null
+    || resolving.size > 0 || resolvingAsks.size > 0 || resolvingPlans.size > 0 || resolvingSecrets.size > 0;
+  const moveReview = (direction: -1 | 1): void => {
+    if (disposed || !reviewingSearch || reviewBusy()) return;
+    const keys = visibleDecisionKeys(), index = keys.indexOf(reviewedKey ?? '');
+    const target = keys[index + direction];
+    if (!target) return;
+    focusApplied = true;
+    focusDecisionSuccessor(target);
+    renderChrome();
+  };
+  const onPreviousDecision = (): void => moveReview(-1);
+  const onNextDecision = (): void => moveReview(1);
+  const onDecisionFocus = (event: Event): void => {
+    if (!reviewingSearch || disposed || !event.target) return;
+    const row = decisionCardContaining(event.target as HTMLElement);
+    if (!row || row.card.hidden || reviewedKey === decisionKey(row)) return;
+    reviewedKey = decisionKey(row); arrivalReviewed = true; focusApplied = true;
+    renderChrome();
+  };
+  previousDecision.addEventListener('click', onPreviousDecision);
+  nextDecision.addEventListener('click', onNextDecision);
+  routeRoot.addEventListener('focusin', onDecisionFocus);
+
   const renderChrome = (): void => {
+    if (disposed) return;
     const approvalCount = approvalState.approvals.length;
     const askCount = askSnapshot.asks.length;
     const planCount = chatPlanList().length;
@@ -1169,12 +1359,13 @@ export const bootstrapApprovalsRoute = (
     const current = { all: verified, gate: approvalState.phase === 'ready' && approvalState.listError === null && approvalState.liveError === null,
       ask: askSnapshot.phase === 'ready' && askSnapshot.listError === null, plan: (chatPlanState?.phase ?? 'ready') === 'ready' && (chatPlanState?.error ?? null) === null };
     if (opts.searchReturnHash && opts.initialDecisionKind && focusId) {
-      const found = renderedCards.some(row => row.id === focusId && row.kind === opts.initialDecisionKind);
-      searchLanding.hidden = found;
-      const checked = current[opts.initialDecisionKind];
-      searchLanding.textContent = checked ? 'This decision is no longer pending. Return to search to check the remaining decisions.'
-        : 'This decision has not been confirmed yet. Refresh to check it again.';
-      if (!found && checked && !focusApplied) { focusApplied = true; searchLanding.focus({ preventScroll: true }); }
+      const found = renderedCards.find(row => row.id === focusId && row.kind === opts.initialDecisionKind);
+      searchLanding.hidden = arrivalReviewed || !!found && !found.card.hidden;
+      const checked = current[opts.initialDecisionKind] && (!found || pendingSearchLabels === 0);
+      searchLanding.textContent = !checked ? 'This decision has not been confirmed yet. Refresh to check it again.'
+        : found ? 'This decision no longer matches these filters. Use Next matching decision or return to search.'
+        : 'This decision is no longer pending. Use Next matching decision or return to search to check the remaining decisions.';
+      if (!searchLanding.hidden && checked && !focusApplied) { focusApplied = true; searchLanding.focus({ preventScroll: true }); }
     }
     for (const [kind, button] of filterButtons) {
       button.textContent = `${filterLabels[kind]} (${counts[kind]}${current[kind] ? '' : ' loaded'})`;
@@ -1182,6 +1373,16 @@ export const bootstrapApprovalsRoute = (
     }
     clearFilters.hidden = !filtersActive();
     const shown = applyFilters();
+    if (reviewingSearch) {
+      const keys = visibleDecisionKeys(), index = keys.indexOf(reviewedKey ?? '');
+      reviewCount.textContent = `${shown} matching ${plural(shown, 'decision')} remaining${current[decisionFilter] ? '' : ' among loaded decisions'}.${index < 0 ? '' : ` Reviewing ${index + 1} of ${shown}.`}`;
+      previousDecision.setAttribute('aria-disabled', String(reviewBusy() || index <= 0));
+      nextDecision.setAttribute('aria-disabled', String(reviewBusy() || shown === 0 || index >= shown - 1));
+      for (const row of renderedCards) {
+        if (!row.card.hidden && decisionKey(row) === reviewedKey) { row.card.setAttribute('data-focused', 'true'); row.card.setAttribute('tabindex', '-1'); }
+        else row.card.removeAttribute('data-focused');
+      }
+    }
     filterEmpty.hidden = !filtersActive() || total === 0 || shown > 0;
     filterEmpty.textContent = verified ? 'No pending decisions match these filters.'
       : 'No matches among the loaded decisions. The queue has not been fully checked.';
@@ -1432,9 +1633,11 @@ export const bootstrapApprovalsRoute = (
         if (typeof r.name === 'string' && r.name.length > 0) next.set(r.recipe_id, r.name);
       }
       recipeNameById = next;
-      renderDecisions();
     } catch {
       // Soft enhancement — keep showing the raw recipe id.
+    } finally {
+      pendingSearchLabels--;
+      renderDecisions();
     }
   };
   const loadDeviceLabels = async (): Promise<void> => {
@@ -1449,9 +1652,11 @@ export const bootstrapApprovalsRoute = (
         }
       }
       deviceLabelById = next;
-      renderDecisions();
     } catch {
       // Soft enhancement — keep showing the raw instance id.
+    } finally {
+      pendingSearchLabels--;
+      renderDecisions();
     }
   };
 
@@ -1558,6 +1763,10 @@ export const bootstrapApprovalsRoute = (
       askNoteDrafts.dispose();
       renderedCards = [];
       searchInput.removeEventListener('input', onSearchInput); searchInput.removeEventListener('keydown', onSearchKeydown); clearFilters.removeEventListener('click', onClearFilters);
+      previousDecision.removeEventListener('click', onPreviousDecision); nextDecision.removeEventListener('click', onNextDecision);
+      routeRoot.removeEventListener('focusin', onDecisionFocus);
+      queue.removeEventListener('keydown', onQueueKeyDown);
+      desktopBreakpoint?.removeEventListener?.('change', onDesktopBreakpointChange);
       refreshButton.removeEventListener('click', onRefreshClick);
       for (const unsub of unsubscribers) {
         try {

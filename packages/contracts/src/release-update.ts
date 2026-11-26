@@ -314,6 +314,10 @@ export interface UpdateRollbackResponse {
  * derives it from its update ledger and sends the code, never the ledger's own
  * text, versions or timestamps.
  *  - `download_failed`: the release could not be downloaded.
+ *  - `download_stalled`: the download stopped receiving data (for a minute, by
+ *    default), so it was given up. The connection dropped or hung.
+ *  - `download_too_slow`: the download was still moving when its overall time ran
+ *    out (6 hours), so it was given up.
  *  - `verify_failed`: the download did not match its signature, so nothing was
  *    installed.
  *  - `drain_incomplete`: the server could not stop what it was running in time
@@ -332,6 +336,8 @@ export interface UpdateRollbackResponse {
  * an older client does not know: a client treats both as "not explained". */
 export const UPDATE_REVERT_REASONS = [
   'download_failed',
+  'download_stalled',
+  'download_too_slow',
   'verify_failed',
   'drain_incomplete',
   'install_failed',

@@ -37,19 +37,19 @@ const scroll = async (mode: Mode) => {
   view.top = frame ? {} : view;
   const doc: any = { nodeType: 9, title: 'Fixture', defaultView: view,
     querySelector: () => element, querySelectorAll: () => [] };
-  const root: any = { nodeType: 1, parentNode: doc, ownerDocument: doc, hasAttribute: () => mode === 'owner',
+  const root: any = { nodeType: 1, parentNode: doc, ownerDocument: doc, isConnected: true, hasAttribute: () => mode === 'owner',
     clientWidth: 800, clientHeight: 600, scrollWidth: 800, scrollHeight: 1_800,
     get scrollLeft() { return view.scrollX; }, get scrollTop() { return view.scrollY; },
     scrollTo: (options: object) => view.scrollTo(options) };
-  const element: any = { nodeType: 1, parentNode: root, ownerDocument: doc,
+  const element: any = { nodeType: 1, parentNode: root, ownerDocument: doc, isConnected: true,
     clientWidth: 200, clientHeight: 100, scrollWidth: 200, scrollHeight: 100,
-    getBoundingClientRect: () => ({ left: 50, top: 1_050 - view.scrollY, right: 250, bottom: 1_150 - view.scrollY, width: 200, height: 100 }),
-    scrollIntoView: () => view.scrollTo({ top: 900 }) };
+    getBoundingClientRect: () => ({ left: 50, top: 1_050 - view.scrollY, right: 250, bottom: 1_150 - view.scrollY, width: 200, height: 100 }) };
   doc.documentElement = root; doc.scrollingElement = root; doc.body = root;
   vi.stubGlobal('window', view); vi.stubGlobal('document', doc);
   vi.stubGlobal('location', { get href() { return state.url; } });
   vi.stubGlobal('Node', { ELEMENT_NODE: 1, DOCUMENT_NODE: 9, DOCUMENT_FRAGMENT_NODE: 11 });
   vi.stubGlobal('recuedScreenshotScroll', undefined);
+  vi.stubGlobal('recuedElementScroll', undefined);
   vi.stubGlobal('MutationObserver', class { observe() {} disconnect() { state.quietDisconnects++; } });
   const api: BridgeBrowserApi = {
     async findTabByUrlPattern() { return null; }, async executeScript() { return null; },
@@ -115,8 +115,8 @@ describe('scroll site policy before movement', () => {
       const element = mode === 'allowed-element';
       expect(t.outcome).toEqual({ status: 'ok', outputs: { page: '7:DOC7', url: t.state.url, title: 'Fixture',
         screen: element ? 1 : 2, screens: element ? 1 : 4 } });
-      expect(t.state.scrolls).toEqual([{ x: 5, y: element ? 900 : 525 }]);
-      expect([t.view.scrollX, t.view.scrollY]).toEqual([5, element ? 900 : 525]); expect(t.state.quietDisconnects).toBe(1);
+      expect(t.state.scrolls).toEqual([{ x: 5, y: element ? 550 : 525 }]);
+      expect([t.view.scrollX, t.view.scrollY]).toEqual([5, element ? 550 : 525]); expect(t.state.quietDisconnects).toBe(1);
     });
 
   it.each(['blocked-top', 'owner'] as const)('preserves a %s refusal without scrolling', async mode => {

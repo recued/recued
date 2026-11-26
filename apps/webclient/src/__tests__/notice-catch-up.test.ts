@@ -87,10 +87,10 @@ const page = (w: World, opts: { visible?: boolean } = {}) => {
   const shown: NoticeCatchUpToast[] = [];
   let visible = opts.visible ?? true;
   const visibleListeners: Array<() => void> = [];
-  let notifyListener: ((event: { title?: string; text: string }) => void) | null = null;
+  let notifyListener: ((event: { title?: string; text: string; replace_existing?: boolean; activity_id?: string }) => void) | null = null;
   const errors: unknown[] = [];
   const follower = followNoticeCatchUp({
-    subscribe: ((kind: string, listener: (event: { title?: string; text: string }) => void) => {
+    subscribe: ((kind: string, listener: (event: { title?: string; text: string; replace_existing?: boolean; activity_id?: string }) => void) => {
       if (kind === 'notification.notify') notifyListener = listener;
       return () => { notifyListener = null; };
     }) as never,
@@ -112,7 +112,7 @@ const page = (w: World, opts: { visible?: boolean } = {}) => {
     shown,
     errors,
     /** A live frame reaches this page (the server fired a notice while it was connected). */
-    live: (row: ServerRecentNotification) => notifyListener?.({ ...(row.title !== undefined ? { title: row.title } : {}), text: row.text }),
+    live: (row: ServerRecentNotification, replace = false, activity_id?: string) => notifyListener?.({ ...(row.title !== undefined ? { title: row.title } : {}), text: row.text, ...(replace ? { replace_existing: true } : {}), ...(activity_id ? { activity_id } : {}) }),
     hide: () => { visible = false; },
     show: () => {
       visible = true;
@@ -180,6 +180,7 @@ describe('a notice sent while the app was closed', () => {
     await connect(w, p);
 
     expect(p.shown).toEqual([{
+      activity_id: 'dana',
       title: 'A buyer could not pay for Freelance Client Kit',
       text: 'Someone sent your form “Buy the kit”. Recued will not repeat this notice for an hour. Sent at T+120s.',
       // The in-app address, so it opens in the app the owner is using.
@@ -264,6 +265,17 @@ describe('a notice sent while the app was closed', () => {
 });
 
 describe('a notice the owner saw live', () => {
+  it('uses durable identities across replay and reload so identical wording cannot hide a missed alert', async () => {
+    const w = world(); await seasoned(w);
+    const p = page(w); await connect(w, p);
+    const missed = notice('missed', T0 + 10_000, { title: 'Follow-up draft ready', text: 'Open it to review.' });
+    const seen = { ...missed, id: 'seen', fired_at: T0 + 20_000 };
+    w.fire(missed); w.fire(seen); p.live(seen, false, seen.id); p.live(seen, false, seen.id);
+    p.follower.dispose();
+    const reload = page(w); await connect(w, reload);
+    expect(reload.shown.map(row => row.activity_id)).toEqual(['missed']);
+  });
+
   it('is not shown again, and the history moves past it', async () => {
     const w = world();
     await seasoned(w);
@@ -460,5 +472,17 @@ describe('when something goes wrong', () => {
     follower.setConnected(true);
     await w.advance(NOTICE_CATCH_UP_CONNECT_DELAY_MS + NOTICE_CATCH_UP_SETTLE_MS);
     expect(shown.map((toast) => toast.title)).toEqual(['Title later']);
+  });
+});
+
+
+describe('an update to an existing notice', () => {
+  it('does not count an update-only frame as a newly displayed notice', async () => {
+    const w = world(); await seasoned(w); const p = page(w); await connect(w, p);
+    const resolved = notice('watch-ready', T0 + 1000, { title: 'Follow-up no longer needed' });
+    w.fire(resolved); p.live(resolved, true);
+    const catching = p.follower.catchUp(); await w.advance(NOTICE_CATCH_UP_SETTLE_MS); await catching;
+    expect(p.shown).toHaveLength(1);
+    expect(p.shown[0]).toMatchObject({ activity_id: 'watch-ready', title: 'Follow-up no longer needed' });
   });
 });

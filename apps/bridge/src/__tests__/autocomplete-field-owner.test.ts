@@ -26,6 +26,8 @@ const fixture = () => {
     contents = '';
     disabled = false;
     ariaDisabled = false;
+    selectionStart = 0;
+    selectionEnd = 0;
     constructor(readonly id: string, readonly label: string) {}
     get value() { return this.contents; }
     set value(value: string) { this.contents = value; writes.push({ field: this.id, value }); }
@@ -38,6 +40,7 @@ const fixture = () => {
     matches(selector: string) { return selector === ':disabled' ? this.disabled : selector.includes('input') && !selector.includes('[type='); }
     getBoundingClientRect() { return { top: 0, left: 0, right: 100, bottom: 20, width: 100, height: 20 }; }
     focus() { focuses.push(this.id); doc.activeElement = this; }
+    setSelectionRange(start: number, end: number) { this.selectionStart = start; this.selectionEnd = end; }
     dispatchEvent(event: Event) { events.push({ field: this.id, type: event.type }); return true; }
   }
   const original = new Input('company', 'Company');

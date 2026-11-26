@@ -36,6 +36,17 @@ export interface PageInspectScope {
   selector?: string;
 }
 
+/** An interaction check shared by scripts in the same Bridge document world. */
+export interface PageInteractionWorld {
+  recuedInertOf?: (element: Element) => boolean;
+  recuedValidation?: {
+    observe(root: Node): void;
+    reports: WeakMap<Element, { event: Event; url: string; message: string }>;
+  };
+}
+
+type ValidationField = HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement;
+
 export interface PageInspectLimits {
   max_chars: number;
   max_value_chars: number;
@@ -62,7 +73,7 @@ export type PageInspectAnswer =
 
 /** The page, or the element `scope` names, as cleaned HTML:
  *  - removed: styles, scripts, `noscript`, templates, frames, embedded
- *    objects, SVG drawing data (the `<svg>` stays, empty), comments, and every
+ *    objects, SVG drawing data (visible text and its groups stay), comments, and every
  *    element a person cannot see, which is also where injected text hides;
  *  - kept: a closed list of attributes, at most three readable class names,
  *    and each field's live state (its value, `checked`, `selected`) rather
@@ -215,10 +226,29 @@ export const inspectPage = (
   // something else into it (`page-rebind.ts`).
   type Print = Record<string, string>;
   type RefMap = { next: number; byRef: Map<string, Element>; byElement: WeakMap<Element, string>;
-    seen?: WeakMap<Element, Print>; print?: (element: Element) => Print;
+    seen?: WeakMap<Element, Print>; print?: (element: Element) => Print; svgLabel?: (element: Element) => string;
+    labelledByName?: (element: Element) => string;
+    labelChoices?: Map<string, { control: HTMLInputElement; type: string }>;
     fieldContexts?: WeakMap<Element, number>; nextFieldContext?: number };
-  const world = globalThis as typeof globalThis & { recuedPageRefs?: RefMap };
+  const world = globalThis as typeof globalThis & PageInteractionWorld & { recuedPageRefs?: RefMap };
   const refs: RefMap = world.recuedPageRefs ??= { next: 1, byRef: new Map(), byElement: new WeakMap() };
+  const inertOf = world.recuedInertOf ??= (element: Element): boolean => {
+    for (let at: Element | null = element; at !== null;) {
+      if (at.hasAttribute('inert')) return true;
+      // A modal escapes inherited inertness within its own document.
+      const frame: Element | null = at.ownerDocument.defaultView?.frameElement ?? null;
+      at = at.matches('dialog:modal') ? frame : above(at) ?? frame;
+    }
+    return element.ownerDocument.defaultView?.getComputedStyle(element).getPropertyValue('interactivity') === 'inert';
+  };
+  let focused = document.activeElement;
+  for (let depth = 0; focused && depth < 32; depth++) {
+    const inner = shadowOf(focused)?.activeElement;
+    if (!inner) break;
+    focused = inner;
+  }
+  let focusedModal: Element | null = focused;
+  while (focusedModal && !focusedModal.matches('dialog:modal')) focusedModal = above(focusedModal);
   // An element the page removed loses its ref, here and in the HTML to come. Slice T: a re-read the
   // server makes after an action keeps the latest of them, so a ref read before the action is still
   // found again where the page drew its element anew (slice M).
@@ -226,6 +256,7 @@ export const inspectPage = (
   for (const [ref, element] of gone.slice(0, Math.max(0, gone.length - keepGone))) {
     refs.byRef.delete(ref);
     refs.byElement.delete(element);
+    refs.labelChoices?.delete(ref);
   }
 
   let root: Element | null;
@@ -246,12 +277,16 @@ export const inspectPage = (
 
   const SKIPPED = new Set(['script', 'style', 'noscript', 'template', 'object', 'embed', 'link', 'meta', 'base', 'head']);
   const VOID = new Set(['area', 'br', 'col', 'embed', 'hr', 'img', 'input', 'source', 'track', 'wbr', 'link', 'meta', 'base']);
+  const SVG_NAMESPACE = 'http://www.w3.org/2000/svg';
+  const SVG_GROUPS = new Set(['svg', 'g', 'a', 'switch', 'text']);
+  const SVG_TEXT_CHILDREN = new Set(['tspan', 'textPath', 'a']);
   let structureComplete = true;
   // `value`, `checked`, `selected` and `disabled` are written from the live element below.
   // Slice U — and `aria-modal`, so the server can say a dialog that blocks the page is open.
   const KEPT = ['id', 'name', 'type', 'role', 'href', 'alt', 'title', 'placeholder', 'for', 'aria-label',
     'data-testid', 'contenteditable', 'aria-expanded', 'aria-checked', 'aria-selected', 'aria-modal',
-    'aria-controls', 'aria-owns', 'aria-labelledby', 'aria-disabled'];
+    'aria-controls', 'aria-owns', 'aria-labelledby', 'aria-activedescendant', 'aria-disabled', 'aria-current', 'aria-sort',
+    'usemap', 'shape', 'coords'];
   const ACTIONABLE_ROLES = new Set(['button', 'link', 'checkbox', 'radio', 'switch', 'tab', 'menuitem',
     'menuitemcheckbox', 'menuitemradio', 'option', 'textbox', 'searchbox', 'combobox', 'slider',
     'spinbutton', 'treeitem']);
@@ -261,12 +296,98 @@ export const inspectPage = (
     ? `${text.slice(0, limits.max_value_chars)}…` : text;
   const escapeText = (text: string) => text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   const attribute = (name: string, value: string) => ` ${name}="${escapeText(cut(value)).replace(/"/g, '&quot;')}"`;
+  const resolveHref = (value: string, base?: string): URL | undefined => {
+    try { return new URL(value, base); } catch { return undefined; }
+  };
 
+  const styleOf = (element: Element) => (element.ownerDocument.defaultView ?? window).getComputedStyle(element);
+  // A contents wrapper has no box, but can still contain rendered text and elements.
+  const showsContents = (style: CSSStyleDeclaration) =>
+    style.display === 'contents' && style.visibility === 'visible' && style.contentVisibility !== 'hidden';
   const shown = (element: Element) => !ariaExcluded(element)
-    && (element.checkVisibility({ checkVisibilityCSS: true })
-      // `display: contents` draws no box of its own, though its children are drawn. A frame's
-      // element is styled by its own window.
-      || (element.ownerDocument.defaultView ?? window).getComputedStyle(element).display === 'contents');
+    && (element.checkVisibility({ checkVisibilityCSS: true }) || showsContents(styleOf(element)));
+  // The DOM focus stays on the widget. Its active item is separate from
+  // selection and can be in an owned or controlled popup.
+  const activeFor = (owner: Element | null): Element | null => {
+    if (!owner) return null;
+    const root = owner.getRootNode() as Document | ShadowRoot;
+    const id = owner.getAttribute('aria-activedescendant');
+    const active = owner.ariaActiveDescendantElement ?? (id ? root.getElementById(id) : null);
+    if (!active || active === owner || !shown(owner) || inertOf(owner) || !shown(active) || inertOf(active)) return null;
+    if (owner.contains(active) || owner.ariaOwnsElements?.includes(active)) return active;
+    const role = (owner.getAttribute('role') ?? '').trim().split(/\s+/, 1)[0];
+    return /^(?:combobox|textbox|searchbox)$/.test(role ?? '') && owner.ariaControlsElements?.some(popup =>
+      popup.contains(active) || popup.ariaOwnsElements?.includes(active)) ? active : null;
+  };
+  const activeItem = activeFor(focused);
+
+  type DisplayOrder = { direction: 'top-to-bottom' | 'left-to-right'; positions: Map<Element, number> };
+  const displayOrders = new WeakMap<Element, DisplayOrder | null>();
+  const displayOrderOf = (parent: Element): DisplayOrder | null => {
+    if (parent.childElementCount < 2 || parent.childElementCount > 24) return null;
+    const saved = displayOrders.get(parent);
+    if (saved !== undefined) return saved;
+    displayOrders.set(parent, null);
+    if (!/^(?:inline-)?(?:flex|grid)$/.test(styleOf(parent).display) || shadowOf(parent)) return null;
+    const boxes = Array.from(parent.children).filter(child => !ariaExcluded(child)
+      && child.checkVisibility({ checkVisibilityCSS: true, checkOpacity: true }))
+      .map(child => ({ child, rect: child.getBoundingClientRect() }));
+    if (boxes.length < 2 || boxes.some(({ rect }) => rect.width <= 0 || rect.height <= 0)) return null;
+    // Report a sequence only when the boxes form one clear track. A second
+    // axis of separation, or overlapping items, need more layout evidence.
+    const orderedBy = (start: 'top' | 'left', end: 'bottom' | 'right',
+      crossStart: 'top' | 'left', crossEnd: 'bottom' | 'right') => {
+      const sorted = [...boxes].sort((first, second) => first.rect[start] - second.rect[start]);
+      const crossMin = Math.max(...boxes.map(({ rect }) => rect[crossStart]));
+      const crossMax = Math.min(...boxes.map(({ rect }) => rect[crossEnd]));
+      return crossMin < crossMax && sorted.every(({ rect }, i) => i === 0 || sorted[i - 1]!.rect[end] <= rect[start] + 0.5)
+        ? sorted : undefined;
+    };
+    const vertical = orderedBy('top', 'bottom', 'left', 'right');
+    const ordered = vertical ?? orderedBy('left', 'right', 'top', 'bottom');
+    if (!ordered || ordered.every((box, i) => box === boxes[i])) return null;
+    const layout: DisplayOrder = { direction: vertical ? 'top-to-bottom' : 'left-to-right',
+      positions: new Map(ordered.map(({ child }, i) => [child, i + 1])) };
+    displayOrders.set(parent, layout);
+    return layout;
+  };
+  const listOrdinals = new WeakMap<Element, Map<Element, number>>();
+  const listInteger = (element: Element, name: string): number | undefined => {
+    const digits = /^[\t\n\f\r ]*([+-]?\d+)/.exec(element.getAttribute(name) ?? '')?.[1];
+    return digits === undefined ? undefined : Number(digits);
+  };
+  const decimalOrdinal = (item: Element): number | undefined => {
+    const list = item.parentElement;
+    if (list?.localName !== 'ol') return undefined;
+    const cached = listOrdinals.get(list);
+    if (cached !== undefined) return cached.get(item);
+    const ordinals = new Map<Element, number>();
+    listOrdinals.set(list, ordinals);
+    const view = list.ownerDocument.defaultView ?? window;
+    const customCounter = (style: CSSStyleDeclaration) =>
+      /\blist-item\b/.test([style.counterReset, style.counterSet, style.counterIncrement].join(' '));
+    const listStyle = view.getComputedStyle(list);
+    if (listStyle.display === 'contents' || customCounter(listStyle)) return undefined;
+    const children = [...list.children];
+    if (children.some(child => !['li', 'script', 'style', 'template'].includes(child.localName))) return undefined;
+    // Use the live list, even for a scoped read. A visibility-hidden item still counts,
+    // and a display-none item has no list-item box.
+    const rendered = children.filter(child => child.localName === 'li').map(child => ({ child, style: view.getComputedStyle(child) }))
+      .filter(({ style }) => /\blist-item\b/.test(style.display));
+    const reversed = list.hasAttribute('reversed');
+    let ordinal = listInteger(list, 'start') ?? (reversed ? rendered.length : 1);
+    for (const { child, style } of rendered) {
+      ordinal = listInteger(child, 'value') ?? ordinal;
+      if (customCounter(style) || ordinal < -2_147_483_648 || ordinal > 2_147_483_647) {
+        ordinals.clear();
+        break;
+      }
+      if (style.listStyleType === 'decimal' && style.listStyleImage === 'none'
+        && view.getComputedStyle(child, '::marker').content === 'normal') ordinals.set(child, ordinal);
+      ordinal += reversed ? -1 : 1;
+    }
+    return ordinals.get(item);
+  };
   /** What a person sees inside an element, in order: a component's shadow root in place of its
    *  own children, and in a slot the page's content it shows, else the slot's own. */
   const childrenOf = (element: Element): Node[] => {
@@ -278,40 +399,134 @@ export const inspectPage = (
     if (shadow) structureComplete = false;
     return [...(shadow ?? element).childNodes];
   };
-  /** Frames from another site, numbered in the order they are met. */
-  let otherSiteFrames = 0;
+  /** An observation binds each external iframe to its actual browsing context. */
+  const frameSlots = new Map<string, FrameSlot>();
+  let frameObservation: string | undefined;
   const isProtected = (element: Element) => {
     const type = element.localName === 'input' ? (element as HTMLInputElement).type : '';
     return type === 'password' || type === 'hidden' || PROTECTED.test(element.getAttribute('autocomplete') ?? '');
   };
+  const visibleMaps = new WeakMap<Element, boolean>();
+  const mappedArea = (element: Element): boolean => {
+    const map = element.closest('map[name]');
+    const name = map?.getAttribute('name');
+    if (!map || !name) return false;
+    const cached = visibleMaps.get(map);
+    if (cached !== undefined) return cached;
+    const root = map.getRootNode() as Document | ShadowRoot;
+    const first = root.querySelector(`map[name="${CSS.escape(name)}"]`);
+    const visible = first === map && [...root.querySelectorAll<HTMLImageElement>(`img[usemap="${CSS.escape('#' + name)}"]`)]
+      .some(img => img.naturalWidth > 0 && shown(img) && !inertOf(img) && img.getClientRects().length > 0);
+    visibleMaps.set(map, visible);
+    return visible;
+  };
   const actionable = (element: Element) => {
     const tag = element.localName;
+    if (element.getAttribute('draggable')?.toLowerCase() === 'true') return true;
     if (tag === 'a') return element.hasAttribute('href');
+    if (tag === 'area') return element.hasAttribute('href') && mappedArea(element);
     if (['button', 'input', 'select', 'textarea', 'summary'].includes(tag)) return true;
+    if ((tag === 'audio' || tag === 'video') && element.hasAttribute('controls')) return true;
     // An editor's own paragraphs are part of it; only the editor takes a ref.
     if ((element as HTMLElement).isContentEditable) return !element.parentElement?.isContentEditable;
     if (ACTIONABLE_ROLES.has((element.getAttribute('role') ?? '').trim().split(/\s+/)[0]!)) return true;
     const tabindex = element.getAttribute('tabindex');
     return tabindex !== null && tabindex.trim() !== '' && Number(tabindex) >= 0;
   };
+  const hiddenLabelChoice = (element: Element): HTMLInputElement | undefined => {
+    if (element.localName !== 'label' || element.namespaceURI !== 'http://www.w3.org/1999/xhtml') return undefined;
+    const control = (element as HTMLLabelElement).control as HTMLInputElement | null;
+    return control?.localName === 'input' && (control.type === 'radio' || control.type === 'checkbox')
+      && !control.matches(':disabled, [aria-disabled="true"]') && !inertOf(control)
+      && !shown(control) ? control : undefined;
+  };
   /** D-347 follow-up 17 — what an element shows, as a step by its ref holds it to: its own words and
    *  attributes, and the row it sits in (a list item, a table row, an article) with the addresses that
    *  row's links lead to. `shows` and `in` are what a refusal quotes, never compared. */
   const ROW = 'li, tr, [role="row"], [role="listitem"], [role="option"], [role="article"], article';
   const said = (text: string | null | undefined) => (text ?? '').replace(/\s+/g, ' ').trim();
-  const printOf = (element: Element): Print => {
+  const NON_LABEL_CONTENT = new Set([...SKIPPED, 'input', 'textarea', 'select', 'option', 'iframe', 'frame']);
+  // Resolve explicit name and description references in their own tree. Only
+  // bounded text becomes evidence for the visible control.
+  const referencedText = (element: Element, relation: 'aria-labelledby' | 'aria-describedby'): string => {
+    const references = element.getAttribute(relation);
+    if (!references || references.length > 2_000) return '';
+    const root = element.getRootNode() as Document | ShadowRoot;
+    const ids = [...new Set(said(references).split(' '))];
+    const max = 200;
+    let name = '', count = 0;
+    const append = (text: string) => {
+      const room = max + 1 - name.length;
+      if (room > 0) name += text.slice(0, room * 4).replace(/\s+/g, ' ').slice(0, room);
+    };
+    const readName = (node: Node, includeHidden: boolean): void => {
+      if (count++ >= 256 || name.length > max) return;
+      if (node.nodeType === Node.TEXT_NODE) { append(node.nodeValue ?? ''); return; }
+      if (node.nodeType !== Node.ELEMENT_NODE) return;
+      const part = node as HTMLElement;
+      if (NON_LABEL_CONTENT.has(part.localName) || part.isContentEditable || isProtected(part)
+        || part.hasAttribute('data-recued-owner-surface') || !includeHidden && !shown(part)) return;
+      const given = said(part.getAttribute('aria-label') ?? (part.localName === 'img' ? part.getAttribute('alt') : null));
+      if (given) { append(given); return; }
+      const block = !['inline', 'contents'].includes((part.ownerDocument.defaultView ?? window).getComputedStyle(part).display);
+      if (block) append(' ');
+      const children = part.localName === 'slot' ? (part as HTMLSlotElement).assignedNodes({ flatten: true }) : [];
+      for (const child of children.length ? children : (shadowOf(part) ?? part).childNodes) {
+        if (count >= 256 || name.length > max) break;
+        readName(child, includeHidden);
+      }
+      if (block) append(' ');
+    };
+    for (const id of ids.slice(0, 16)) {
+      if (count >= 256 || name.length > max) break;
+      const source = root.getElementById?.(id);
+      if (!source) continue;
+      if (name) append(' ');
+      readName(source, !shown(source));
+    }
+    const normalized = said(name);
+    return normalized && (normalized.length > max || count >= 256 || ids.length > 16)
+      ? normalized.slice(0, max).trimEnd() + '…' : normalized;
+  };
+  const labelledByName = (element: Element): string => referencedText(element, 'aria-labelledby');
+  const ICON_CONTROL = 'button, a[href], summary, [role="button"], [role="link"]';
+  const svgLabelOf = (element: Element): string => {
+    if (!element.matches(ICON_CONTROL)
+      || ['aria-label', 'aria-labelledby', 'title'].some(name => said(element.getAttribute(name)))) return '';
+    if (element.localName === 'a' && element.namespaceURI === SVG_NAMESPACE) {
+      return said(element.querySelector(':scope > title')?.textContent);
+    }
+    const icons = element.querySelectorAll('svg');
+    if (!icons.length || said((element as HTMLElement).innerText)) return '';
+    const labels: string[] = [];
+    for (const icon of icons) {
+      if (icon.namespaceURI !== SVG_NAMESPACE || icon.closest(ICON_CONTROL) !== element || ariaExcluded(icon)
+        || !icon.checkVisibility({ checkVisibilityCSS: true, checkOpacity: true })) continue;
+      const role = said(icon.getAttribute('role')).split(' ')[0];
+      if (role === 'none' || role === 'presentation') continue;
+      const title = icon.querySelector(':scope > title');
+      const namedBy = said(icon.getAttribute('aria-labelledby'));
+      // A direct title reference has the same source as the SVG's native name.
+      if (namedBy && namedBy !== title?.id) continue;
+      const label = (namedBy ? '' : said(icon.getAttribute('aria-label'))) || said(title?.textContent);
+      if (label) labels.push(label);
+    }
+    return labels.join(' ');
+  };
+  const printOf = (element: Element, iconLabel = svgLabelOf(element), referencedName = labelledByName(element)): Print => {
     const form = (element as HTMLInputElement).form ?? element.closest('form');
     const row = element.parentElement?.closest(ROW) ?? null;
     // A field's text is what it holds, which typing changes.
     const text = element.matches('input, textarea, select') ? '' : said(element.textContent).slice(0, 200);
-    const label = said(element.getAttribute('aria-label'));
+    const label = referencedName || said(element.getAttribute('aria-label')) || iconLabel;
     const title = said(element.getAttribute('title'));
     const placeholder = said(element.getAttribute('placeholder'));
     const rowText = row === null ? '' : said(row.textContent).slice(0, 300);
     return {
       tag: element.localName, type: said(element.getAttribute('type')).toLowerCase(), name: element.getAttribute('name') ?? '',
       accesskey: element.getAttribute('accesskey') ?? '',
-      role: said(element.getAttribute('role')).toLowerCase(), label: label.toLowerCase(), placeholder: placeholder.toLowerCase(),
+      role: said(element.getAttribute('role')).toLowerCase(), label: label.toLowerCase(), labelledBy: referencedName.toLowerCase(),
+      placeholder: placeholder.toLowerCase(),
       title: title.toLowerCase(), text: text.toLowerCase(),
       value: element.matches('input[type="submit" i], input[type="button" i], input[type="reset" i]')
         ? said((element as HTMLInputElement).value).toLowerCase() : '',
@@ -326,6 +541,8 @@ export const inspectPage = (
   };
   refs.seen ??= new WeakMap();
   refs.print = printOf;
+  refs.svgLabel = svgLabelOf;
+  refs.labelledByName = labelledByName;
   const refOf = (element: Element) => {
     let ref = refs.byElement.get(element);
     if (ref === undefined) {
@@ -345,9 +562,68 @@ export const inspectPage = (
     refs.fieldContexts.set(element, next);
     return next;
   };
+  const activeVideoCaption = (video: HTMLVideoElement): string => {
+    const Cue = (video.ownerDocument.defaultView as (Window & typeof globalThis) | null)?.VTTCue;
+    if (!Cue || video.seeking) return '';
+    const time = video.currentTime;
+    let text = '';
+    for (const track of video.textTracks) {
+      if (track.mode !== 'showing' || (track.kind !== 'captions' && track.kind !== 'subtitles')) continue;
+      const active = track.activeCues;
+      if (!active) continue;
+      for (const cue of active) {
+        if (!(cue instanceof Cue) || cue.startTime > time || cue.endTime <= time) continue;
+        const readable = cue.getCueAsHTML().textContent?.trim();
+        if (readable) text += (text ? '\n' : '') + readable;
+        if (text.length >= limits.max_value_chars) return text;
+      }
+    }
+    return text;
+  };
   const openTag = (element: Element) => {
     const tag = element.localName;
     let text = `<${tag}`;
+    if ((tag === 'input' || tag === 'textarea') && element.namespaceURI === 'http://www.w3.org/1999/xhtml'
+      && element.matches(':focus') && !isProtected(element) && !inertOf(element)) {
+      const field = element as HTMLInputElement | HTMLTextAreaElement;
+      const { selectionStart: start, selectionEnd: end } = field;
+      if (start !== null && end !== null && end > start && end - start <= limits.max_value_chars) {
+        text += attribute('data-recued-selected-text', field.value.slice(start, end));
+      }
+    }
+    if (world.recuedValidation && ['input', 'select', 'textarea'].includes(tag)) {
+      world.recuedValidation.observe(element.getRootNode());
+      const report = world.recuedValidation.reports.get(element);
+      const field = element as ValidationField;
+      if (report?.message && !report.event.defaultPrevented && report.url === element.ownerDocument.URL
+        && field.matches(':focus') && !inertOf(field) && !isProtected(field)
+        && field.willValidate && field.validationMessage.slice(0, 2_000) === report.message) {
+        text += attribute('data-recued-validation-message', field.validationMessage);
+      }
+    }
+    const rendered = renderedText(element);
+    if (rendered !== undefined) text += attribute('data-recued-rendered-text', rendered);
+    if ((tag === 'audio' || tag === 'video') && element.namespaceURI === 'http://www.w3.org/1999/xhtml') {
+      const media = element as HTMLMediaElement;
+      if (media.controls) {
+        text += ' controls';
+        text += attribute('data-recued-media-current', `${media.currentTime}s`);
+        if (Number.isFinite(media.duration)) text += attribute('data-recued-media-duration', `${media.duration}s`);
+        text += attribute('data-recued-media-state', media.paused ? 'paused' : 'playing');
+      }
+      if (tag === 'video') {
+        const caption = activeVideoCaption(element as HTMLVideoElement);
+        if (caption) text += attribute('data-recued-media-caption', caption);
+      }
+    }
+    if (element === activeItem) text += ' data-recued-keyboard-item';
+    if (activeItem !== null && element === focused) text += ' data-recued-keyboard-owner';
+    const layout = displayOrderOf(element);
+    if (layout) text += attribute('data-recued-display-order', `${layout.direction}:${layout.positions.size}`);
+    const layoutParent = element.parentElement;
+    const position = layoutParent === null ? undefined : displayOrderOf(layoutParent)?.positions.get(element);
+    // A bare "1" can be classified as a numeric hostname in a Chat HTML value.
+    if (position !== undefined) text += attribute('data-recued-display-position', `position-${position}`);
     const role = (element.getAttribute('role') ?? '').trim().split(/\s+/)[0];
     if (tag === 'table' || ['table', 'grid', 'treegrid'].includes(role ?? '')) {
       // A cleaned capture cannot align omitted cells or flattened shadow/slot
@@ -369,39 +645,113 @@ export const inspectPage = (
         if (value !== null) text += attribute(name, value);
       }
     }
-    if (tag === 'a' && element.hasAttribute('download')) text += ' data-recued-download';
+    if ((tag === 'a' || tag === 'area') && element.hasAttribute('download')) text += ' data-recued-download';
+    if (element.getAttribute('draggable')?.toLowerCase() === 'true') text += ' draggable="true"';
     // Only the Bridge writes this marker. A transformed branch does not
     // disqualify sibling-preserving fields in an unrelated native subtree.
     // Slots are flattened into their parent; mark that parent before walking.
     if (scopedStructure && (shadowOf(element) !== null
       || [...element.children].some(child => child.localName === 'slot')
       || tag === 'select' && element.querySelector('optgroup') !== null
-      || tag === 'svg' && element.childElementCount > 0 || tag === 'iframe' || tag === 'frame')) {
+      || tag === 'svg' && element.childElementCount > 0 || tag === 'iframe' || tag === 'frame' || tag === 'object')) {
       text += ' data-recued-structure-incomplete';
       structureComplete = false;
     }
-    if (actionable(element)) {
-      text += ` ref="${refOf(element)}"`;
-      refs.seen!.set(element, printOf(element));
-
+    const choice = hiddenLabelChoice(element);
+    const checkbox = choice ?? (tag === 'input' ? element as HTMLInputElement : undefined);
+    const mixed = checkbox?.type === 'checkbox' && checkbox.indeterminate;
+    const canAct = choice !== undefined || actionable(element);
+    if (canAct && inertOf(element)) text += ' data-recued-inert';
+    else if (canAct) {
+      const ref = refOf(element);
+      text += ` ref="${ref}"`;
+      if (choice) {
+        (refs.labelChoices ??= new Map()).set(ref, { control: choice, type: choice.type });
+        text += attribute('data-recued-label-choice', choice.type);
+        if (choice.checked) text += ' checked';
+      }
+      const iconLabel = svgLabelOf(element);
+      const referencedName = labelledByName(element);
+      if (iconLabel) text += attribute('data-recued-svg-label', iconLabel);
+      if (referencedName) text += attribute('data-recued-labelledby-name', referencedName);
+      const help = referencedText(element, 'aria-describedby') || said(element.getAttribute('aria-description')).slice(0, 200);
+      if (help) text += attribute('data-recued-description', help);
+      refs.seen!.set(element, printOf(element, iconLabel, referencedName));
+    }
+    if (tag === 'summary') {
+      const details = element.parentElement;
+      if (details?.localName === 'details' && details.querySelector(':scope > summary') === element) {
+        text += attribute('data-recued-summary-expanded', String((details as HTMLDetailsElement).open));
+      }
     }
     for (const name of KEPT) {
+      if (mixed && name === 'aria-checked') continue;
       const value = element.getAttribute(name);
       if (value !== null) text += attribute(name, value);
+    }
+    if (tag === 'time' && element.namespaceURI === 'http://www.w3.org/1999/xhtml') {
+      const datetime = (element as HTMLTimeElement).dateTime;
+      // Preserve the authored value and offset. A clipped value could look like a different time.
+      if (datetime && datetime.length <= limits.max_value_chars) text += attribute('datetime', datetime);
+    }
+    if (tag === 'ol') {
+      const start = element.getAttribute('start');
+      if (start !== null) text += attribute('start', start);
+      if (element.hasAttribute('reversed')) text += ' reversed';
+    } else if (tag === 'li') {
+      const value = element.getAttribute('value');
+      if (value !== null) text += attribute('value', value);
+      const ordinal = decimalOrdinal(element);
+      if (ordinal !== undefined) text += attribute('data-recued-list-ordinal', String(ordinal));
+    }
+    if (mixed) text += ' aria-checked="mixed"';
+    // Keep literal hrefs for CSS. Record the browser destination only where the document or frame
+    // base changes it. An empty marker means the modeled link has no usable web destination.
+    const svgAnchor = tag === 'a' && element.namespaceURI === SVG_NAMESPACE;
+    if ((tag === 'a' || tag === 'area') && (element.baseURI !== location.href || svgAnchor)) {
+      const written = element.getAttribute('href');
+      if (written !== null) {
+        const nativeHref = svgAnchor ? (element as SVGAElement).href.animVal : (element as HTMLAnchorElement).href;
+        const resolved = resolveHref(typeof nativeHref === 'string' ? nativeHref : written, element.baseURI);
+        if (resolved?.href !== resolveHref(written, location.href)?.href) {
+          text += attribute('data-recued-resolved-href', resolved && /^https?:$/.test(resolved.protocol)
+            && !resolved.username && !resolved.password ? resolved.href : '');
+        }
+      }
+    }
+    if (tag === 'img' && element.namespaceURI === 'http://www.w3.org/1999/xhtml') {
+      const image = element as HTMLImageElement;
+      const source = image.complete && image.naturalWidth > 0 ? resolveHref(image.currentSrc) : undefined;
+      if (source && /^https?:$/.test(source.protocol) && !source.username && !source.password) {
+        const path = source.origin === location.origin && !source.pathname.startsWith('//')
+          ? source.pathname + source.search + source.hash : source.href;
+        // Keep the selected, loaded URL whole, including any query from srcset or picture.
+        if (path.length <= limits.max_value_chars) text += attribute('data-recued-current-src', path);
+      }
     }
     const names = [...element.classList].filter(name => name.length >= 3 && !/[\d:[]/.test(name)).slice(0, 3);
     if (names.length > 0) text += attribute('class', names.join(' '));
     if (element.matches(':disabled')) text += ' disabled';
     if (tag === 'select' && (element as HTMLSelectElement).multiple) text += ' multiple';
     // Slice U — a dialog shown as a modal one: nothing behind it can be used until it closes.
-    if (tag === 'dialog' && element.matches(':modal')) text += ' modal';
+    if (tag === 'dialog' && element.matches(':modal')) {
+      text += ' modal';
+      if (element === focusedModal) text += ' data-recued-focused-modal';
+    }
     // 2026-11-22 — what covers the page though the page marks it hidden (`covers`): only the Bridge writes it.
     if (covers.has(element)) text += ' data-recued-cover';
-    if (tag === 'input') {
+    if (tag === 'meter' && element.namespaceURI === 'http://www.w3.org/1999/xhtml') {
+      const meter = element as HTMLMeterElement;
+      for (const key of ['value', 'min', 'max'] as const) text += attribute(key, String(meter[key]));
+      if (!canAct) {
+        const referencedName = labelledByName(element);
+        if (referencedName) text += attribute('data-recued-labelledby-name', referencedName);
+      }
+    } else if (tag === 'input') {
       const field = element as HTMLInputElement;
+      if (field.type === 'file' && field.multiple) text += ' multiple';
       if (field.type === 'checkbox' || field.type === 'radio') {
         if (field.checked) text += ' checked';
-        if (field.type === 'checkbox' && field.indeterminate) text += ' aria-checked="mixed"';
         // D-402 slice G — what the box sends, as the page wrote it, which tells boxes of one name apart
         // (`checkboxes[]`, `cb1` to `cb3`) for a selector that finds one alone. Never `.value`, which
         // reads "on" for a box the page gave no value.
@@ -409,6 +759,58 @@ export const inspectPage = (
         if (sent !== null && sent.length <= 200) text += attribute('value', sent);
       } else if (field.type !== 'file' && !isProtected(element) && field.value !== '') {
         text += attribute('value', field.value);
+      }
+      if (field.type === 'range') {
+        // Parse the constraints through Chrome's numeric input grammar.
+        const number = element.ownerDocument.createElement('input');
+        number.type = 'number';
+        const readNumber = (raw: string, fallback: number) => {
+          number.value = raw;
+          return Number.isFinite(number.valueAsNumber) ? number.valueAsNumber : fallback;
+        };
+        const min = readNumber(field.min, 0);
+        const max = Math.max(min, readNumber(field.max, 100));
+        const step = readNumber(field.step, 1);
+        text += attribute('min', String(min)) + attribute('max', String(max))
+          + attribute('step', field.step.toLowerCase() === 'any' ? 'any' : String(step > 0 ? step : 1));
+      } else if (['number', 'date', 'datetime-local', 'time', 'month', 'week'].includes(field.type)) {
+        const parser = element.ownerDocument.createElement('input');
+        parser.type = field.type;
+        for (const key of ['min', 'max'] as const) {
+          parser.value = field[key];
+          if (Number.isFinite(parser.valueAsNumber)) text += attribute(key, parser.value);
+        }
+        parser.type = 'number';
+        parser.value = field.step;
+        const step = parser.valueAsNumber;
+        if (field.step.toLowerCase() === 'any') text += attribute('step', 'any');
+        else if (Number.isFinite(step) && step > 0) text += attribute('step', String(step));
+      }
+      const list = field.list;
+      if (list && !isProtected(element) && !element.matches(':disabled, [readonly]') && !ariaExcluded(list)) {
+        // The list itself draws no page box. Its choices are offered by this input.
+        const suggestions: string[] = [];
+        let chars = 2;
+        let inspected = 0;
+        let incomplete = false;
+        for (const option of list.options) {
+          if (++inspected > limits.max_value_chars) { incomplete = true; break; }
+          const value = option.value;
+          if (value === '' || option.matches(':disabled, [hidden]') || ariaExcluded(option)) continue;
+          const style = (option.ownerDocument.defaultView ?? window).getComputedStyle(option);
+          if (style.display === 'none' || style.visibility === 'hidden' || style.visibility === 'collapse') continue;
+          const label = option.label;
+          if (value.length + label.length > limits.max_value_chars) { incomplete = true; continue; }
+          const pair = JSON.stringify([label, value]);
+          const length = pair.length + (suggestions.length ? 1 : 0);
+          if (chars + length > limits.max_value_chars) { incomplete = true; break; }
+          suggestions.push(pair);
+          chars += length;
+        }
+        if (suggestions.length || incomplete) {
+          text += attribute('list', list.id) + attribute('data-recued-suggestions', `[${suggestions.join(',')}]`);
+          if (incomplete) text += ' data-recued-suggestions-incomplete';
+        }
       }
     }
     // A loading form can remain usable while unrelated ads/text change.
@@ -432,6 +834,42 @@ export const inspectPage = (
     return `${text}>`;
   };
 
+  /** A child whose DOM is readable in the current document world. */
+  const inlineDocument = (inner: Document, tag: string, open: string) => {
+    if (inner.documentElement?.hasAttribute('data-recued-owner-surface')) {
+      // Keep its sibling slot without any owner-client content or identity.
+      if (preserveStructure) {
+        const placeholder = `<${tag} data-recued-structural-only data-recued-structure-incomplete></${tag}>`;
+        if (fits(placeholder)) write(placeholder); else truncated = true;
+      }
+      return;
+    }
+    const close = `</${tag}>`;
+    if (!fits(`${open}>${close}`)) { truncated = true; return; }
+    const mark = out.length;
+    write(`${open}>`);
+    owed += close.length;
+    const body = inner.body ?? inner.documentElement;
+    if (body) walk(body);
+    owed -= close.length;
+    if (truncated && out.length === mark + 1) {
+      out.length = mark;
+      length -= open.length + 1;
+      return;
+    }
+    write(close);
+  };
+
+  const objectDocument = (owner: HTMLObjectElement): Document | undefined => {
+    try {
+      const inner = owner.contentDocument;
+      const view = inner?.defaultView;
+      if (inner?.contentType === 'text/html' && view?.frameElement === owner
+        && view.origin === window.origin && /^https?:/.test(inner.URL)) return inner;
+    } catch { /* Only the live same-origin document is readable. */ }
+    return undefined;
+  };
+
   const out: string[] = [];
   let length = 0;
   // Closing tags still to write, so that a cut page stays well-formed.
@@ -442,6 +880,54 @@ export const inspectPage = (
   const write = (text: string) => {
     out.push(text);
     length += text.length;
+  };
+  const writeText = (raw: string, keepWhitespace = false) => {
+    if (raw === '' || !keepWhitespace && raw.trim() === '') return;
+    const text = escapeText(cut(preformatted > 0 ? raw : raw.replace(/\s+/g, ' ')));
+    if (fits(text)) write(text);
+    else truncated = true;
+  };
+
+  // Chrome serializes this reader without its module scope. Keep the CSSOM string decoder local.
+  const generatedText = (element: Element, pseudo: '::before' | '::after' | '::marker'): string => {
+    const view = element.ownerDocument?.defaultView;
+    const marker = pseudo === '::marker' ? styleOf(element) : undefined;
+    if (marker && !marker.display.split(' ').includes('list-item')) return '';
+    const style = view?.getComputedStyle(element, pseudo) ?? getComputedStyle(element, pseudo);
+    const content = marker && style.content === 'normal' && marker.listStyleImage === 'none'
+      ? marker.listStyleType : style.content;
+    if (!content?.startsWith('"') || style.display === 'none' || style.visibility !== 'visible'
+      || style.opacity === '0' || style.contentVisibility === 'hidden' || style.fontSize === '0px') return '';
+    if (!element.checkVisibility({ checkOpacity: true })
+      && (view?.getComputedStyle(element) ?? getComputedStyle(element)).display !== 'contents') return '';
+
+    // CSSOM serializes visible strings before any accessibility alternative after "/".
+    let text = '';
+    let end = 0;
+    for (const match of content.matchAll(/ *"((?:[^"\\]|\\.)*)"/gy)) {
+      text += match[1]!.replace(/\\(?:([\da-f]{1,6}) ?|(.))/gi,
+        (_, hex: string | undefined, escaped: string) => hex === undefined ? escaped : String.fromCodePoint(parseInt(hex, 16)));
+      end = match.index + match[0].length;
+    }
+    if (end !== content.length && !content.startsWith(' / ', end)) return '';
+    if (marker) return text.trim() ? text.trimEnd() + ' ' : '';
+    return text && !style.display.startsWith('inline') && style.display !== 'contents' ? ' ' + text + ' ' : text;
+  };
+
+  // A text leaf can carry its rendered reading without replacing source text
+  // or flattening children and their refs. Chrome handles locale and CSS casing.
+  const renderedText = (element: Element): string | undefined => {
+    if (element.namespaceURI !== 'http://www.w3.org/1999/xhtml' || element.childElementCount !== 0
+      || NON_LABEL_CONTENT.has(element.localName) || (element as HTMLElement).isContentEditable
+      || shadowOf(element) || isProtected(element)) return undefined;
+    const source = element.textContent ?? '';
+    if (!source.trim() || source.length > limits.max_value_chars || styleOf(element).textTransform === 'none'
+      || !element.checkVisibility({ checkVisibilityCSS: true })) return undefined;
+    const rendered = (element as HTMLElement).innerText;
+    if (!rendered.trim() || rendered.trim() === source.trim()) return undefined;
+    const text = generatedText(element, '::marker') + generatedText(element, '::before') + (source.match(/^\s*/)?.[0] ?? '') + rendered.trim()
+      + (source.match(/\s*$/)?.[0] ?? '') + generatedText(element, '::after');
+    return text.length <= limits.max_value_chars ? text : undefined;
   };
 
   /** Slice R — a frame. One from this site (or an editor's blank one) is read in place, its
@@ -461,53 +947,79 @@ export const inspectPage = (
     const title = element.getAttribute('title') ?? element.getAttribute('name');
     if (title && !preserveStructure) open += attribute('title', title);
     if (inner !== null) {
-      if (inner.documentElement?.hasAttribute('data-recued-owner-surface')) {
-        // Keep its sibling slot without any owner-client content or identity.
-        if (preserveStructure) {
-          const placeholder = `<${tag} data-recued-structural-only data-recued-structure-incomplete></${tag}>`;
-          if (fits(placeholder)) write(placeholder); else truncated = true;
-        }
-        return;
-      }
-      const body = inner.body ?? inner.documentElement;
-      const close = `</${tag}>`;
-      if (!fits(`${open}>${close}`)) {
-        truncated = true;
-        return;
-      }
-      const mark = out.length;
-      write(`${open}>`);
-      owed += close.length;
-      if (body) walk(body);
-      owed -= close.length;
-      if (truncated && out.length === mark + 1) {
-        out.length = mark;
-        length -= open.length + 1;
-        return;
-      }
-      write(close);
+      inlineDocument(inner, tag, open);
       return;
     }
-    otherSiteFrames += 1;
-    const named = `${open}${attribute('data-recued-frame', String(otherSiteFrames))}></${tag}>`;
-    if (fits(named)) write(named);
-    else truncated = true;
+    frameObservation ??= Array.from(crypto.getRandomValues(new Uint32Array(2)), word => word.toString(16).padStart(8, '0')).join('');
+    const child = element.contentWindow;
+    let path: string | undefined;
+    if (child !== null) {
+      // WindowProxy exposes parent and indexed frame slots across origins, but no foreign DOM.
+      const indices: number[] = [];
+      let at = child;
+      const top = at.top;
+      while (at !== top && indices.length < 32) {
+        const parent = at.parent;
+        let index = 0;
+        const length = Math.min(parent.length, 4_096);
+        while (index < length && parent.frames[index] !== at) index++;
+        if (index === length) break;
+        indices.push(index);
+        at = parent;
+      }
+      if (at === top && indices.length > 0) path = ['0', ...indices.reverse()].join('.');
+    }
+    const named = `${open} data-recued-frame="${frameObservation}:${path ?? '-'}"></${tag}>`;
+    if (fits(named)) {
+      write(named);
+      if (path !== undefined && child !== null) {
+        frameSlots.set(path, { element, child, src });
+        (globalThis as FrameObservationWorld).recuedFrameObservation = { id: frameObservation, url: location.href, slots: frameSlots };
+      }
+    } else truncated = true;
   };
 
-  const walk = (node: Node): void => {
+  const walk = (node: Node, svgParent?: 'group' | 'text'): void => {
     if (truncated) return;
     if (node.nodeType === Node.TEXT_NODE) {
+      if (svgParent === 'group') return;
       const raw = node.nodeValue ?? '';
-      if (raw.trim() === '') return;
-      const text = escapeText(cut(preformatted > 0 ? raw : raw.replace(/\s+/g, ' ')));
-      if (fits(text)) write(text);
-      else truncated = true;
+      if (svgParent === 'text' || raw.trim() !== '') writeText(raw, svgParent === 'text');
+      else if (node.previousSibling && node.nextSibling) {
+        // Preserve the space between rendered inline siblings. Formatting
+        // whitespace between blocks has no rendered area.
+        const range = node.ownerDocument!.createRange();
+        range.selectNodeContents(node);
+        const { width, height } = range.getBoundingClientRect();
+        if (width > 0 && height > 0) writeText(raw, true);
+      }
       return;
     }
     if (node.nodeType !== Node.ELEMENT_NODE) return;
     const element = node as Element;
     const tag = element.localName;
-    if (preserveStructure && (SKIPPED.has(tag) || !shown(element))) {
+    const svgText = svgParent === 'text' || svgParent === 'group' && tag === 'text';
+    if (svgParent !== undefined) {
+      const allowed = svgParent === 'text' ? SVG_TEXT_CHILDREN : SVG_GROUPS;
+      if (element.namespaceURI !== SVG_NAMESPACE || !allowed.has(tag) || ariaExcluded(element)
+        || !element.checkVisibility({ checkOpacity: true, checkVisibilityCSS: svgText })) return;
+      if (svgText) {
+        // Chrome can report visibility for an SVG node without rendered glyphs.
+        const { width, height } = element.getBoundingClientRect();
+        if (width <= 0 || height <= 0) return;
+      }
+    }
+    const object = tag === 'object' && element.namespaceURI === 'http://www.w3.org/1999/xhtml';
+    const inner = object ? objectDocument(element as HTMLObjectElement) : undefined;
+    const excluded = SKIPPED.has(tag) && inner === undefined || ariaExcluded(element);
+    const drawn = !excluded && element.checkVisibility({ checkVisibilityCSS: true });
+    const style = !excluded && !drawn ? styleOf(element) : undefined;
+    const visible = drawn || style !== undefined && showsContents(style);
+    // Descendants can override inherited CSS visibility. Walk only element
+    // children here so hidden text and attributes never enter the observation.
+    const canReveal = !object && !VOID.has(tag) && style?.visibility === 'hidden' && style.contentVisibility !== 'hidden'
+      && (style.display === 'contents' || element.checkVisibility());
+    if (preserveStructure && !visible && !canReveal) {
       // Internal marker, never copied from page attributes. Keep only the
       // original root tag: no hidden text, values, attributes, refs or subtree.
       const placeholder = `<${tag} data-recued-structural-only>${VOID.has(tag) ? '' : `</${tag}>`}`;
@@ -516,7 +1028,7 @@ export const inspectPage = (
     }
     // A wrapper the page marks hidden (or draws nothing of) around a dialog on top: walked through to
     // it alone, writing nothing of its own and nothing else it holds.
-    if (leadsTo.has(element) && !shown(element)) {
+    if (leadsTo.has(element) && !visible) {
       for (const child of childrenOf(element)) {
         if (child.nodeType === Node.ELEMENT_NODE && (leadsTo.has(child as Element) || onTop.has(child as Element))) walk(child);
       }
@@ -525,13 +1037,36 @@ export const inspectPage = (
     // A slot is where a component shows the page's content: what it shows is read in its place.
     if (tag === 'slot') {
       structureComplete = false;
-      if (shown(element)) for (const child of childrenOf(element)) walk(child);
+      if (visible || canReveal) for (const child of childrenOf(element)) {
+        if (visible || child.nodeType === Node.ELEMENT_NODE) walk(child);
+      }
       return;
     }
-    if (SKIPPED.has(tag) || !shown(element)) return;
+    if (canReveal) {
+      // A structural read keeps the shell for sibling positions and marks the
+      // subtree incomplete because hidden attributes and text were omitted.
+      const open = preserveStructure ? `<${tag} data-recued-structure-incomplete>` : '';
+      const close = preserveStructure ? `</${tag}>` : '';
+      if (!fits(open + close)) { truncated = true; return; }
+      structureComplete = false;
+      if (open) write(open);
+      owed += close.length;
+      for (const child of childrenOf(element)) {
+        if (child.nodeType === Node.ELEMENT_NODE) walk(child, svgParent);
+      }
+      owed -= close.length;
+      if (close) write(close);
+      return;
+    }
+    if (!visible) return;
     if (tag === 'iframe' || tag === 'frame') {
       structureComplete = false;
       frame(element as HTMLIFrameElement);
+      return;
+    }
+    if (inner !== undefined) {
+      structureComplete = false;
+      inlineDocument(inner, tag, openTag(element).slice(0, -1));
       return;
     }
     const open = openTag(element);
@@ -550,37 +1085,69 @@ export const inspectPage = (
     } else if (tag === 'select') {
       if (element.querySelector('optgroup')) structureComplete = false;
       // A closed list draws no options, but they are what a person can choose.
-      for (const option of [...(element as HTMLSelectElement).options]) {
-        if ([option, ...(option.parentElement?.localName === 'optgroup' ? [option.parentElement] : [])]
-          .some(node => node.hasAttribute('hidden') || node.getAttribute('aria-hidden') === 'true'
-            || getComputedStyle(node).display === 'none' || ['hidden', 'collapse'].includes(getComputedStyle(node).visibility))) {
-          if (preserveStructure) {
-            const placeholder = '<option data-recued-structural-only></option>';
-            if (fits(placeholder)) write(placeholder); else { truncated = true; break; }
-          }
-          continue;
+      const list = element as HTMLSelectElement;
+      const view = list.ownerDocument.defaultView ?? window;
+      const hidden = (option: Element): boolean => {
+        const style = view.getComputedStyle(option);
+        return option.hasAttribute('hidden') || option.getAttribute('aria-hidden') === 'true'
+          || style.display === 'none' || style.visibility === 'hidden' || style.visibility === 'collapse';
+      };
+      const groupEnd = '</optgroup>';
+      let openGroup: HTMLOptGroupElement | null = null;
+      const closeGroup = () => {
+        if (openGroup === null) return;
+        owed -= groupEnd.length;
+        write(groupEnd);
+        openGroup = null;
+      };
+      for (const option of list.options) {
+        const owner = option.closest<HTMLOptGroupElement>('optgroup');
+        const groupHidden = owner !== null && hidden(owner);
+        const unavailable = groupHidden || hidden(option);
+        if (unavailable && !preserveStructure) continue;
+        const group = groupHidden ? null : owner;
+        if (openGroup !== group) closeGroup();
+        const begin = group !== null && group !== openGroup
+          ? `<optgroup${attribute('label', group.label)}${group.disabled ? ' disabled' : ''}>` : '';
+        let piece = '<option data-recued-structural-only></option>';
+        if (!unavailable) {
+          const label = option.text.trim();
+          piece = '<option';
+          if (option.value !== label) piece += attribute('value', option.value);
+          if (option.disabled || owner?.disabled) piece += ' disabled';
+          if (option.selected && !isProtected(element)) piece += ' selected';
+          piece += `>${escapeText(cut(label))}</option>`;
         }
-        const label = option.text.trim();
-        let piece = '<option';
-        if (option.value !== label) piece += attribute('value', option.value);
-        if (option.disabled || option.parentElement?.matches('optgroup:disabled')) piece += ' disabled';
-        if (option.selected && !isProtected(element)) piece += ' selected';
-        piece += `>${escapeText(cut(label))}</option>`;
-        if (!fits(piece)) {
+        if (!fits(begin + piece + (begin ? groupEnd : ''))) {
           truncated = true;
           break;
         }
+        if (begin) {
+          write(begin);
+          owed += groupEnd.length;
+          openGroup = group;
+        }
         write(piece);
       }
-    } else if (tag !== 'svg' && !VOID.has(tag)) {
+      closeGroup();
+    } else if (tag === 'svg' || svgParent !== undefined) {
+      // A filtered SVG cannot prove sibling positions in structural reads.
+      if (tag === 'svg' && element.childElementCount > 0) structureComplete = false;
+      if (svgParent !== undefined || element.querySelector('text, a[href]') !== null) {
+        for (const child of element.childNodes) walk(child, svgText ? 'text' : 'group');
+      }
+    } else if (!VOID.has(tag)) {
       if (tag === 'pre') preformatted++;
+      writeText(generatedText(element, '::marker'));
+      writeText(generatedText(element, '::before'));
       for (const child of childrenOf(element)) walk(child);
+      if (!truncated) writeText(generatedText(element, '::after'));
       if (tag === 'pre') preformatted--;
     }
     owed -= close.length;
-    if (truncated && out.length === mark + 1) {
-      // Nothing inside it fitted: the cut falls before the element, not
-      // after an empty copy of it.
+    const svgLink = svgParent !== undefined && tag === 'a' && element.hasAttribute('href');
+    if ((truncated || svgParent !== undefined && !svgLink) && out.length === mark + 1) {
+      // Skip empty SVG groups and elements whose content did not fit.
       out.length = mark;
       length -= open.length;
       return;
@@ -607,6 +1174,7 @@ export type PageDescribeAnswer =
   | { missing: true }
   | { invalid: true }
   | { stale: true }
+  | { inert: true }
   | { blocked: true };
 
 /** D-335 slice B — one element as a person would name it: what kind of thing
@@ -620,7 +1188,11 @@ export const describePageElement = (target: PageInspectScope, expectedUrl?: stri
   // Chrome passes arguments as JSON, so an absent one can arrive as null.
   if (document.documentElement.hasAttribute('data-recued-owner-surface')
     || (expectedUrl != null && location.href !== expectedUrl)) return { blocked: true };
-  const marked = (globalThis as typeof globalThis & { recuedPageRefs?: { byRef: Map<string, Element> } }).recuedPageRefs;
+  const world = globalThis as typeof globalThis & PageInteractionWorld & {
+    recuedPageRefs?: { byRef: Map<string, Element>; svgLabel?: (element: Element) => string; labelledByName?: (element: Element) => string;
+      labelChoices?: Map<string, { control: HTMLInputElement; type: string }> };
+  };
+  const marked = world.recuedPageRefs;
   let element: Element | null;
   if (target.ref !== undefined) {
     element = marked?.byRef.get(target.ref) ?? null;
@@ -634,6 +1206,39 @@ export const describePageElement = (target: PageInspectScope, expectedUrl?: stri
     if (!element) return { missing: true };
   }
 
+  // A standalone selector can arrive before any page capture installed the check.
+  const inertOf = world.recuedInertOf ??= (node: Element): boolean => {
+    for (let at: Element | null = node; at !== null;) {
+      if (at.hasAttribute('inert')) return true;
+      const frame: Element | null = at.ownerDocument.defaultView?.frameElement ?? null;
+      at = at.matches('dialog:modal') ? frame : at.assignedSlot ?? at.parentElement ?? (at.getRootNode() as ShadowRoot).host ?? frame;
+    }
+    return node.ownerDocument.defaultView?.getComputedStyle(node).getPropertyValue('interactivity') === 'inert';
+  };
+  if (inertOf(element)) return { inert: true };
+  if (!world.recuedValidation) {
+    const roots = new WeakSet<Node>();
+    const reports = new WeakMap<Element, { event: Event; url: string; message: string }>();
+    const observe = (root: Node) => {
+      if (roots.has(root)) return;
+      roots.add(root);
+      root.addEventListener('invalid', event => {
+        const field = event.target as ValidationField | null;
+        if (!event.isTrusted || !field?.willValidate || !['input', 'select', 'textarea'].includes(field.localName)) return;
+        if (field.type === 'password' || field.type === 'hidden'
+          || /(^|\s)(current-password|new-password|one-time-code|cc-\S+)(\s|$)/i.test(field.getAttribute('autocomplete') ?? '')) return;
+        // Keep the actual report of this field and action in this isolated world.
+        reports.set(field, { event, url: field.ownerDocument.URL, message: field.validationMessage.slice(0, 2_000) });
+      }, true);
+      const clear = (event: Event) => reports.delete(event.target as Element);
+      root.addEventListener('input', clear, true);
+      root.addEventListener('focusout', clear, true);
+    };
+    world.recuedValidation = { observe, reports };
+    for (const seen of marked?.byRef.values() ?? []) if (seen.isConnected) observe(seen.getRootNode());
+  }
+  world.recuedValidation.observe(document);
+  world.recuedValidation.observe(element.getRootNode());
   const tag = element.localName;
   const field = element as HTMLInputElement;
   const editor = (element as HTMLElement).isContentEditable === true;
@@ -643,12 +1248,14 @@ export const describePageElement = (target: PageInspectScope, expectedUrl?: stri
   const INPUT_WORDS: Record<string, string> = { checkbox: 'checkbox', radio: 'radio button', button: 'button',
     submit: 'button', reset: 'button', image: 'button', range: 'slider', number: 'number field',
     search: 'search box', file: 'file picker', password: 'password field' };
+  const choice = target.ref === undefined ? undefined : marked?.labelChoices?.get(target.ref);
   const explicit = (element.getAttribute('role') ?? '').trim().split(/\s+/)[0]!;
   // D-335 slice L — a field typed into that suggests as you type is a text field to its owner; a
   // combobox that is no field is a list to choose from.
-  const role = explicit === 'combobox' && (tag === 'input' || tag === 'textarea') ? 'text field'
+  const role = choice ? INPUT_WORDS[choice.type]!
+    : explicit === 'combobox' && (tag === 'input' || tag === 'textarea') ? 'text field'
     : explicit ? ROLE_WORDS[explicit] ?? explicit
-    : tag === 'a' && element.hasAttribute('href') ? 'link'
+    : (tag === 'a' || tag === 'area') && element.hasAttribute('href') ? 'link'
       : tag === 'button' || tag === 'summary' ? 'button'
         : tag === 'select' ? 'list'
           : tag === 'textarea' ? 'text field'
@@ -661,14 +1268,16 @@ export const describePageElement = (target: PageInspectScope, expectedUrl?: stri
   const labels = 'labels' in element && field.labels ? [...field.labels].map(label => words(label.textContent)).join(' ') : '';
   // An editor's text is what it holds, not what it is called.
   const inner = tag === 'input' || tag === 'select' || tag === 'textarea' || editor ? '' : (element as HTMLElement).innerText;
-  const label = words(element.getAttribute('aria-label'))
+  const label = (marked?.labelledByName ? marked.labelledByName(element) : undefined)
+    || words(element.getAttribute('aria-label'))
     // Slice R — a label inside the same web component, or the same frame, as the element.
-    || (labelledBy ? labelledBy.split(/\s+/).map(id => words(((element.getRootNode() as Document | ShadowRoot).getElementById?.(id)
+    || (!marked?.labelledByName && labelledBy ? labelledBy.split(/\s+/).map(id => words(((element.getRootNode() as Document | ShadowRoot).getElementById?.(id)
       ?? element.ownerDocument.getElementById(id))?.textContent)).join(' ').trim() : '')
     || words(labels)
     || (tag === 'input' && ['button', 'submit', 'reset'].includes(field.type) ? words(field.value) : '')
     || words(element.getAttribute('alt'))
     || words(inner)
+    || marked?.svgLabel?.(element)
     || words(element.getAttribute('placeholder'))
     || words(element.getAttribute('aria-placeholder'))
     || words(element.getAttribute('title'))
@@ -880,6 +1489,7 @@ const pageReadOutcome = (
   if (reply.missing === true) return error('selector_not_found', 'No element on the page matches the selector.');
   if (reply.invalid === true) return error('selector_not_found', 'The selector is not valid CSS.');
   if (reply.stale === true) return error('selector_not_found', PAGE_CHANGED);
+  if (reply.inert === true) return error('selector_not_found', 'The element is in an inactive (inert) part of the page.');
   const outputs = reply.outputs as Record<string, unknown> | undefined;
   if (!outputs || typeof outputs !== 'object' || Array.isArray(outputs)
     || Object.keys(outputs).filter((key) => !(key in optional)).sort().join() !== Object.keys(shape).sort().join()
@@ -943,26 +1553,55 @@ export const executeInChromeDocument = (scripting: DocumentScripting) => async (
  *  it can; past this, the frames from another site are named as ones the Bridge cannot read. */
 export const PAGE_FRAMES_WAIT_MS = 2_000;
 
-/** D-335 slice R — a frame of a tab that a script of the Bridge may read: its document and address,
- *  and whether the tab's page holds it directly. */
+type FrameSlot = { element: HTMLIFrameElement; child: Window; src: string };
+type FrameObservationWorld = typeof globalThis & {
+  recuedFrameObservation?: { id: string; url: string; slots: Map<string, FrameSlot> };
+};
+
+/** Recheck the original iframe elements after collecting the document IDs. Injected in the
+ * same document that inspected them. A removed, moved or retargeted iframe stays unread. */
+export const verifyFrameObservation = (id: string): string[] => {
+  const seen = (globalThis as FrameObservationWorld).recuedFrameObservation;
+  if (seen?.id !== id || seen.url !== location.href || document.documentElement.hasAttribute('data-recued-owner-surface')) return [];
+  const verified: string[] = [];
+  for (const [path, { element, child, src }] of seen.slots) {
+    if (!element.isConnected || element.src !== src || element.contentWindow !== child) continue;
+    let at: Window | null | undefined = window.top;
+    for (const index of path.split('.').slice(1)) at = at?.frames[Number(index)];
+    if (at === child) verified.push(path);
+  }
+  return verified;
+};
+
+/** The live address and Chrome-issued identity at a slot in this tab's frame tree. */
 export interface PageFrame {
   frame_id: number;
   document_id: string;
   url: string;
-  /** In the tab's top page itself, not in a frame of a frame. */
-  in_top: boolean;
+  path: string;
 }
 
 /** Each frame's own answer to `listChromeFrames`: its address and where it is, nothing it holds,
  *  since a frame on a site the owner listed answers too. Injected, so self-contained. */
-export const describePageFrame = (): { url: string; in_top: boolean; owner: boolean } => ({
-  url: location.href,
-  in_top: window.parent === window.top,
-  owner: document.documentElement?.hasAttribute('data-recued-owner-surface') === true,
-});
+export const describePageFrame = (): { url: string; path?: string; owner: boolean } => {
+  const indices: number[] = [];
+  let at: Window = window;
+  const top = window.top;
+  while (at !== top && indices.length < 32) {
+    const parent = at.parent;
+    let index = 0;
+    const length = Math.min(parent.length, 4_096);
+    while (index < length && parent.frames[index] !== at) index++;
+    if (index === length) break;
+    indices.push(index);
+    at = parent;
+  }
+  return { url: location.href, ...(at === top ? { path: ['0', ...indices.reverse()].join('.') } : {}),
+    owner: document.documentElement?.hasAttribute('data-recued-owner-surface') === true };
+};
 
-/** D-335 slice R — the frames of a tab the Bridge may read, besides its top page: Chrome asks every
- *  frame it has a site permission for and leaves out the rest, and the owner's client is never one.
+/** Chrome asks every frame it has a site permission for and leaves out the rest.
+ *  Include the top document so the inspected document's ancestry can be checked.
  *  Rejects past {@link PAGE_FRAMES_WAIT_MS}. */
 export const listChromeFrames = (scripting: DocumentScripting) => async (tab_id: number): Promise<PageFrame[]> => {
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -975,51 +1614,50 @@ export const listChromeFrames = (scripting: DocumentScripting) => async (tab_id:
   ]).finally(() => clearTimeout(timer));
   return results.flatMap((entry) => {
     const answer = entry.result as ReturnType<typeof describePageFrame> | undefined;
-    return typeof entry.frameId === 'number' && entry.frameId !== 0 && typeof entry.documentId === 'string'
-      && answer && typeof answer.url === 'string' && answer.owner !== true
-      ? [{ frame_id: entry.frameId, document_id: entry.documentId, url: answer.url, in_top: answer.in_top === true }] : [];
+    return typeof entry.frameId === 'number' && typeof entry.documentId === 'string'
+      && answer && typeof answer.url === 'string' && typeof answer.path === 'string' && /^0(?:\.\d+){0,32}$/.test(answer.path)
+      && (entry.frameId === 0) === (answer.path === '0') && answer.owner === false
+      ? [{ frame_id: entry.frameId, document_id: entry.documentId, url: answer.url, path: answer.path }] : [];
   });
 };
 
-/** D-335 slice R — the frames from another site an inspection named (`<iframe data-recued-frame="N">`),
- *  each given the page handle of the frame it shows, or marked one the Bridge cannot read. A frame
- *  is the first of the tab's top page's own frames, not taken yet, at the same address, else on the
- *  same site; one on a site the owner blocked, or that matches none (no permission for its site,
- *  or a frame whose own frames are not listed), is `unread`. `frames` is null where frames are not
- *  looked for: a document that is itself a frame, or a run reviewed before it starts. */
+export const frameObservationId = (html: string): string | undefined =>
+  / data-recued-frame="([a-f0-9]{16}):/.exec(html)?.[1];
+
+/** Assign only documents in the verified iframe slots beneath the inspected document. Ambiguous
+ *  slots and ungranted or blocked ancestors cannot name a page. Reviewed reads pass no listing. */
 export const settleFrames = (html: string, tab_id: number, frames: readonly PageFrame[] | null,
-  blocked: (url: string) => boolean): string => {
-  const NAMED = /<iframe((?: [\w-]+="[^"]*")*) data-recued-frame="\d+"><\/iframe>/g;
+  blocked: (url: string) => boolean,
+  observation?: { id: string; document_id: string; url: string; paths: readonly string[] },
+): string => {
+  const NAMED = /<(iframe|frame)((?: [\w-]+="[^"]*")*) data-recued-frame="([a-f0-9]+):([\d.]+|-)"><\/\1>/g;
   if (!html.includes('data-recued-frame="')) return html;
   const unescape = (text: string) => text.replace(/&quot;/g, '"').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
-  const origin = (url: string) => {
+  const address = (url: string) => {
     try {
-      return new URL(url).origin;
+      const parsed = new URL(url);
+      return ['https:', 'http:'].includes(parsed.protocol) ? parsed : undefined;
     } catch {
-      return '';
+      return undefined;
     }
   };
-  const open = (frames ?? []).filter((frame) => frame.in_top && !blocked(frame.url));
-  const taken = new Set<PageFrame>();
-  const pick = (src: string, same: (frame: PageFrame) => boolean) => {
-    const frame = open.find((candidate) => !taken.has(candidate) && same(candidate));
-    if (frame !== undefined) taken.add(frame);
-    return frame;
-  };
-  const named = [...html.matchAll(NAMED)].map((match) => {
-    const src = unescape(/ src="([^"]*)"/.exec(match[1]!)?.[1] ?? '');
-    return { attributes: match[1]!, src };
-  });
-  // Exact addresses first, so one frame on a site does not take another's place.
-  const chosen = named.map(({ src }) => (src === '' ? undefined : pick(src, (frame) => frame.url === src)));
-  named.forEach(({ src }, i) => {
-    if (chosen[i] === undefined && src !== '') chosen[i] = pick(src, (frame) => origin(frame.url) === origin(src));
-  });
-  let at = 0;
-  return html.replace(NAMED, (_match, attributes: string) => {
-    const frame = chosen[at];
-    at += 1;
-    return frame === undefined ? `<iframe${attributes} unread=""></iframe>`
-      : `<iframe${attributes} page="${String(tab_id)}:${frame.document_id}"></iframe>`;
+  const byPath = new Map<string, PageFrame | undefined>();
+  for (const frame of frames ?? []) byPath.set(frame.path, byPath.has(frame.path) ? undefined : frame);
+  const source = observation && (frames ?? []).find(frame => frame.document_id === observation.document_id && frame.url === observation.url);
+  const verified = new Set(observation?.paths);
+  return html.replace(NAMED, (_match, tag: string, attributes: string, id: string, path: string) => {
+    const unread = `<${tag}${attributes} unread=""></${tag}>`;
+    if (id !== observation?.id || !source || byPath.get(source.path) !== source
+      || !path.startsWith(source.path + '.') || !verified.has(path)) return unread;
+    const frame = byPath.get(path);
+    const src = address(unescape(/ src="([^"]*)"/.exec(attributes)?.[1] ?? ''));
+    if (!frame || !src || address(frame.url)?.origin !== src.origin || blocked(src.href)) return unread;
+    let branch = '';
+    for (const part of path.split('.')) {
+      branch = branch === '' ? part : branch + '.' + part;
+      const ancestor = byPath.get(branch);
+      if (!ancestor || blocked(ancestor.url)) return unread;
+    }
+    return `<${tag}${attributes} page="${formatPageHandle({ tab_id, document_id: frame.document_id })}"></${tag}>`;
   });
 };

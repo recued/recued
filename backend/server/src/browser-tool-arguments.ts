@@ -1,4 +1,4 @@
-import { parseBrowserActSteps, readBrowserFailure, type ToolEntry, type ChatDispatchResult, type BrowserDocumentBindingMismatch } from '@recued/contracts';
+import { browserActUploadRefs, parseBrowserActSteps, readBrowserFailure, type ToolEntry, type ChatDispatchResult, type BrowserDocumentBindingMismatch } from '@recued/contracts';
 import { validateBrowserDataStep, browserDataParameterRepair } from './bridges/browser-data-pipeline.js';
 
 const browserInput = (tool: ToolEntry | null | undefined, args: unknown): Record<string, unknown> | undefined => {
@@ -105,12 +105,12 @@ export const browserActPreflightGuidance = (tool: ToolEntry | null | undefined, 
     try { for (const step of parsed.steps) if (step.do === 'data') validateBrowserDataStep(step); return true; } catch { return false; }
   };
   const options: Record<string, unknown>[] = [];
-  const badUpload = steps.findIndex(step => step.do === 'upload' && (typeof step.file !== 'string' || !/^file:[0-9a-f]{32}$/.test(step.file.trim())));
+  const badUpload = steps.findIndex(step => step.do === 'upload' && browserActUploadRefs(step) === undefined);
   const eligible = attachments.filter(file => /^file:[0-9a-f]{32}$/.test(file.file_ref) && file.filename.length > 0).slice(0, 3)
     .map(file => ({ file_ref: file.file_ref, filename: file.filename.slice(0, 120) }));
   const fileReference = badUpload < 0 ? undefined : { kind: 'malformed_file_reference', step: badUpload + 1,
     expected: { prefix: 'file:', hex_digits: 32 },
-    received: { type: typeof steps[badUpload]!.file,
+    received: { type: Array.isArray(steps[badUpload]!.files) ? 'array' : typeof steps[badUpload]!.file,
       ...(typeof steps[badUpload]!.file === 'string' ? { characters: steps[badUpload]!.file.length } : {}) },
     lookup_performed: false, upload_performed: false,
     ...(eligible.length ? { issued_attachments: eligible, references_complete: eligible.length === attachments.length,

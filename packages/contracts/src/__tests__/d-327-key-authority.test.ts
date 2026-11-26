@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  BROWSER_JOB_TOOLS,
+  isBrowserKeyTool,
   isKeyAuthority,
   isKeyAuthorityContract,
   keyChecklistFromAgreementGrants,
@@ -65,5 +67,31 @@ describe('D-327 — an agreement\'s grants read as its key\'s tool list', () => 
       'core.data.calendar.list': true,
     });
     expect(keyChecklistFromAgreementGrants([])).toEqual({});
+  });
+
+  // 2026-11-23 (the owner: "recued_startJob/recued_endJob should be just another tool in contracts required to be enabled
+  // if any browser tool is enabled") — live, Codex on an agreement's key was told both were "not available for this
+  // contract", so no app on a key could make its browser work into a recipe.
+  it('gives the job tools with any browser tool the agreement grants, a Toolkit recipe or a browser op, and only then', () => {
+    const JOB = { recued_startJob: true, recued_endJob: true };
+    expect([...BROWSER_JOB_TOOLS]).toEqual(['recued_startJob', 'recued_endJob']);
+    expect(keyChecklistFromAgreementGrants([{ entry_key: 'recipe.recued-core/read-web-text', granted: true }]))
+      .toEqual({ 'recued-core/read-web-text': true, ...JOB });
+    expect(keyChecklistFromAgreementGrants([{ entry_key: 'core.dom.inspect', granted: true }]))
+      .toEqual({ 'core.dom.inspect': true, ...JOB });
+    // None granted, one revoked, another publisher's recipe of a Toolkit name, or a recipe that is not the Toolkit's.
+    for (const rows of [
+      [{ entry_key: 'primitive.mail.search', granted: true }],
+      [{ entry_key: 'recipe.recued-core/read-web-text', granted: false }],
+      [{ entry_key: 'recipe.acme/read-web-text', granted: true }],
+      [{ entry_key: 'recipe.recued-core/peer-request-appointment', granted: true }],
+    ]) {
+      const checklist = keyChecklistFromAgreementGrants(rows);
+      expect(checklist, JSON.stringify(rows)).not.toHaveProperty('recued_startJob');
+      expect(checklist, JSON.stringify(rows)).not.toHaveProperty('recued_endJob');
+    }
+    expect(isBrowserKeyTool('recued-core/act-on-web-page')).toBe(true);
+    expect(isBrowserKeyTool('core.dom.act')).toBe(true);
+    expect(isBrowserKeyTool('core.http.get')).toBe(false);
   });
 });

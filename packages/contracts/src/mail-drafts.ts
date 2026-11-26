@@ -3,12 +3,21 @@ import { RpcError } from './rpc/types.js';
 import { normalizeMailSend } from './mail-compose/normalize.js';
 import { MAIL_MESSAGE_SUBJECT_MAX } from './mail.js';
 import { PREAPPROVAL_LIMITS, parsePreapprovalJson, type PreapprovalJson } from './preapproval.js';
+import { parseMailFollowUpPreference } from './mail-follow-up-send.js';
 
 export type MailDraftContent = Record<string, PreapprovalJson> & {
   sender_mail_instance: string; to: string[]; subject: string; body: string; body_format: 'text' | 'html';
 };
+/** Local draft preferences are not arguments to the send recipe. */
+export const mailDraftRecipeConfig = (content: MailDraftContent): Record<string, PreapprovalJson> => {
+  const { follow_up: _preference, ...message } = content;
+  return message;
+};
 export interface MailDraft {
   draft_id: string; incarnation: string; revision: number; content: MailDraftContent;
+  /** Derived from the server's original draft save key, never from content. */
+  reply_watch_id?: string;
+  delivery_replacement?: true;
   origin_contract_id: string | null; created_at: number; updated_at: number;
 }
 export type MailDraftSummary = Omit<MailDraft, 'content'> & {
@@ -33,13 +42,14 @@ const revision = (value: unknown): number => typeof value === 'number' && Number
   ? value : bad('The current draft revision is required.');
 const parseContent = (value: unknown, stored: boolean): MailDraftContent => {
   const raw = object(value, ['sender_mail_instance', 'to', 'cc', 'bcc', 'subject', 'body', 'body_format',
-    'in_reply_to', 'references', 'reply_to', 'reconciliation_id', 'attachments']);
+    'in_reply_to', 'references', 'reply_to', 'reconciliation_id', 'attachments', 'follow_up']);
   parsePreapprovalJson(raw);
   if (raw.body_format !== undefined && raw.body_format !== 'text' && raw.body_format !== 'html') bad('Body format must be text or html.');
   const normalized = normalizeMailSend(raw, stored ? { storedRecipients: true } : {});
   if (normalized.subject.length > MAIL_MESSAGE_SUBJECT_MAX) bad('The draft subject is too long.');
   const content: MailDraftContent = { sender_mail_instance: normalized.instance, to: normalized.to, subject: normalized.subject,
     body: normalized.body_html ?? normalized.body_text, body_format: normalized.body_html !== undefined ? 'html' : 'text' };
+  if (raw.follow_up !== undefined) content.follow_up = parsePreapprovalJson(parseMailFollowUpPreference(raw.follow_up));
   for (const key of ['cc', 'bcc', 'in_reply_to', 'references', 'reply_to', 'reconciliation_id'] as const) {
     if (normalized[key] !== undefined) content[key] = normalized[key]!;
   }

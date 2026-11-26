@@ -43,7 +43,8 @@ export const MCP_TOOL_CATALOG = [
   // projection; default-off per the per-token tool checklist).
   'recued_contactEngagementsList',
   // D-402 slice A2 — an AI app's job, whose calls are kept together to be made
-  // into a recipe; granted per token like every tool.
+  // into a recipe; granted per token like every tool, and on an agreement's key
+  // with any browser tool it grants (`BROWSER_JOB_TOOLS`, key-authority.ts, 2026-11-23).
   'recued_startJob',
   'recued_endJob',
 ] as const;

@@ -104,6 +104,7 @@ const holdMenuRefresh = async (page: Page) => {
 };
 
 const proposalRaces = async (page: Page, extra = '') => {
+  await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(`${HARNESS_URL}?yours=demo&yours_rule_fields&yours_asset_filter_pages&yours_focus_corrections${extra}#yours/proposals`);
   await expect(page.locator('[data-recued-yours]').getByRole('heading', { name: 'LG television', exact: true })).toBeVisible();
 };
@@ -242,12 +243,14 @@ test('Class editor keeps its entity origin through nested preset rule steps', as
 });
 
 test('Occasion and habit editors return to their own repeated actions', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 720 });
   await page.goto(`${HARNESS_URL}?yours=demo&contact_history&occasion_history#yours/occasions`);
   const route = page.locator('[data-recued-yours]'); const form = route.locator('[data-yours-editor]');
   await route.getByRole('button', { name: 'Create occasion', exact: true }).click();
   await form.getByLabel('Name', { exact: true }).fill('Annual picnic');
   await form.getByLabel('Annual date (MM-DD)', { exact: true }).fill('07-04');
   await form.getByRole('button', { name: 'Save', exact: true }).click();
+  await route.getByRole('group', { name: 'Occasion list', exact: true }).getByRole('button', { name: 'Annual picnic', exact: true }).click();
   const card = route.getByRole('article').filter({ has: page.getByRole('button', { name: 'Edit occasion', exact: true }) })
     .filter({ has: page.getByRole('heading', { name: 'Annual picnic', exact: true }) });
   const action = card.getByRole('button', { name: 'Edit occasion', exact: true });
@@ -258,10 +261,81 @@ test('Occasion and habit editors return to their own repeated actions', async ({
   await form.getByRole('button', { name: 'Save', exact: true }).click(); await expect(habit).toBeFocused();
 });
 
+test.describe('Desktop Occasions', () => {
+  test.use({ viewport: { width: 1280, height: 650 }, locale: 'en-US', timezoneId: 'America/Los_Angeles' });
+
+  test('Saving a next date reorders the selected occasion and Back returns to the same row', async ({ page }) => {
+    await page.clock.setFixedTime(new Date('2026-11-24T18:00:00Z'));
+    await page.goto(`${HARNESS_URL}?yours=demo&contact_history&yours_occasion_workspace#yours/occasions`);
+    const route = page.locator('[data-recued-yours]');
+    const roster = route.getByRole('group', { name: 'Occasion list', exact: true });
+    const scope = route.getByLabel('Sphere on this page', { exact: true });
+    await scope.selectOption('professional');
+    await expect(roster.getByRole('button', { name: 'Ana birthday', exact: true })).toHaveCount(0);
+    const upcoming = roster.getByRole('region', { name: 'Upcoming', exact: true });
+    // The nearest occasion came from the next server page. Its sphere placement must come with it.
+    await expect(upcoming.getByRole('button').first()).toHaveAccessibleName('Permit renewal');
+    await expect(roster.getByRole('region', { name: 'No upcoming date', exact: true }).getByRole('button', { name: 'Last year’s review', exact: true })).toBeAttached();
+    const needsDate = roster.getByRole('region', { name: 'Needs a date', exact: true });
+    const clinic = roster.getByRole('button', { name: 'Clinic follow-up', exact: true });
+    await needsDate.getByRole('button', { name: 'Clinic follow-up', exact: true }).click();
+    const preview = route.getByRole('region', { name: 'Occasion preview', exact: true });
+    await expect(preview.getByText(/Last Nov 20, 2026/u)).toBeVisible();
+    const date = preview.getByLabel('Date of the next one', { exact: true });
+    const time = preview.getByLabel('Time (optional)', { exact: true });
+    const save = preview.getByRole('button', { name: 'Save', exact: true });
+    await expect(save).toBeInViewport({ ratio: 1 });
+    await expect(time).toHaveValue('09:30');
+    await date.fill('2027-03-11'); await time.fill('14:15');
+    await save.click();
+    await expect(needsDate).toHaveCount(0);
+    await expect(clinic).toHaveAttribute('aria-current', 'true');
+    await expect(clinic).toBeFocused();
+    await expect.poll(() => upcoming.getByRole('button').evaluateAll(buttons => {
+      const at = buttons.findIndex(button => button.getAttribute('aria-current') === 'true');
+      return buttons.slice(at - 1, at + 2).map(button => button.getAttribute('aria-label'));
+    })).toEqual(['Site visit 35', 'Clinic follow-up', 'Site visit 36']);
+    await expect(preview.getByText(/Next Mar 11, 2027 at 14:15 PST · alert 30 minutes before.*in Appointments/u)).toBeVisible();
+    await expect(preview.getByRole('heading', { name: 'Bring clinic records', exact: true })).toBeAttached();
+
+    const open = preview.getByRole('link', { name: 'Open occasion', exact: true });
+    await open.scrollIntoViewIfNeeded();
+    const scroll = await roster.evaluate(node => node.scrollTop);
+    expect(scroll).toBeGreaterThan(0);
+    await open.click();
+    await expect(page).toHaveURL(/#yours\/occasions\/occasion\/clinic-follow-up$/u);
+    await expect(route.getByRole('heading', { name: 'History', exact: true })).toBeVisible();
+    await expect(route.getByText('First clinic appointment', { exact: true })).toBeVisible();
+    await page.goBack();
+    await expect(scope).toHaveValue('professional');
+    await expect(clinic).toHaveAttribute('aria-current', 'true');
+    await expect(clinic).toBeFocused();
+    await expect.poll(() => roster.evaluate(node => node.scrollTop)).toBe(scroll);
+  });
+});
+
+test.describe('Occasions on touch', () => {
+  test.use({ viewport: { width: 1440, height: 800 }, hasTouch: true, timezoneId: 'America/Los_Angeles' });
+
+  test('Wide touch keeps the cards and their server pagination', async ({ page }) => {
+    await page.clock.setFixedTime(new Date('2026-11-24T18:00:00Z'));
+    await page.goto(`${HARNESS_URL}?yours=demo&yours_occasion_workspace#yours/occasions`);
+    const route = page.locator('[data-recued-yours]');
+    const card = route.getByRole('article').filter({ has: page.getByRole('heading', { name: 'Clinic follow-up', exact: true }) });
+    await expect(card.getByRole('button', { name: 'Edit occasion', exact: true })).toBeVisible();
+    await expect(card.getByLabel('Date of the next one', { exact: true })).toBeVisible();
+    await expect(route.getByRole('group', { name: 'Occasion list', exact: true })).toHaveCount(0);
+    await expect(route.getByRole('heading', { name: 'Permit renewal', exact: true })).toHaveCount(0);
+    await route.getByRole('navigation', { name: 'Pages', exact: true }).getByRole('link', { name: 'Next', exact: true }).click();
+    await expect(route.getByRole('heading', { name: 'Permit renewal', exact: true })).toBeVisible();
+  });
+});
+
 test('A delayed proposal editor retains the activation origin when focus moves during its read', async ({ page }) => {
   // The paged assets keep this proposal's passport outside the list snapshot.
   await page.goto(`${HARNESS_URL}?yours=demo&yours_rule_fields&yours_asset_filter_pages#yours/proposals`);
   const route = page.locator('[data-recued-yours]');
+  await route.locator('[data-yours-proposal-row="schedule-review"]').click();
   const card = route.getByRole('article').filter({ has: page.getByRole('heading', { name: 'Review renewal reminders', exact: true }) });
   const action = card.getByRole('button', { name: 'Review change', exact: true });
   const before = await page.evaluate(() => window.__app.rpcCallCount('yours.read'));
@@ -276,6 +350,7 @@ test('A delayed proposal editor retains the activation origin when focus moves d
 });
 
 test('A saved correction cannot transfer focus to a namesake proposal after removing its origin', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(`${HARNESS_URL}?yours=demo&yours_focus_corrections#yours/proposals`);
   const route = page.locator('[data-recued-yours]');
   const cards = route.getByRole('article').filter({ has: page.getByRole('heading', { name: 'Review passport', exact: true }) });

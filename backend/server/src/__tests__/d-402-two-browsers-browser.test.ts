@@ -148,8 +148,8 @@ const deps = (() => {
     sessionGrantResolver: createSessionGrantResolver({ definitionStore }),
     browserPasses: passes,
     checkpointStore,
-    // Before a read-only batch goes without asking, the gate lists the tabs to see that it opens none
-    // (`browserBatchReadsOnly`); a listing late or lost makes it ask. A loaded sweep held one about 20 s
+    // Until 2026-11-23, before a read-only batch went without asking, the gate listed the tabs to see that it opened none
+    // (`browserBatchReadsOnly`); a listing late or lost made it ask. A loaded sweep held one about 20 s
     // (2026-11-18: this file's first test took 22.5 s, against 2.7 s in the sweep before and about 1 s
     // alone, and asked). The time the fixture gives Chrome's scheduling under load (`WORKER_READY_MS`)
     // is generous on purpose; this is given the same reason.

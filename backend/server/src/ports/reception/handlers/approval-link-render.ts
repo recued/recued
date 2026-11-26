@@ -155,8 +155,10 @@ const renderApproveWordingBody = (completion: boolean,quote: boolean, values: Ap
 <label for="rcp-comment">Corrections (required when requesting changes)</label>
 <textarea id="rcp-comment" name="comment" rows="4" maxlength="${APPROVAL_LINK_VISITOR_COMMENT_MAX}" required>${htmlEscape(values.comment ?? '')}</textarea>
 </div>
+<div class="rcp-signoff-actions">
 <button type="submit" name="decision" value="approve" formnovalidate class="rcp-button rcp-button-primary">Accept completion</button>
-<button type="submit" name="decision" value="reject" class="rcp-button">Request corrections</button>`
+<button type="submit" name="decision" value="reject" class="rcp-button">Request corrections</button>
+</div>`
   : `<fieldset class="rcp-fieldset">
 <legend class="rcp-legend">Your decision</legend>
 <label class="rcp-option">
@@ -250,21 +252,6 @@ ${renderFooter()}
 `;
 };
 
-/** The dispatcher has no customer-visible terms to disclose for an inactive
- * link. Keep expiry and revocation indistinguishable and offer a next step. */
-export const renderApprovalLinkUnavailableHtml = (): string => `${renderHead('Link unavailable')}
-<body>
-<div class="rcp-shell">
-<div class="rcp-card">
-<h1 class="rcp-name">This link is unavailable</h1>
-<p class="rcp-tagline">Ask the business that sent it for a new link.</p>
-${renderFooter()}
-</div>
-</div>
-</body>
-</html>
-`;
-
 /** Substrate-defined consumed-already body — emitted on the second
  *  presentation of a single-use approval token. Distinct from the
  *  neutral unavailable page the dispatcher emits at the cache layer
@@ -292,34 +279,43 @@ ${renderFooter()}
 };
 
 export const renderApprovalLinkHtml = (input: ApprovalLinkRenderInput): string => {
-  // A disabled first submit button blocks implicit Enter from contact fields.
-  // Completion requires an explicit action; its Accept button must not default.
-  const body = renderActionBody(input.action_kind, input.options, input.completion,input.quote,input.submitted);
-  const identityFields = renderVisitorIdentityFields(input.visitor_field_constraints,input.submitted ?? {});
+  const showTermsBesideResponse = (input.completion === true || input.quote === true) && input.context_summary.length > 0;
+  const body = renderActionBody(input.action_kind, input.options, input.completion, input.quote, input.submitted);
+  const identityFields = renderVisitorIdentityFields(input.visitor_field_constraints, input.submitted ?? {});
+  const context = input.context_summary.length > 0 ? `<p class="rcp-context">${htmlEscape(input.context_summary)}</p>` : '';
+  const expiry = `<p class="rcp-meta">${htmlEscape(input.expiry_display)}</p>`;
+  const error = input.error_message ? `<section class="rcp-error-summary" role="alert" id="rcp-error" tabindex="-1" autofocus>
+<h2>Check your response</h2>
+<p>${htmlEscape(input.error_message)}</p>
+<a href="#rcp-response-form">Fix your response</a>
+</section>` : '';
+  // The disabled first submit button blocks implicit acceptance from contact fields.
+  const responseForm = `<form id="rcp-response-form" tabindex="-1" class="rcp-form"${input.error_message ? ' aria-describedby="rcp-error"' : ''} method="POST" action="/reception/approve/${htmlEscape(input.endpoint_id)}?t=${encodeURIComponent(input.bearer_secret)}">
+<input type="hidden" name="form_nonce" value="${htmlEscape(input.form_nonce)}">
+${input.completion ? '<button type="submit" hidden disabled aria-hidden="true" tabindex="-1"></button>' : ''}
+${showTermsBesideResponse ? `<div class="rcp-signoff-contact">${identityFields}</div>` : identityFields}
+${body}
+${input.completion ? '' : `<button type="submit" class="rcp-button rcp-button-primary">${htmlEscape(input.submit_button_label)}</button>`}
+</form>`;
   return `${renderHead(`${input.error_message ? 'Check your response' : 'Response requested'} — ${input.display_name}`)}
 <body>
-<div class="rcp-shell">
+<div class="rcp-shell${showTermsBesideResponse ? ' rcp-signoff-shell' : ''}">
 <div class="rcp-card">
 <div class="rcp-header">
 <div>
 <h1 class="rcp-name">Response requested — ${htmlEscape(input.display_name)}</h1>
 <p class="rcp-tagline">${htmlEscape(input.prompt)}</p>
-${input.error_message ? `<section class="rcp-error-summary" role="alert" id="rcp-error" tabindex="-1" autofocus>
-<h2>Check your response</h2>
-<p>${htmlEscape(input.error_message)}</p>
-<a href="#rcp-response-form">Fix your response</a>
-</section>` : ''}
-${input.context_summary.length > 0 ? `<p class="rcp-context">${htmlEscape(input.context_summary)}</p>` : ''}
-<p class="rcp-meta">${htmlEscape(input.expiry_display)}</p>
+${error}
+${showTermsBesideResponse ? '' : `${context}\n${expiry}`}
 </div>
 </div>
-<form id="rcp-response-form" tabindex="-1" class="rcp-form"${input.error_message ? ' aria-describedby="rcp-error"' : ''} method="POST" action="/reception/approve/${htmlEscape(input.endpoint_id)}?t=${encodeURIComponent(input.bearer_secret)}">
-<input type="hidden" name="form_nonce" value="${htmlEscape(input.form_nonce)}">
-${input.completion ? '<button type="submit" hidden disabled aria-hidden="true" tabindex="-1"></button>' : ''}
-${identityFields}
-${body}
-${input.completion ? '' : `<button type="submit" class="rcp-button rcp-button-primary">${htmlEscape(input.submit_button_label)}</button>`}
-</form>
+${showTermsBesideResponse ? `<div class="rcp-signoff-layout">
+<section class="rcp-signoff-terms" aria-label="${input.completion ? 'Agreement and delivered work' : 'Quote terms'}">
+${context}
+${expiry}
+</section>
+${responseForm}
+</div>` : responseForm}
 ${renderFooter(input.trust_footer ?? null)}
 </div>
 </div>

@@ -149,6 +149,10 @@ export type BridgeAction =
    *  `:hover` rule does not apply, which only a real pointer does. `{ hovered, page, url, title }`.
    *  `apps/bridge/src/actions/page-hover.ts`. */
   | 'hover'
+  /** Drag a draggable element onto a second element in the same document. */
+  | 'drag'
+  /** Seek within an observed native media player. */
+  | 'seek_media'
   /** D-335 slice AP (2026-11-07) — fetches a file the page a handle names links to, as the page would
    *  fetch it, its cookies with it: the link `args.ref` or `args.selector` names (its `href`, or a
    *  `src`), or `args.address`. At most `args.max_bytes`, and {@link BRIDGE_FILE_MAX_BYTES}: a larger
@@ -161,7 +165,9 @@ export type BridgeAction =
    *  `args.filename`, `args.mime_type` and `args.data` (base64, at most {@link BRIDGE_FILE_MAX_BYTES}),
    *  then the field's `input` and `change` events. A label for the field, or what wraps it (a button,
    *  a drop zone), names it too. `{ attached, page, url, title }`. `apps/bridge/src/actions/page-files.ts`. */
-  | 'upload_file';
+  | 'upload_file'
+  /** Set one file input's entire selection in a single action. */
+  | 'upload_files';
 
 export const BRIDGE_ACTIONS: ReadonlyArray<BridgeAction> = [
   'read_dom',
@@ -188,8 +194,11 @@ export const BRIDGE_ACTIONS: ReadonlyArray<BridgeAction> = [
   'reload_page',
   'close_tab',
   'hover',
+  'drag',
+  'seek_media',
   'download_file',
   'upload_file',
+  'upload_files',
 ] as const;
 
 /** The actions every Bridge has run since D-148. A Bridge whose capability
@@ -219,10 +228,18 @@ export const bridgeRunsAction = (
  *  two came in the same Bridge (D-335 slice B), and an older Bridge answers a
  *  write with no selector "requires selector argument". */
 export const bridgeRunsCommand = (
-  profile: Pick<BridgeCapabilityProfile, 'supported_actions' | 'guarded_links' | 'structural_reads' | 'row_checks' | 'card_rows' | 'settled_reads' | 'long_waits'>,
+  profile: Pick<BridgeCapabilityProfile, 'supported_actions' | 'guarded_links' | 'structural_reads' | 'row_checks'
+    | 'card_rows' | 'settled_reads' | 'long_waits' | 'horizontal_scroll' | 'generated_download_wait' | 'double_click' | 'file_drop'
+    | 'text_paste'>,
   action: BridgeAction,
   args: Record<string, unknown>,
 ): boolean => bridgeRunsAction(profile, action)
+  && (action !== 'scroll' || !isHorizontalScrollDirection(args.to) || profile.horizontal_scroll === true)
+  && (args.download_wait_ms === undefined || action === 'click' && profile.generated_download_wait === true)
+  && (args.click_count === undefined || action === 'click' && args.click_count === 2 && profile.double_click === true)
+  && (args.delivery === undefined
+    || action === 'fill' && args.delivery === 'paste' && profile.text_paste === true
+    || (action === 'upload_file' || action === 'upload_files') && args.delivery === 'drop' && profile.file_drop === true)
   && (args.navigation_guard === undefined || action === 'click' && profile.guarded_links === true)
   // D-402 slice G — a click or typing named by the row it sits in needs a Bridge that checks the row
   // again at the step: an older one drops the argument and acts on the element alone.
@@ -280,9 +297,15 @@ export const BRIDGE_OPEN_OUTPUT_KEYS = ['page', 'url', 'title'] as const;
  *  sent form. A watch ends as soon as a CAPTCHA, a problem or the failure shows. */
 export const BRIDGE_CLICK_OUTPUT_KEYS = ['clicked', 'page', 'url', 'title', 'moved', 'challenge', 'problem', 'failed',
   'sent', 'acted_on'] as const;
+/** Optional private click output. The server stores the generated file before returning the click result. */
+export const BRIDGE_GENERATED_DOWNLOAD_KEY = 'generated_download';
+/** Optional private click output for a set of files, with one shared Bridge file byte budget. */
+export const BRIDGE_GENERATED_DOWNLOADS_KEY = 'generated_downloads';
 /** D-335 slice J — the keys of a `fill` answer: `filled`, and `challenge` when the page shows a
  *  CAPTCHA nobody has solved once the text is in (a sign-in form with one cannot be sent). */
 export const BRIDGE_FILL_OUTPUT_KEYS = ['filled', 'challenge', 'acted_on'] as const;
+export const BRIDGE_PASTE_OUTPUT_KEYS = ['pasted', 'challenge', 'acted_on'] as const;
+export const BRIDGE_TEXT_MAX_CHARS = 20_000;
 /** D-335 slice J — the keys of a `submit` answer: `submitted` (and `filled` when it typed first),
  *  and the page the tab shows once it settles, as a click answers (slice K: with `problem` and
  *  `failed`). */
@@ -332,8 +355,9 @@ export const readBridgeActedOn = (value: unknown): BridgeActedOn | undefined => 
 /** D-335 slice U — the keys of a `scroll` answer: the page, and the screen it now shows, of how many. */
 export const BRIDGE_SCROLL_OUTPUT_KEYS = ['page', 'url', 'title', 'screen', 'screens'] as const;
 /** D-335 slice U — where a `scroll` goes, a screen at a time. */
-export const BRIDGE_SCROLL_TO = ['next', 'previous', 'top', 'bottom'] as const;
+export const BRIDGE_SCROLL_TO = ['next', 'previous', 'top', 'bottom', 'left', 'right'] as const;
 export type BridgeScrollTo = typeof BRIDGE_SCROLL_TO[number];
+export const isHorizontalScrollDirection = (to: unknown): to is 'left' | 'right' => to === 'left' || to === 'right';
 
 /** D-335 slice X — the keys of a `navigate`, `go_back` or `reload_page` answer: the page the tab
  *  then shows. */
@@ -342,6 +366,8 @@ export const BRIDGE_NAVIGATE_OUTPUT_KEYS = ['page', 'url', 'title'] as const;
 export const BRIDGE_CLOSE_OUTPUT_KEYS = ['closed'] as const;
 /** D-335 slice X — the keys of a `hover` answer. */
 export const BRIDGE_HOVER_OUTPUT_KEYS = ['hovered', 'page', 'url', 'title'] as const;
+export const BRIDGE_DRAG_OUTPUT_KEYS = ['dropped', 'page', 'url', 'title', 'moved'] as const;
+export const BRIDGE_SEEK_OUTPUT_KEYS = ['seeked_to', 'paused', 'acted_on'] as const;
 
 /** D-335 slice U — a key to press, with its modifiers, as a page's handlers see it in a
  *  `KeyboardEvent`. `name` is how Recued writes it back: `Control+Enter`. */
@@ -506,8 +532,22 @@ export const BRIDGE_WAIT_OUTPUT_KEYS = ['page', 'url', 'title', 'found', 'waited
  *  and at most {@link BRIDGE_INSPECT_MAX_VALUE_CHARS} in one cell. A table that
  *  does not fit answers the rows that did, with `truncated`. */
 export const BRIDGE_TABLE_MAX_ROWS = 500;
-/** The keys of a `read_table` answer. */
-export const BRIDGE_TABLE_OUTPUT_KEYS = ['page', 'url', 'title', 'columns', 'rows', 'truncated'] as const;
+/** An active sort declared on one visible table header. */
+export interface BridgeTableSort {
+  readonly header: string;
+  readonly direction: 'ascending' | 'descending' | 'other';
+}
+
+export const isBridgeTableSort = (value: unknown): value is BridgeTableSort => {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
+  const { header, direction } = value as Record<string, unknown>;
+  return Object.keys(value).length === 2 && typeof header === 'string' && header.trim() !== ''
+    && header.length <= BRIDGE_INSPECT_MAX_VALUE_CHARS + 1
+    && (direction === 'ascending' || direction === 'descending' || direction === 'other');
+};
+
+/** The keys of a `read_table` answer, including optional observed sort. */
+export const BRIDGE_TABLE_OUTPUT_KEYS = ['page', 'url', 'title', 'columns', 'rows', 'truncated', 'sort'] as const;
 /** D-335 slice H — the longest side of a screenshot, in pixels. A larger capture
  *  is scaled down to it: about the most a model reads at full detail. */
 export const BRIDGE_SCREENSHOT_MAX_EDGE = 1568;
@@ -517,6 +557,8 @@ export const BRIDGE_SCREENSHOT_MAX_BASE64 = 2_000_000;
 /** D-335 slice AP — the largest file one Bridge answer hands the server: its base64, a third larger,
  *  stays under the server socket's 4 MiB message cap. */
 export const BRIDGE_FILE_MAX_BYTES = 2_500_000;
+/** Bounds per-file metadata and the approval summary within one upload. */
+export const BRIDGE_UPLOAD_MAX_FILES = 20;
 /** D-335 slice AP — the keys of a `download_file` answer. */
 export const BRIDGE_DOWNLOAD_OUTPUT_KEYS = ['page', 'url', 'title', 'address', 'filename', 'mime_type', 'size', 'data'] as const;
 /** D-335 slice AQ — the keys of an `upload_file` answer. */
@@ -900,6 +942,16 @@ export const BRIDGE_PROHIBITED_CHROME_PERMISSIONS: ReadonlyArray<string> = [
  *  the rest of the report family (2026-09-16) — reachability.ts no longer
  *  re-exports this type, and `index.ts` exports it from here. */
 export interface BridgeCapabilityProfile {
+  /** Supports scrolling left and right on a page or an observed panel. */
+  horizontal_scroll?: boolean;
+  /** Can wait for a document to generate a file after a click. */
+  generated_download_wait?: boolean;
+  /** Can deliver a double-click gesture in one document-bound command. */
+  double_click?: boolean;
+  /** Can deliver stored files to an observed drop area. */
+  file_drop?: boolean;
+  /** Delivers explicitly supplied text to a focused page target as a paste event. */
+  text_paste?: boolean;
   /** Rechecks a recovered navigation link's source URL and destination at dispatch. */
   guarded_links?: boolean;
   /** Returns a sanitized region in the same injection that satisfies a shown-element wait. */

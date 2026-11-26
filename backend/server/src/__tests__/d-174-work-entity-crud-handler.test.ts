@@ -1003,6 +1003,21 @@ describe('D-174 work_entity.* — registered-client gate (slice arrows)', () => 
     ).rejects.toMatchObject({ code: 'unauthorized' });
   });
 
+  it('allows statement credit review only from a registered webclient', async () => {
+    const { handlers } = makeWorkEntityCrudHandlers(deps)!;
+    const ref = { commitment_id: 'refund', created_at: NOW };
+    for (const client of [
+      { ...ctx(null), client_kind: 'webclient' as const },
+      { ...ctx('bridge'), client_kind: 'bridge' as const },
+    ]) {
+      await expect(handlers['work_entity.refund_credits.read'](ref, client))
+        .rejects.toMatchObject({ code: 'unauthorized' });
+      await expect(handlers['work_entity.refund_credits.change']({
+        ...ref, action: 'remove', line_id: 'credit', review_token: '0'.repeat(64),
+      }, client)).rejects.toMatchObject({ code: 'unauthorized' });
+    }
+  });
+
   it('an unregistered upsert never reaches the store (no write, no event)', async () => {
     const slice = makeWorkEntityCrudHandlers(deps)!;
     await expect(
@@ -1031,7 +1046,7 @@ describe('D-174 makeWorkEntityCrudHandlers slice', () => {
     expect(makeWorkEntityCrudHandlers(undefined)).toBeUndefined();
   });
 
-  it('claims the CRUD methods and the separate task-completion operation', () => {
+  it('claims the CRUD methods and the semantic work actions', () => {
     const slice = makeWorkEntityCrudHandlers(deps);
     expect(slice).toBeDefined();
     expect(slice!.methods).toEqual([
@@ -1045,6 +1060,8 @@ describe('D-174 makeWorkEntityCrudHandlers slice', () => {
       'work_entity.task.mark_done',
       'work_entity.commitment.fulfill',
       'work_entity.commitment.cancel',
+      'work_entity.refund_credits.read',
+      'work_entity.refund_credits.change',
       'work_entity.delete',
     ]);
   });

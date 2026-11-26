@@ -24,6 +24,7 @@ import type { RunMode } from './memory.js';
 import type { ProvenanceAttribution } from './provenance-attribution.js';
 import type { TokenUsageReport } from './token-usage-report.js';
 import type { ServerExecuteResponse } from './rpc/server-registry.js';
+import type { RunSearchScope } from './run-search-filters.js';
 
 /** Run-level policy outcome. `blocked` is forward-compatible for the
  *  Tier-2 per-call commit-log read; Tier-1 never emits it because the
@@ -105,6 +106,16 @@ export interface ExecutionListQuery {
 export interface ExecutionListResponse {
   runs: RunFeedRow[];
   next_cursor?: ExecutionListCursor;
+}
+
+/** Bounded reads over the complete audit history, not a recent-run window.
+ * The cursor follows the audit store's event/started-time order. */
+export interface ExecutionSearchCursor { last_event_at: number; last_run_id: string }
+export interface ExecutionSearchRequest { query: string; limit?: number; cursor?: ExecutionSearchCursor; filters?: RunSearchScope }
+export interface ExecutionSearchResponse {
+  runs: RunFeedRow[]; next_cursor?: ExecutionSearchCursor;
+  /** Required when filters were requested, so older servers cannot silently widen a search. */
+  applied_filters?: RunSearchScope;
 }
 
 export interface ExecutionGetRequest {

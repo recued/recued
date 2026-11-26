@@ -38,6 +38,16 @@ const legacyRevertReason = (entry: UpdateLedgerEntry): UpdateRevertReason => {
   return 'other';
 };
 
+/** The reason a failed download records: its two limits by name
+ *  (`UpdateDownloadStalledError` / `UpdateDownloadTooSlowError` in
+ *  `binary-apply-executor.ts`, read by their `code` so the orchestrator stays free
+ *  of the executor's IO), anything else (HTTP, DNS, TLS, size) as
+ *  `download_failed`. A Node system error's `code` (`ECONNRESET`) is not one of them. */
+export const downloadRevertReason = (error: unknown): UpdateRevertReason => {
+  const code = error instanceof Error ? (error as { code?: unknown }).code : undefined;
+  return code === 'download_stalled' || code === 'download_too_slow' ? code : 'download_failed';
+};
+
 export const updateRevertReason = (entry: UpdateLedgerEntry): UpdateRevertReason => {
   const typed: unknown = entry.revert_reason;
   if (typeof typed === 'string') {

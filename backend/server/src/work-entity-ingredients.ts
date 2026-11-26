@@ -3413,6 +3413,12 @@ const projectDelete = (deps: WorkEntityIngredientDeps) =>
  *  the task/note deletes use (one place owns warehouse-event emission).
  */
 export const createWorkEntityDispatchers = (deps: WorkEntityIngredientDeps) => ({
+  /** Owner services call only after their shared canonical-row transaction. */
+  ownerTaskWritten: (after: Task): void => {
+    if (after.source_id !== RECUED_BUILTIN_SOURCE_ID('task') || after.sync_state !== 'live' || after.deleted_at != null)
+      throw new WorkEntityValidationError('Not a current local task');
+    emitWorkEntityEvent(deps, 'task', 'created', tagWorkEntity('task', after));
+  },
   /** A paired owner's accepted recall is a declared task, not a clock rule. */
   ownerCommitmentWritten: (after: Commitment, owner: import('@recued/contracts').ExecutionSource): void => {
     if (owner.channel !== 'user' || owner.actor !== 'user_self' || after.derivation !== 'user_declared' || after.source_id !== RECUED_BUILTIN_SOURCE_ID('commitment'))

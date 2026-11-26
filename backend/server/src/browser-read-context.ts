@@ -82,6 +82,25 @@ export const projectBrowserObservationOrder = (calls: readonly ChatPriorToolCall
       for (const post of posts) mutations.push({ tab: browserTabKey(post.before_page), call: index, position: post.after_step });
       const args = call.args;
       const parsed = record(args) ? parseBrowserActSteps(args.steps) : undefined;
+      const collectStep = parsed?.ok ? parsed.steps.findIndex(step => step.do === 'collect') + 1 : 0;
+      if (collectStep && run.success === true && record(run.output) && Array.isArray(run.output.render)) {
+        // Collect is read-only for approval, but its observed navigation retires
+        // the earlier document. Only data can follow it in the browser batch.
+        for (const row of run.output.render) {
+          if (!record(row) || row.type !== 'json' || !record(row.data) || !Array.isArray(row.data.tabs)) continue;
+          for (const tab of row.data.tabs) {
+            if (!record(tab) || !Array.isArray(tab.reads)) continue;
+            const collection = tab.reads.find(read => record(read) && read.step === collectStep)?.collection;
+            if (!record(collection) || !Array.isArray(collection.pages)) continue;
+            const before = collection.pages[0]?.page;
+            const after = tab.page ?? collection.pages.at(-1)?.page;
+            if (typeof before !== 'string' || typeof after !== 'string' || before === after
+              || /^https?:/i.test(before) || /^https?:/i.test(after)) continue;
+            const route = browserTabKey(before);
+            if (route === browserTabKey(after)) mutations.push({ tab: route, call: index, position: collectStep });
+          }
+        }
+      }
       if (parsed?.ok && record(args) && typeof args.page === 'string' && !/^https?:/i.test(args.page)) {
         const progress = Array.isArray(run.errors) ? run.errors.flatMap(error => {
           if (!record(error) || !record(error.source) || error.source.ingredient_slug !== 'dom-act') return [];

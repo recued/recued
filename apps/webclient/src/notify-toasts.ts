@@ -38,7 +38,7 @@
  *
  *  Spec: D-169 § N.5 #3 (live surface). */
 
-import { parseReminderLink } from '@recued/contracts';
+import { isMailFollowUpLink, parseReminderLink } from '@recued/contracts';
 
 import type { BroadcastSubscriber } from './realtime/subscriber.js';
 import { safeMentions, setTextWithMentions, type TextMention } from './shell/text-with-mentions.js';
@@ -102,7 +102,7 @@ export interface NotifyToastsMount {
    * webhook that stopped working (`webhook-door-notices.ts`) or a notice the
    * owner missed (`notice-catch-up.ts`). `link_url` passes the same allowlist
    * as a live notice's link; one it does not know is dropped. */
-  push(toast: { title?: string; text: string; sticky?: boolean; link_url?: string }): void;
+  push(toast: { title?: string; text: string; sticky?: boolean; link_url?: string; activity_id?: string }): void;
   /** Tear down: clear every timer, drop the subscription, remove the
    *  container. Idempotent. */
   dispose(): void;
@@ -128,6 +128,7 @@ const DEFAULT_MAX_VISIBLE = 4;
 
 const safeNotifyLink = (value: unknown): string | undefined => {
   if (typeof value !== 'string') return undefined;
+  if (isMailFollowUpLink(value)) return value;
   // ⛔ AN ALLOWLIST, NOT A ROUTER. A server supplies this and the client renders
   // it as a clickable href, so anything not matched here is DROPPED — the toast
   // still shows, silently without its "Open" link. That is why both spellings
@@ -206,12 +207,15 @@ export const mountNotifyToasts = (
 
   interface InternalToast extends NotifyToast {
     timer: unknown | null;
+    activity_id?: string;
   }
 
   let disposed = false;
   let seq = 0;
   const toasts: InternalToast[] = [];
   const cards = new Map<string, HTMLElement>();
+  const parts = new Map<string, { body: HTMLElement; text: HTMLElement; title?: HTMLElement; link?: HTMLAnchorElement }>();
+  const seenActivities = new Set<string>();
 
   const container = doc.createElement('div');
   container.setAttribute(NOTIFY_TOASTS_HOST_ATTR, '');
@@ -243,14 +247,15 @@ export const mountNotifyToasts = (
 
     const body = doc.createElement('div');
     body.className = 'notify-toast-body';
+    const nodes: { body: HTMLElement; text: HTMLElement; title?: HTMLElement; link?: HTMLAnchorElement } = { body, text: doc.createElement('span') };
     const title = nonBlankTitle(t.title);
     if (title !== undefined) {
       const titleEl = doc.createElement('span');
       titleEl.className = 'notify-toast-title';
-      titleEl.textContent = title;
+      titleEl.textContent = title; nodes.title = titleEl;
       body.appendChild(titleEl);
     }
-    const textEl = doc.createElement('span');
+    const textEl = nodes.text;
     textEl.className = 'notify-toast-text';
     // D-338 §11 — an Agenda's birthday names open their contacts.
     setTextWithMentions(doc, textEl, t.text, t.mentions, situationRefHref);
@@ -258,10 +263,10 @@ export const mountNotifyToasts = (
     if (t.link_url) {
       const link = doc.createElement('a');
       link.setAttribute('href', t.link_url);
-      link.textContent = 'Open';
+      link.textContent = 'Open'; nodes.link = link;
       body.appendChild(link);
     }
-    card.appendChild(body);
+    card.appendChild(body); parts.set(t.id, nodes);
 
     if (t.ask_id && t.options && opts.answerReminder) {
       const actions = doc.createElement('div');
@@ -313,7 +318,7 @@ export const mountNotifyToasts = (
   const removeToastCard = (id: string): void => {
     const card = cards.get(id);
     if (card === undefined) return;
-    cards.delete(id);
+    cards.delete(id); parts.delete(id);
     card.remove();
   };
 
@@ -373,8 +378,10 @@ export const mountNotifyToasts = (
     sticky = false,
     reminder?: { ask_id: string; options: readonly { id: string; label: string }[] },
     mentions?: readonly TextMention[],
+    activity_id?: string,
   ): void => {
     if (disposed) return;
+    if (activity_id && (seenActivities.has(activity_id) || toasts.some(t => t.activity_id === activity_id))) return;
     if (reminder && toasts.some(toast => toast.ask_id === reminder.ask_id)) return;
     const id = `toast-${(seq += 1)}`;
     const toast: InternalToast = {
@@ -385,7 +392,12 @@ export const mountNotifyToasts = (
       ...(reminder ? { ask_id: reminder.ask_id, options: reminder.options } : {}),
       ...(mentions ? { mentions } : {}),
       timer: null,
+      ...(activity_id ? { activity_id } : {}),
     };
+    if (activity_id) {
+      seenActivities.add(activity_id);
+      if (seenActivities.size > 500) seenActivities.delete(seenActivities.values().next().value!);
+    }
     // Evict oldest beyond the cap BEFORE appending the new one, cancelling
     // their timers. ⚠ There is no feed behind this any more (R31 delta D): an
     // evicted card is gone from this page. That is why a catch-up folds what it
@@ -425,8 +437,29 @@ export const mountNotifyToasts = (
     // card, wedging this default-on overlay. A non-string title degrades to
     // no-title (via `nonBlankTitle`); guarded here too for clarity.
     if (typeof event.text !== 'string') return;
+    const activity = typeof event.activity_id === 'string' && event.activity_id.length > 0 && event.activity_id.length <= 512 ? event.activity_id : undefined;
+    if (event.replace_existing === true) {
+      const toast = activity ? toasts.find(t => t.activity_id === activity) : undefined;
+      const nodes = toast ? parts.get(toast.id) : undefined;
+      if (!toast || !nodes) return;
+      const title = nonBlankTitle(event.title), link = safeNotifyLink(event.link_url);
+      toast.title = title; toast.text = event.text; toast.link_url = link;
+      toast.mentions = safeMentions(event.mentions);
+      if (title) {
+        if (!nodes.title) { nodes.title = doc.createElement('span'); nodes.title.className = 'notify-toast-title'; nodes.body.insertBefore(nodes.title, nodes.text); }
+        nodes.title.textContent = title;
+      } else { nodes.title?.remove(); nodes.title = undefined; }
+      setTextWithMentions(doc, nodes.text, toast.text, toast.mentions, situationRefHref);
+      if (link) {
+        if (!nodes.link) { nodes.link = doc.createElement('a'); nodes.link.textContent = 'Open'; nodes.body.appendChild(nodes.link); }
+        nodes.link.setAttribute('href', link);
+      } else { nodes.link?.remove(); nodes.link = undefined; }
+      const dismiss = Array.from(cards.get(toast.id)?.children ?? []).find(node => node.hasAttribute(NOTIFY_TOAST_DISMISS_ATTR));
+      dismiss?.setAttribute('aria-label', `Dismiss notification: ${title ?? event.text}`);
+      return;
+    }
     push(typeof event.title === 'string' ? event.title : undefined, event.text, safeNotifyLink(event.link_url), false, undefined,
-      safeMentions(event.mentions));
+      safeMentions(event.mentions), activity);
   });
   const reminderSubscriptions = opts.answerReminder ? [
     opts.subscribe('notification.ask', event => {
@@ -453,7 +486,7 @@ export const mountNotifyToasts = (
     dismiss: (id) => dismiss_(id),
     push: (toast) => {
       if (typeof toast.text !== 'string') return;
-      push(nonBlankTitle(toast.title), toast.text, safeNotifyLink(toast.link_url), toast.sticky === true);
+      push(nonBlankTitle(toast.title), toast.text, safeNotifyLink(toast.link_url), toast.sticky === true, undefined, undefined, toast.activity_id);
     },
     dispose: () => {
       if (disposed) return;
@@ -462,7 +495,7 @@ export const mountNotifyToasts = (
         if (t.timer !== null) clearTimer(t.timer);
       }
       toasts.length = 0;
-      cards.clear();
+      cards.clear(); parts.clear(); seenActivities.clear();
       for (const stop of [unsubscribe, ...reminderSubscriptions]) {
         try { stop(); } catch { /* One subscription cannot strand the others. */ }
       }

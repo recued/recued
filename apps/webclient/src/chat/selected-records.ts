@@ -3,13 +3,14 @@ import { CHAT_MAIL_REFS_MAX } from '@recued/contracts';
 import { serializeShellRoute, serializeSourceRecordAddress } from '../shell/route.js';
 import { RECORD_LINK_SELECTION_LIMIT, type PreparedRecordLink } from '../data/record-link-insert.js';
 import { cleanRecentWorkRecord } from '../data/recent-work-records.js';
-import type { WorkReaderLink } from '../data/task-note-source.js';
-import { verifyExactRecordLink } from '../data/exact-record-link.js';
+import { assetRecordIdentity, verifyExactRecordLink } from '../data/exact-record-link.js';
+import type { RecordLinkTarget } from '../data/work-link-preview.js';
 import { verifyRecordLinkShortcut, type RecordLinkShortcutReaders } from '../data/record-link-shortcuts.js';
 
 const object = (value: unknown): Record<string, unknown> | null => value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null;
 const id = (value: unknown): value is string => typeof value === 'string' && value.length > 0 && value.length <= 2048 && !/[\u0000-\u001f\u007f]/u.test(value);
 const time = (value: unknown): value is number => typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
+const ASSET_LABEL = 'Selected asset';
 
 const cleanShortcut = (value: unknown) => {
   const record = cleanRecentWorkRecord(value), raw = object(value);
@@ -41,12 +42,14 @@ export const selectedRecordsWire = (records: readonly PreparedRecordLink[]): str
     const ref = selection.reference, token: unknown = JSON.parse(ref.identity);
     if (!Array.isArray(token)) throw new Error('This selected record could not be confirmed. Choose it again.');
     const kind = ref.target.tab;
-    const record = kind === 'contact' ? { kind, id: 'id' in ref.target ? ref.target.id : '', created_at: token[2] }
+    const record = kind === 'contact' || kind === 'asset' ? { kind, id: 'id' in ref.target ? ref.target.id : '', created_at: token[2] }
       : kind === 'task' || kind === 'note' || kind === 'commitment' || kind === 'booking' || kind === 'project' ? { kind, id: 'id' in ref.target ? ref.target.id : '', source_id: token[2], source_record_id: token[3], created_at: token[4] }
       : { kind, slug: 'collectionSlug' in ref.target ? ref.target.collectionSlug : '', record_id: 'recordId' in ref.target ? ref.target.recordId : '', source_id: token[3], received_at: token[4] };
     const shortcut = selection.shortcut ? cleanShortcut(selection.shortcut) : undefined;
     if (selection.shortcut && !shortcut) throw new Error('This selected record could not be confirmed. Choose it again.');
-    return { record, title: ref.title, ...(shortcut ? { shortcut } : {}) };
+    // Yours labels can themselves be private. Resolve the asset through the
+    // governed reader instead of disclosing its name in the message.
+    return { record, title: kind === 'asset' ? ASSET_LABEL : ref.title, ...(shortcut ? { shortcut } : {}) };
   });
   const wire = JSON.stringify(rows);
   const checked = readSelectedRecordsWire(wire);
@@ -62,8 +65,12 @@ export const readSelectedRecordsWire = (wire: unknown): PreparedRecordLink[] | n
     for (const raw of rows) {
       const row = object(raw), record = object(row?.record);
       if (!row || !record || typeof row.title !== 'string' || !row.title.trim() || row.title.length > 480) return null;
-      let target: WorkReaderLink, identity: string;
-      if (record.kind === 'contact') {
+      let target: RecordLinkTarget, identity: string;
+      if (record.kind === 'asset') {
+        if (!id(record.id) || !time(record.created_at) || row.title !== ASSET_LABEL) return null;
+        target = { tab: 'asset', id: record.id, hash: serializeShellRoute('yours', 'asset', record.id) };
+        identity = assetRecordIdentity(record.id, record.created_at);
+      } else if (record.kind === 'contact') {
         if (!id(record.id) || !time(record.created_at)) return null;
         target = { tab: 'contact', id: record.id, hash: serializeShellRoute('data', 'contact', record.id) };
         identity = JSON.stringify(['contact', record.id, record.created_at]);

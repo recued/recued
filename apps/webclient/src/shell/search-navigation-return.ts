@@ -14,6 +14,7 @@ export const saveSearchNavigationReturn = <State>(doc: Document, owner: object, 
 };
 export const readSearchNavigationReturn = <State>(doc: Document, owner: object): SearchNavigationReturn<State> | undefined =>
   visits.get(doc)?.get(owner) as SearchNavigationReturn<State> | undefined;
+export const clearSearchNavigationReturn = (doc: Document, owner: object): void => { visits.get(doc)?.delete(owner); };
 
 /** Only the originating search and addressed result share this transient
  * snapshot. Following another route retires it, including on the same server. */

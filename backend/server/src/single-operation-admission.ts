@@ -56,8 +56,8 @@ export const createSingleOperationAdmission = (deps: SingleOperationAdmissionDep
   const scope = deriveDispatchScope({ kind: manifest.kind, slug }, input);
   const owned = !isCatalogForm(manifest)
     ? readOwnerOperationOverride({ scan: deps.contractScan, ingredient_id: slug, operation_id: slug }) : undefined;
-  // A browser sequence's changes ask at their steps, on the live page; a single click, write or page
-  // open is held here and described before it, as any held browser action is.
+  // A browser sequence's changes ask at their steps, on the live page; a single click or write is held
+  // here and described before it, as any held browser action is. Opening a page is a read (2026-11-23).
   const override = deps.trial === true && !isCatalogForm(manifest) && manifest.risk_tier !== undefined
     && manifest.risk_tier !== 'read' && slug !== 'dom-act' ? { ...owned, approval: 'always' as const } : owned;
   const decision = evaluatePreflightAdmission({

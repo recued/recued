@@ -7,6 +7,7 @@ import { createBridgeDomAdapter } from '../bridges/dom-adapter.js';
 import type { DispatchRequest } from '../bridges/dispatcher.js';
 import { KERNEL_MANIFESTS } from '../kernel-manifests.js';
 import { withRunAbortContext } from '../execution/run-abort-context.js';
+import type { BrowserTrials } from '../bridges/browser-trials.js';
 
 const row = (name: string, tags = 'news') => `<article class="item"><span class="name">${name}</span><a href="/${name}">Link</a><span class="tag">${tags}</span></article>`;
 const page = (n: number, html: string): BrowserCollectPage => ({ page: `7:DOC${n}`, url: `https://example.com/list/${n}`,
@@ -296,7 +297,7 @@ describe('positional collection over preserved siblings', () => {
 });
 
 describe('collection through the existing browser batch dispatcher', () => {
-  const batch = (afterRead?: () => void, positional = false, scoped = false) => {
+  const batch = (afterRead?: () => void, positional = false, scoped = false, trials?: Pick<BrowserTrials, 'isTrial' | 'ask'>) => {
     const requests: DispatchRequest[] = [];
     let current = 1;
     const adapter = createBridgeDomAdapter({
@@ -313,6 +314,7 @@ describe('collection through the existing browser batch dispatcher', () => {
             status: 'ok', outputs: { ...outputs, ...(positional ? { structure_complete: !scoped, structure_root: '1,1,1,1',
               ...(scoped ? { structure_scoped: true } : {}) } : {}) } } as BridgeResult };
       } }),
+      ...(trials !== undefined ? { trials } : {}),
     });
     const call: ResolvedCall = { slug: 'dom-act', risk_tier: 'write', output: {}, input: { target: '*://*/*', page: '7:DOC1',
       steps: [{ do: 'collect', ...spec(positional ? { max_pages: 1, ...(scoped ? { fields: { name: 'span:nth-child(1)' } }
@@ -330,6 +332,17 @@ describe('collection through the existing browser batch dispatcher', () => {
       .toEqual(['act#collect1.page1', 'act#collect1.page2', 'act#collect1.page3']);
     expect(t.requests.every(r => r.timeout_ms! > 0 && r.timeout_ms! <= 60_000)).toBe(true);
     expect(JSON.stringify(result)).not.toContain('<article');
+  });
+
+  // 2026-11-23 (the owner: "make Collects that turn pages read too", then "ditch that ask for try it") — a collect reads
+  //   across pages, so a trial of a draft, which asks before each change, asks nothing before one. D-402 slice C asked here.
+  it('a trial asks nothing before a collect turns pages', async () => {
+    const asked: string[] = [];
+    const t = batch(undefined, false, false, { isTrial: run_id => run_id === 'collect-run',
+      ask: async ({ prompt }) => { asked.push(prompt.action); return { done: true }; } });
+    await t.run();
+    expect(asked).toEqual([]);
+    expect(t.requests.map(r => r.action)).toEqual(['reread', 'navigate', 'reread', 'navigate', 'reread']);
   });
 
   it('requests structural reads only for positional selectors and consumes their metadata', async () => {

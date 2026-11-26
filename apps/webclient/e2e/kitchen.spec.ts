@@ -1,8 +1,56 @@
-import { expect, test } from '@playwright/test';
+import { expect, test, type Dialog } from '@playwright/test';
 import { HARNESS_URL, installFullAppHooks } from './helpers/full-app.js';
 
 /** Kitchen browser journeys against the deterministic full-app harness. */
 installFullAppHooks();
+
+test('Kitchen keeps discard focus through cancel, resize, and removal of recipe and pack drafts', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 650 });
+  await page.goto(`${HARNESS_URL}?kitchen_import=home&settle_reads=1#kitchen`);
+  const home = page.locator('[data-recued-kitchen-home]');
+  const row = (key: string) => home.locator(`[data-recued-kitchen-home-item="${key}"]`);
+  const discard = (key: string) => row(key).getByRole('button', { name: 'Discard', exact: true });
+  const resume = (key: string) => row(key).getByRole('link', { name: 'Continue', exact: true });
+  const renewals = discard('work:renewals');
+  const discardMethod = 'kitchen.draft.discard';
+  const discardCalls = () => page.evaluate(method => window.__app.rpcCallCount(method), discardMethod);
+  const acceptDiscard = (dialog: Dialog) => { void dialog.accept(); };
+
+  page.once('dialog', dialog => { void dialog.dismiss(); });
+  await renewals.press('Enter');
+  await expect(renewals).toBeFocused();
+  expect(await discardCalls()).toBe(0);
+
+  await page.evaluate(method => window.__app.holdRpcResponses?.(method), discardMethod);
+  page.once('dialog', acceptDiscard);
+  await renewals.press('Enter');
+  await expect(renewals).toHaveAttribute('aria-busy', 'true');
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(renewals).toBeFocused();
+  let duplicatePrompts = 0;
+  const acceptDuplicate = (dialog: Dialog) => { duplicatePrompts++; void dialog.accept(); };
+  page.on('dialog', acceptDuplicate);
+  await page.keyboard.press('Enter');
+  page.off('dialog', acceptDuplicate);
+  expect(duplicatePrompts).toBe(0);
+  await expect.poll(discardCalls).toBe(1);
+  const releaseDiscard = () => page.evaluate(method => window.__app.releaseRpcResponses?.(method), discardMethod);
+  await expect.poll(releaseDiscard).toBe(1);
+  await expect(row('work:renewals')).toHaveCount(0);
+  await expect(resume('pack:bookings')).toBeFocused();
+
+  page.once('dialog', acceptDiscard);
+  await discard('pack:bookings').press('Enter');
+  await expect(resume('work:briefing')).toBeFocused();
+
+  page.once('dialog', acceptDiscard);
+  await discard('work:briefing').press('Enter');
+  await expect.poll(releaseDiscard).toBe(1);
+  await expect(home.getByRole('status')).toHaveText('Nothing in progress.');
+  await expect(home.getByRole('link', { name: 'New recipe', exact: true })).toBeFocused();
+  expect(await discardCalls()).toBe(2);
+});
 
 test('Kitchen recipe editor contains mobile authoring controls', async ({ page }) => {
   await page.setViewportSize({ width: 320, height: 720 });

@@ -102,9 +102,9 @@ import type { DropBlobStore } from '../../storage/reception-drop-store.js';
 import {
   createApprovalLinkConsumeHandler,
   createApprovalLinkPacketHandler,
-  writeApprovalLinkUnavailableResponse,
   type ApprovalLinkNonceStore,
 } from './handlers/approval-link.js';
+import { writeReceptionLinkUnavailableResponse } from './handlers/reception-link-response.js';
 import type { ApprovalIntentStore } from '../../storage/reception-approval-store.js';
 import {
   createStatusLinkPacketHandler,
@@ -454,16 +454,22 @@ const writeAccessLog = (
   }
 };
 
-/** Browser approval visits get a neutral next step. API and upload callers
- * retain their existing status and JSON contract. */
-const writeGoneResponse = (req: IncomingMessage, res: ServerResponse, kind: ReceptionEndpointKind): void => {
+/** Content negotiation for link page visits and approval form responses. */
+const writeGoneResponse = (
+  req: IncomingMessage,
+  res: ServerResponse,
+  route: NonNullable<ReturnType<typeof parsePath>>,
+): void => {
+  const isPageVisit = req.method === 'GET' && route.action === null && route.action_rest.length === 0;
+  const isApprovalRequest = route.kind === 'approval_link' && (req.method === 'GET' || req.method === 'POST');
   const acceptsHtml = req.headers.accept?.split(',').some(value => {
     const [media, ...parameters] = value.trim().split(';');
     const quality = parameters.find(parameter => parameter.trim().startsWith('q='));
     return media?.trim().toLowerCase() === 'text/html' && (!quality || Number(quality.trim().slice(2)) > 0);
   });
-  if (kind === 'approval_link' && (req.method === 'GET' || req.method === 'POST') && acceptsHtml) {
-    writeApprovalLinkUnavailableResponse(res);
+  res.setHeader('vary', 'Accept');
+  if (acceptsHtml && (isPageVisit || isApprovalRequest)) {
+    writeReceptionLinkUnavailableResponse(res);
   } else writeJson(res, 410, { error: { code: 'gone' } });
 };
 
@@ -1401,7 +1407,7 @@ export const createReceptionPortHandler = (
         outcome: 'revoked',
         url_path_redacted,
       });
-      writeGoneResponse(req, res, route.kind);
+      writeGoneResponse(req, res, route);
       return;
     }
     if (cached.summary.expires_at !== null && cached.summary.expires_at <= now) {
@@ -1413,7 +1419,7 @@ export const createReceptionPortHandler = (
         outcome: 'expired',
         url_path_redacted,
       });
-      writeGoneResponse(req, res, route.kind);
+      writeGoneResponse(req, res, route);
       return;
     }
     if (!cached.summary.enabled) {

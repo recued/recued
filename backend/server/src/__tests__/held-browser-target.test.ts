@@ -38,6 +38,7 @@ import { createContractDefinitionStore } from '../storage/contract-definition-st
 import { createContractGrantEntryStore } from '../storage/contract-grant-entry-store.js';
 import { createContractScanFn, createContractStore } from '../storage/contract-store.js';
 import { createBrowserPassStore, type BrowserPassStore } from '../storage/browser-pass-store.js';
+import { createBrowserJobRegistry } from '../bridges/browser-job-registry.js';
 import { createBrowserFiles, type BrowserFiles } from '../bridges/browser-files.js';
 
 /** The owner's own chat: the Browser Toolkit's first caller. */
@@ -64,7 +65,9 @@ const manifestsWithKernel = () => {
 const run = async (step: Record<string, unknown>, dispatch?: BridgeDispatcher['dispatch'], browserPasses?: BrowserPassStore,
   extra: Partial<ExecuteHandlerDeps> = {},
   /** D-335 slice AP/AQ — the owner's files, for a download kept and an upload named. */
-  browserFiles?: BrowserFiles) => {
+  browserFiles?: BrowserFiles,
+  /** D-402 (2026-11-23) — another caller than the owner's chat: an AI app, with its contract. */
+  caller?: { readonly execution_source: ExecutionSource; readonly contract_snapshot: unknown }) => {
   const recipe = {
     recipe_id: 'browser-step', version: 1, ttl: 60,
     metadata: { name: 'Browser step', description: 'One step on a page.', author: 'test', supported_platforms: ['test'] },
@@ -104,7 +107,10 @@ const run = async (step: Record<string, unknown>, dispatch?: BridgeDispatcher['d
     },
     ...extra,
   };
-  const response = await handleExecute(deps, { recipe_id: recipe.recipe_id, trigger_source: 'chat', execution_source: owner });
+  const response = await handleExecute(deps, caller === undefined
+    ? { recipe_id: recipe.recipe_id, trigger_source: 'chat', execution_source: owner }
+    : { recipe_id: recipe.recipe_id, trigger_source: 'mcp', execution_source: caller.execution_source,
+      contract_snapshot: caller.contract_snapshot as never });
   return { response, checkpoints, asks, asked: sent.mock.calls.map(([request]) => request) };
 };
 
@@ -217,14 +223,19 @@ describe('D-335 slice B — a held browser step names its element as the page sh
     expect(text).not.toContain('*');
   });
 
-  // Slice C — an opened page has no element yet; the address is what matters.
-  it('opening a page: the ask shows the whole address, and the Bridge is not asked', async () => {
+  // Slice C — opening a page asked, showing the whole address. ⚠ Since 2026-11-23 it is a read (the owner: "make all reads
+  // & open as normal read permission, which does not need ask, it is more align with human expectation"): through the
+  // admission a server composes, nothing is held, nothing asks, and the Bridge opens the tab.
+  it('opening a page is a read: nothing is held or asked, and the Bridge opens the tab', async () => {
     const url = 'https://mail.google.com/mail/u/0/?q=from:bob';
-    const { checkpoint, text, asked } = await hold({ op: 'core.dom.open', args: { target: TARGET, address: url } });
-    expect(asked).toEqual([]);
-    expect(checkpoint.preflight_context?.browser_target).toBeUndefined();
-    expect(text.split('\n')[1]).toBe('Write actions change data outside Recued, so Recued held it for you.');
-    expect(text).toContain(`\n\nThis opens a new tab in your browser at this address:\n"${url}"`);
+    const opened = async (): Promise<DispatchOutcome> => ({ kind: 'completed', bridge_client_token_id: 'bridge-1', attempts: 1,
+      result: { command_id: 'c', duration_ms: 3, bridge_version: '0.0.14', idempotency_key_seen: false, status: 'ok',
+        outputs: { page: '7:NEWTAB', url, title: 'Mail' } } as BridgeResult });
+    const { response, checkpoints, asks, asked } = await run({ op: 'core.dom.open', args: { target: TARGET, address: url } }, opened);
+    expect(response.awaiting_approval, JSON.stringify(response.errors)).not.toBe(true);
+    expect(checkpoints).toEqual([]);
+    expect(asks).toEqual([]);
+    expect(asked.map((request) => request.action)).toEqual(['open_tab']);
   });
 
   it('an element the Bridge could not find by selector still asks, and says so: it may yet appear', async () => {
@@ -527,14 +538,6 @@ describe('D-335 slice F — a held browser write offers a pass on its site', () 
     expect(text).toContain('“Always allow on mail.google.com” stops asking about them in all your chats');
   });
 
-  it('opening a page: the site is the address\'s, and the Bridge is not asked', async () => {
-    const { checkpoint, asked } = await hold({ op: 'core.dom.open',
-      args: { target: TARGET, address: 'https://mail.google.com/mail/u/0/?q=from:bob' } }, undefined, passes());
-    expect(asked).toEqual([]);
-    expect(checkpoint.preflight_context?.browser_pass).toMatchObject({
-      key: { site: 'https://mail.google.com' }, host: 'mail.google.com' });
-  });
-
   it('a page the Bridge could not read names no site, so the ask offers no pass', async () => {
     const { checkpoint, text } = await hold({ op: 'core.dom.click', args: { target: '*://*/*', page: PAGE, ref: 'e12' } },
       async () => ({ kind: 'capacity_gap', capacity_gap: { kind: 'bridge_online' }, reason: 'bridge_online', attempts: 0 }),
@@ -581,8 +584,9 @@ describe('D-335 slice X — a batch across tabs: what asks, and how the ask list
     expect(response.success, JSON.stringify(response.errors)).toBe(true);
     expect(checkpoints).toHaveLength(0);
     expect(asks).toHaveLength(0);
-    // The tabs listed once to tell that they are open, then once by the run; nothing written.
-    expect(asked.map((request) => request.action).sort()).toEqual(['inspect', 'inspect', 'list_tabs', 'list_tabs']);
+    // The tabs listed once, by the run; nothing written. (Until 2026-11-23 the gate listed them first, to tell that the
+    // batch opened none: opening a page asked then.)
+    expect(asked.map((request) => request.action).sort()).toEqual(['inspect', 'inspect', 'list_tabs']);
   });
 
   it('types on one site after reading another: one ask, its steps under each tab, a pass offered for that site', async () => {
@@ -629,28 +633,79 @@ describe('D-335 slice X — a batch across tabs: what asks, and how the ask list
       + 'On “Inbox” (mail.google.com):\n2. Types into the text box “Search mail”:\n"Ada"\n');
   });
 
-  it('a tab to open makes even a batch of reads ask, the address in full', async () => {
+  // 2026-11-23 (the owner: "make all reads & open as normal read permission, which does not need ask, it is more align
+  // with human expectation") — a batch of reads with a tab to open asks nothing: the tab is opened and read. It asked,
+  // "In a new tab at …", until then.
+  const HN = { page: '23:HN', url: 'https://news.ycombinator.com/', title: 'Hacker News' };
+  it('a tab to open no longer makes a batch of reads ask: the tab is opened and read', async () => {
     const passes = createBrowserPassStore(new Database(':memory:'));
-    const { text } = await hold(BATCH([{ url: 'https://news.ycombinator.com/', do: 'read' }]),
-      async () => completed({ tabs: [WIKI], truncated: false }), passes);
-    expect(text).toContain('This does 1 step in your browser, in order:\nIn a new tab at "https://news.ycombinator.com/":\n'
-      + '1. Reads the page.\nIt stops at the first step that does not work.');
+    const { response, checkpoints, asks, asked } = await run(BATCH([{ url: HN.url, do: 'read' }]),
+      async (request) => request.action === 'list_tabs' ? completed({ tabs: [WIKI], truncated: false }) : page(HN),
+      passes, { commitStore: createCommitStore(createInMemoryCollection<Commit>()) });
+    expect(response.awaiting_approval ?? false).toBe(false);
+    expect(response.success, JSON.stringify(response.errors)).toBe(true);
+    expect(checkpoints).toHaveLength(0);
+    expect(asks).toHaveLength(0);
+    expect(asked.map((request) => request.action)).toContain('open_tab');
   });
 
-  it('a tab open when the batch was let through and closed before its step: it stops, opening nothing', async () => {
+  // 2026-11-23 (the owner: "make Collects that turn pages read too") — it turns them by the page's own Next link.
+  it('a collect that turns pages is a read too: nothing held or asked, and it follows the Next link', async () => {
     const passes = createBrowserPassStore(new Database(':memory:'));
-    let listings = 0;
-    const { response, asks, asked } = await run(BATCH([{ url: WIKI.url, do: 'read' }]), async (request) => {
-      if (request.action === 'list_tabs') {
-        listings += 1;
-        return completed({ tabs: listings === 1 ? [WIKI] : [], truncated: false });
+    const LIST = { page: '24:LIST', title: 'Books' };
+    const at = (n: number) => `https://books.example/list/${n}`;
+    const shown = ['<article class="item"><span class="name">Ada</span></article><a href="/list/2">Next</a>',
+      '<article class="item"><span class="name">Grace</span></article>'];
+    let on = 1;
+    const { response, checkpoints, asks, asked } = await run(BATCH([{ url: at(1), do: 'collect', items: 'article.item',
+      fields: { name: '.name' }, next: { text: 'Next' }, max_pages: 3 }]), async (request) => {
+      if (request.action === 'list_tabs') return completed({ tabs: [{ ...LIST, url: at(on) }], truncated: false });
+      if (request.action === 'navigate') {
+        on = Number(String(request.args.url).split('/').pop());
+        return completed({ page: LIST.page, url: at(on) });
       }
-      return page(WIKI);
+      return completed({ ...LIST, url: at(on), html: `<main>${shown[on - 1]}</main>`, truncated: false });
     }, passes, { commitStore: createCommitStore(createInMemoryCollection<Commit>()) });
+    expect(response.awaiting_approval ?? false).toBe(false);
+    expect(response.success, JSON.stringify(response.errors)).toBe(true);
+    expect(checkpoints).toHaveLength(0);
     expect(asks).toHaveLength(0);
-    expect(response.success).toBe(false);
-    expect(JSON.stringify(response.errors)).toContain('this batch ran without an ask, which opens no tab');
-    expect(asked.map((request) => request.action)).toEqual(['list_tabs', 'list_tabs']);
+    expect(asked.filter((request) => request.action === 'navigate').map((request) => request.args.url)).toEqual([at(2)]);
+    // Both pages read, the second after the move: the collect ran whole, and nothing stood before it.
+    expect(asked.map((request) => request.action).filter((action) => ['reread', 'navigate'].includes(action)))
+      .toEqual(['reread', 'navigate', 'reread']);
+  });
+
+  // 2026-11-23 (the owner: "make the go read no ask default too") — going to an address loads a page, as opening one does.
+  it('going to an address is a read too: nothing held or asked, and the tab goes there and is read', async () => {
+    const passes = createBrowserPassStore(new Database(':memory:'));
+    const TAB = { page: '25:TAB', title: 'Somewhere' };
+    let url = 'https://a.example/start';
+    const { response, checkpoints, asks, asked } = await run(BATCH([{ url, do: 'go', address: 'https://b.example/next' }, { do: 'read' }]),
+      async (request) => {
+        if (request.action === 'list_tabs') return completed({ tabs: [{ ...TAB, url }], truncated: false });
+        if (request.action === 'navigate') { url = String(request.args.url); return completed({ page: TAB.page, url }); }
+        return completed({ ...TAB, url, html: '<main><h1>Next</h1></main>', truncated: false });
+      }, passes, { commitStore: createCommitStore(createInMemoryCollection<Commit>()) });
+    expect(response.awaiting_approval ?? false).toBe(false);
+    expect(response.success, JSON.stringify(response.errors)).toBe(true);
+    expect(checkpoints).toHaveLength(0);
+    expect(asks).toHaveLength(0);
+    expect(asked.filter((request) => request.action === 'navigate').map((request) => request.args.url)).toEqual(['https://b.example/next']);
+  });
+
+  it('going back still asks', async () => {
+    const passes = createBrowserPassStore(new Database(':memory:'));
+    const { text } = await hold(BATCH([{ url: HN.url, do: 'back' }]),
+      async () => completed({ tabs: [{ ...HN }], truncated: false }), passes);
+    expect(text).toContain('Hacker News');
+  });
+
+  it('a click in a tab to open still asks, the address in full', async () => {
+    const passes = createBrowserPassStore(new Database(':memory:'));
+    const { text } = await hold(BATCH([{ url: HN.url, do: 'click', selector: '.morelink' }]),
+      async () => completed({ tabs: [WIKI], truncated: false }), passes);
+    expect(text).toContain('This does 1 step in your browser, in order:\nIn a new tab at "https://news.ycombinator.com/":\n1. ');
   });
 });
 
@@ -750,6 +805,52 @@ describe('D-341 slice A — the owner\'s chat with its switch on lets browser wr
     expect(response.success, JSON.stringify(response.errors)).toBe(true);
     expect(checkpoints).toHaveLength(0);
     expect(asked.map((request) => request.action)).toContain('open_tab');
+  });
+});
+
+// D-402 (2026-11-23; the owner, on the job as the boundary for an approval: "yes go ahead") — an AI app's held
+//   browser write, in a job it started, offers "Allow on <site> until this job ends": a pass for the app's writes of
+//   that kind on that site, while the job lasts, and for no other job.
+describe('D-402 — an AI app\'s pass on a site until its job ends', () => {
+  const ok = (outputs: Record<string, unknown>): DispatchOutcome => ({ kind: 'completed', bridge_client_token_id: 'bridge-1',
+    attempts: 1, result: { command_id: 'c', duration_ms: 3, bridge_version: '0.0.8', idempotency_key_seen: false, status: 'ok',
+      outputs } as BridgeResult });
+  const INBOX = { page: PAGE, url: 'https://mail.google.com/mail/u/0/#inbox', title: 'Inbox' };
+  const bridge = async (request: DispatchRequest): Promise<DispatchOutcome> => request.action === 'describe'
+    ? described({ role: 'button', label: 'Send', protected: false }) : ok({ clicked: 1, ...INBOX });
+  const APP = { channel: 'mcp', actor: 'contracted_user', agent_id: 'agent-1', tool_call_id: 'tc-1',
+    mcp_token_id: 'tok-1', contract_id: 'k-app' } as ExecutionSource;
+  const caller = () => ({ execution_source: APP, contract_snapshot: { contract_id: 'k-app', contract_version: 'v1',
+    allowed_tools: ['dom-click'], approval_required: ['write', 'admin'], scope_restrictions: [], resolved_at: Date.now() } });
+  const CLICK_ANY = { op: 'core.dom.click', args: { target: '*://*/*', page: PAGE, ref: 'e12' } };
+  const app = { mcp_token_id: 'tok-1', agent_id: 'agent-1' };
+
+  it('offered in a job and granted, the app\'s next click there in that job runs; in its next job, or none, it asks', async () => {
+    const passes = createBrowserPassStore(new Database(':memory:'));
+    const jobs = createBrowserJobRegistry();
+    const deps = () => ({ browserJobs: jobs, commitStore: createCommitStore(createInMemoryCollection<Commit>()) });
+    const click = () => run(CLICK_ANY, bridge, passes, deps(), undefined, caller());
+    const job = jobs.start(app);
+    const first = await click();
+    expect(first.response.awaiting_approval, JSON.stringify(first.response.errors)).toBe(true);
+    const offer = first.checkpoints[0]!.preflight_context?.browser_pass;
+    expect(offer).toEqual({ key: { principal: { kind: 'ai_app', contract_id: 'k-app' }, recipe: 'browser-step',
+      site: 'https://mail.google.com' }, host: 'mail.google.com', channel_session_id: 'mcp:tok-1',
+      job: { channel_session_id: `job:${job.job_id}`, expires_at: job.expires_at } });
+    expect(first.asks.at(-1)).toContain('“Allow on mail.google.com until this job ends” stops asking about');
+    // The owner's answer, as the resumer hands it to the store.
+    passes.grantForDecision({ approval_ref: JSON.stringify(['preflight', 'run-1', 'held-1']), offer: offer!, kind: 'job', now: Date.now() });
+    const second = await click();
+    expect(second.response.awaiting_approval ?? false, JSON.stringify(second.checkpoints)).toBe(false);
+    expect(second.response.success, JSON.stringify(second.response.errors)).toBe(true);
+    expect(second.asked.map((request) => request.action)).toContain('click');
+    // Its next job, and no job at all: the pass was the first job's.
+    jobs.start(app);
+    expect((await click()).response.awaiting_approval).toBe(true);
+    jobs.end(app);
+    const none = await click();
+    expect(none.response.awaiting_approval).toBe(true);
+    expect(none.checkpoints[0]!.preflight_context?.browser_pass).not.toHaveProperty('job');
   });
 });
 

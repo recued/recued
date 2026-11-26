@@ -256,13 +256,15 @@ export const mountContractKeyPanel = (
       ? { token: oldValue.getAttribute('data-token-id'), text: oldValue.textContent, start: selection.anchorOffset, end: selection.focusOffset } : null;
     paint();
     if (held && (doc.activeElement === focused || doc.activeElement === doc.body)) {
-      let next = root.querySelector<HTMLElement>('[' + held + ']');
+      const replacement = root.querySelector<HTMLElement>('[' + held + ']');
+      let next = replacement;
       if (!next && held === CONTRACT_KEY_TURN_OFF_ATTR) next = root.querySelector('[' + CONTRACT_KEY_CONFIRM_ATTR + ']');
       if (!next && held === CONTRACT_KEY_CANCEL_ATTR) next = root.querySelector('[' + CONTRACT_KEY_TURN_OFF_ATTR + ']');
       next ??= root.querySelector('[' + CONTRACT_KEY_COPY_ATTR + ']') ?? root.querySelector('[' + CONTRACT_KEY_CREATE_ATTR + ']')
         ?? root.querySelector('[' + CONTRACT_KEY_TURN_OFF_ATTR + ']') ?? root.querySelector('[' + CONTRACT_KEY_RETRY_ATTR + ']')
         ?? root.querySelector('[' + CONTRACT_KEY_HEADING_ATTR + ']');
-      next?.focus({ preventScroll: true });
+      // A different control can be lower in the panel after the state changes.
+      next?.focus({ preventScroll: next === replacement });
     }
     const value = root.querySelector<HTMLElement>('[' + CONTRACT_KEY_VALUE_ATTR + ']');
     if (selected && value?.firstChild && value.getAttribute('data-token-id') === selected.token && value.textContent === selected.text) {

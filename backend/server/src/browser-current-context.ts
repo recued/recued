@@ -1,5 +1,5 @@
 import { BROWSER_DATA_REF, BROWSER_COLLECT_MAX_PAGES, BROWSER_COLLECT_MAX_ITEMS, BROWSER_COLLECT_MAX_SECONDS,
-  isBrowserReadState, isBrowserInteractionTargets, isBrowserPostActionState, isBrowserFailureObservation, parseBrowserActSteps,
+  isBrowserFieldEvidence, isBrowserReadState, isBrowserInteractionTargets, isBrowserPostActionState, isBrowserFailureObservation, parseBrowserActSteps,
   type ChatPriorToolCall } from '@recued/contracts';
 import { browserTabKey } from './bridges/browser-routing.js';
 
@@ -78,6 +78,33 @@ const latestEmptyComputation = (calls: readonly ChatPriorToolCall[]): Record<str
   return latest;
 };
 
+const normalizeMention = (text: string) => text.normalize('NFKC').replace(/\s+/g, ' ').trim().toLowerCase();
+
+/** Project literal title matches in mention order from one current capture. */
+const titlesInRequestOrder = (source: unknown, request: string) => {
+  if (!request || !isBrowserFieldEvidence(source) || !source.complete) return;
+  type Title = { label: string; title_attribute: string };
+  const titles = new Map<string, Title | undefined>();
+  for (const { fields } of source.items) {
+    const label = fields.nearby_text;
+    const title = fields.title_attribute;
+    if (label?.source !== 'containing-entry.textContent' || label.truncated || title?.source !== 'title' || title.truncated) continue;
+    const key = normalizeMention(label.value);
+    if (key) titles.set(key, titles.has(key) ? undefined : { label: label.value, title_attribute: title.value });
+  }
+  if (titles.size < 2) return;
+  const mentions: Array<{ title: Title; start: number; end: number }> = [];
+  for (const [label, title] of titles) {
+    if (!title) continue;
+    const escaped = label.replace(/[.*+?^$(){}|[\]\\]/g, '\\$&');
+    const [match, repeated] = request.matchAll(new RegExp('(?<![\\p{L}\\p{N}])' + escaped + '(?![\\p{L}\\p{N}])', 'gu'));
+    if (match && !repeated) mentions.push({ title, start: match.index, end: match.index + match[0].length });
+  }
+  mentions.sort((a, b) => a.start - b.start);
+  if (mentions.length < 2 || mentions.some((item, index) => index > 0 && mentions[index - 1]!.end > item.start)) return;
+  return mentions.map(({ title }) => title);
+};
+
 /** Complete examples only when the capture supplies every argument. Unknown
  * text stays with the author; examples never choose a value or execute. */
 const addControlCallExamples = (context: { pages: Record<string, unknown>[]; [key: string]: unknown }, tool: string,
@@ -114,12 +141,11 @@ const addControlCallExamples = (context: { pages: Record<string, unknown>[]; [ke
   return count ? candidate : context;
 };
 
-/** Facts from the latest retained usable observation in each owning tab. No
- * guessed next action, task interpretation or extra browser read. */
+/** Facts from the latest retained usable observation in each owning tab. */
 export const browserCurrentContext = (calls: readonly ChatPriorToolCall[], actTool?: string,
-  attachments: readonly { file_ref: string }[] = []): Record<string, unknown> | undefined => {
+  attachments: readonly { file_ref: string }[] = [], request = ''): Record<string, unknown> | undefined => {
   const emptyComputation = latestEmptyComputation(calls);
-  const latest = new Map<string, { position: number; value: Record<string, unknown> }>();
+  const latest = new Map<string, { position: number; value: Record<string, unknown>; fields?: unknown }>();
   for (const [index, call] of calls.entries()) {
     if (!trusted(call)) continue;
     const run = call.result;
@@ -132,7 +158,8 @@ export const browserCurrentContext = (calls: readonly ChatPriorToolCall[], actTo
       const value = { source_call: index + 1, observation_id: read.context.observation_id, page, url, read_state: read.state,
         ...(targets ? { interaction_targets: { ...targets, items: targets.items.map(item => ({ ...item, target: { page, ref: item.ref } })) } } : {}) };
       const order = index * 100 + position, tab = browserTabKey(page);
-      if (!latest.has(tab) || latest.get(tab)!.position <= order) latest.set(tab, { position: order, value });
+      if (!latest.has(tab) || latest.get(tab)!.position <= order) latest.set(tab, { position: order, value,
+        fields: read.state.loading === false && read.context.latest_for_same_scope === true ? v.field_evidence : undefined });
     };
     for (const { value } of passiveViews(run)) if (object(value.view)) add(value.view, value.view.page, value.view.url,
       Number(value.after_step ?? value.step) + 0.5);
@@ -159,12 +186,29 @@ export const browserCurrentContext = (calls: readonly ChatPriorToolCall[], actTo
     pages.push(value); result.omitted_tabs--;
   }
   for (const page of pages) {
-    if (!object(page.interaction_targets) || page.interaction_targets.captured_editable_fields !== 0) continue;
-    page.typing_context = { observed_editable_fields: 0, type_step_supported_by_capture: false, capture_only: true,
-      note: Number(page.interaction_targets.captured_upload_fields) > 0
-        ? 'This capture supports upload, not type, for its file input. Use an exact current-turn attachment file_ref with do:upload and the owning page/ref. Incomplete coverage does not prove other fields absent.'
-        : 'This capture supports no type step. Obtain an observed editable target before authoring type; never invent a field ref or selector from the task or tool examples. If navigation is needed, choose an observed link; otherwise obtain the missing field evidence. Incomplete coverage does not prove fields are absent from the live page.' };
-    if (JSON.stringify(result).length > 6_000) delete page.typing_context;
+    const targets = page.interaction_targets;
+    if (!object(targets) || !Array.isArray(targets.items)) continue;
+    if (targets.captured_editable_fields === 0) {
+      const multiple = targets.items.some(item => item.multiple === true);
+      page.typing_context = { observed_editable_fields: 0, type_step_supported_by_capture: false, capture_only: true,
+        note: multiple ? 'Select all requested files together with one upload step and files containing their exact canonical file_refs. Separate uploads replace the selection.'
+          : Number(targets.captured_upload_fields) > 0
+            ? 'This capture supports upload, not type, for its file input. Use an exact current-turn attachment file_ref with do:upload and the owning page/ref. Incomplete coverage does not prove other fields absent.'
+            : 'This capture supports no type step. Obtain an observed editable target before authoring type; never invent a field ref or selector from the task or tool examples. If navigation is needed, choose an observed link; otherwise obtain the missing field evidence. Incomplete coverage does not prove fields are absent from the live page.' };
+      if (JSON.stringify(result).length > 6_000) delete page.typing_context;
+    }
+    const editor = targets.items.find(item => item.actions.includes('type') && ['', 'true'].includes(String(item.contenteditable).toLowerCase()));
+    if (editor !== undefined) {
+      page.editor_context = {
+        read: { tool: 'recued-core/read-web-element', args: { page: page.page, ref: editor.ref, form: 'html' } },
+        note: 'For a partial edit that preserves formatting or links, read the editor as HTML first. Use a matching editor_editing target with plain replacement text. Typing into the whole editor replaces its contents with literal text.',
+      };
+      if (JSON.stringify(result).length > 6_000) delete page.editor_context;
+    }
+    if (Number(targets.captured_drag_sources) > 0) {
+      page.drag_context = 'Use do:drag with the draggable ref and drop:{ref} or drop:{selector} on the same page. Choose the destination by its label in drag_destinations. For further selector evidence use read-web-element with form:html.';
+      if (JSON.stringify(result).length > 6_000) delete page.drag_context;
+    }
   }
   if (emptyComputation) {
     result.latest_computation = emptyComputation;
@@ -172,6 +216,13 @@ export const browserCurrentContext = (calls: readonly ChatPriorToolCall[], actTo
   }
   result.collection_limits = { max_pages: BROWSER_COLLECT_MAX_PAGES, max_items: BROWSER_COLLECT_MAX_ITEMS, max_seconds: BROWSER_COLLECT_MAX_SECONDS };
   if (JSON.stringify(result).length > 6_000) delete result.collection_limits;
+  const normalizedRequest = normalizeMention(request);
+  for (const page of pages) {
+    const matches = titlesInRequestOrder(latest.get(browserTabKey(String(page.page)))?.fields, normalizedRequest);
+    if (!matches) continue;
+    page.titles_in_request_order = matches;
+    if (JSON.stringify(result).length > 6_000) delete page.titles_in_request_order;
+  }
   return pages.length || result.latest_computation ? actTool && /^(recued-core|kitchen)\/act-on-web-page$/.test(actTool) ? addControlCallExamples(result, actTool, attachments) : result : undefined;
 };
 

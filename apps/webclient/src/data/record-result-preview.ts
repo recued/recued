@@ -9,7 +9,7 @@ export type RecordResultPreviewData = Extract<WorkLinkPreviewResult, { state: 'm
   | (Extract<WorkLinkPreviewResult, { state: 'ready' }> & { reference: ExactRecordLinkMatch });
 export type RecordResultPreviewView = { owner: string; key: string; stamp: string; title: string } &
   (RecordResultPreviewData | { state: 'loading' | 'error'; message?: string }) & { checking?: boolean; error?: string };
-const stamp = (option: LinkOption) => JSON.stringify([option.target.hash, option.received_at, option.exact?.identity, option.shortcut ? pinnedRecordIdentity(option.shortcut) : null]);
+const stamp = (option: LinkOption) => JSON.stringify([option.target.hash, option.received_at, option.exact?.identity ?? option.expectedIdentity, option.shortcut ? pinnedRecordIdentity(option.shortcut) : null]);
 const missing = (): RecordResultPreviewData => ({ state: 'missing', message: 'This record is no longer available with the same details. Refresh the results and try again.' });
 
 /** Explicit previews read only the chosen record. The current lifetime token is
@@ -30,7 +30,8 @@ export const readRecordResultPreview = async (option: LinkOption, readers: Recor
     } } : {}),
   }, href, result => { projection = result; });
   if (selected.state !== 'ready') return selected;
-  if (!projection || option.exact && selected.match.identity !== option.exact.identity) return missing();
+  const expectedIdentity = option.exact?.identity ?? option.expectedIdentity;
+  if (!projection || expectedIdentity !== undefined && selected.match.identity !== expectedIdentity) return missing();
   return { ...projection, details: [...(sourceLabel ? ['Source: ' + sourceLabel] : []), ...projection.details], reference: selected.match };
 };
 

@@ -100,6 +100,7 @@ export interface MailComposeDialogProps {
   attachmentBusy?: boolean;
   savedDraft?: {
     status: string; scheduling: boolean; runAt: string; busyLabel?: string;
+    sendIfNoReply?: boolean;
     /** D-269 — the SERVER's resolved zone, so "Send at" can say what the picked
      *  time means on the machine that will dispatch it.
      *
@@ -118,6 +119,9 @@ export interface MailComposeDialogProps {
   copyRecipientsOpen?: boolean;
   replySubject?: string;
   recovery?: { message: string; locked: boolean; approvalsHref: string; historyHref: string };
+  replyWatch?: { show?: boolean; available: boolean; scheduled?: boolean; enabled: boolean; afterMs: number; notifyOnReply: boolean; pendingHref?: string;
+    waitingFor?: { selected: string; recipients: string[]; problem?: string };
+    taskTracking?: { checked: boolean; available: boolean; title?: string; message?: string }; taskTrackingStatus?: string };
 }
 
 const dialogTitle = (state: MailComposeDialogState): string =>
@@ -216,6 +220,77 @@ export const renderMailComposeDialog = (
   // strand the request mid-call.
   const closeLockAttr =
     props.state.submitting === true ? ' aria-disabled="true" disabled' : '';
+  const fieldsLocked = props.state.submitting || props.recovery?.locked || props.discardConfirm;
+  const fieldsAttr = fieldsLocked ? ' disabled' : '';
+  const { savedDraft, replyWatch } = props;
+  const schedule = savedDraft?.scheduling ? savedDraft : undefined;
+  // datetime-local uses the browser clock. Show the dispatch time on the server
+  // clock when its zone differs.
+  const picked = schedule ? Date.parse(schedule.runAt) : NaN;
+  const serverTime = Number.isFinite(picked) ? describePickedInstantOnServer(picked, schedule?.serverTimeZone) : null;
+  const task = replyWatch?.taskTracking;
+  const delivery = `
+    ${sendUnavailable}
+    ${schedule ? `<fieldset class="mail-compose-options"${submittingAttr}>
+      <legend>Before sending</legend>
+      <label class="mail-compose-option-field">Send at
+        <input type="datetime-local" data-mail-draft-time value="${e(schedule.runAt)}"${submittingAttr}>
+      </label>
+      ${serverTime === null ? '' : `<p data-mail-draft-server-time>${e(serverTime)}</p>`}
+      ${schedule.sendIfNoReply !== undefined ? `<label class="mail-compose-option-check">
+        <input type="checkbox" data-mail-schedule-condition${schedule.sendIfNoReply ? ' checked' : ''}${submittingAttr}>
+        <span>Skip if they’ve replied</span>
+      </label>` : ''}
+    </fieldset>` : ''}
+    ${replyWatch && (replyWatch.show || replyWatch.available || replyWatch.enabled || replyWatch.pendingHref) ? `<fieldset class="mail-compose-options"${submittingAttr}>
+      <legend>After sending</legend>
+      <label class="mail-compose-option-check">
+        <input type="checkbox" data-mail-follow-up-control="enabled"${replyWatch.enabled ? ' checked' : ''}${!replyWatch.available && !replyWatch.enabled ? ' aria-disabled="true"' : ''}>
+        <span>Watch for a reply</span>
+      </label>
+      ${!replyWatch.available && !replyWatch.enabled ? '<p>Reply watches from the composer are unavailable on this server.</p>' : ''}
+      ${replyWatch.enabled ? `<label class="mail-compose-option-field">Check for a reply after
+        <select data-mail-follow-up-control="after" aria-label="Reply check interval">${[
+          [3600000, '1 hour'], [86400000, '1 day'], [172800000, '2 days'], [604800000, '1 week'],
+          ...([3600000, 86400000, 172800000, 604800000].includes(replyWatch.afterMs) ? [] : [[replyWatch.afterMs, `${replyWatch.afterMs / 3600000} hours`]]),
+        ].map(([value, label]) => `<option value="${value}"${value === replyWatch.afterMs ? ' selected' : ''}>${label}</option>`).join('')}</select>
+      </label>
+      ${replyWatch.waitingFor ? `<label class="mail-compose-option-field">Waiting for
+        <select data-mail-follow-up-control="waiting-for">
+          ${replyWatch.waitingFor.problem ? '<option value="__review__" disabled selected>Choose who to wait for</option>' : ''}
+          <option value=""${!replyWatch.waitingFor.problem && !replyWatch.waitingFor.selected ? ' selected' : ''}>Anyone on To/Cc</option>
+          ${replyWatch.waitingFor.recipients.map(address => `<option value="${e(address)}"${!replyWatch.waitingFor!.problem && replyWatch.waitingFor!.selected === address ? ' selected' : ''}>${e(address)}</option>`).join('')}
+        </select>
+      </label>${replyWatch.waitingFor.problem ? `<p role="status">${e(replyWatch.waitingFor.problem)}</p>` : ''}` : ''}
+      <label class="mail-compose-option-check">
+        <input type="checkbox" data-mail-follow-up-control="notify"${replyWatch.notifyOnReply ? ' checked' : ''}>
+        <span>Notify me when a reply arrives</span>
+      </label>
+      <p>${replyWatch.available
+        ? `The interval starts when the email is sent. Recued verifies the Sent copy before starting the watch.${replyWatch.scheduled ? '' : ' This server supports watches with Send.'}`
+        : 'This server cannot start reply watches from the composer. Turn off the watch to send this email, or keep it for later.'}</p>` : ''}
+      ${replyWatch.pendingHref ? `<a href="${e(replyWatch.pendingHref)}">View reply watch request</a>` : ''}
+    </fieldset>` : ''}
+    ${replyWatch?.enabled && (task || replyWatch.taskTrackingStatus) ? `<fieldset class="mail-compose-options"${submittingAttr}>
+      <legend>After Sent verification</legend>
+      ${task ? `<label class="mail-compose-option-check">
+        <input type="checkbox" data-mail-follow-up-control="task"${task.checked ? ' checked' : ''}${!task.checked && !task.available ? ' disabled' : ''}>
+        <span>Keep tracking ${task.title ? `“${e(task.title)}”` : 'this task'}</span>
+      </label>
+      <p>${e(task.message ?? 'Moves the task link to the new reply watch once Recued verifies the exact sent email.')}</p>` : ''}
+      ${replyWatch.taskTrackingStatus ? `<p role="status">${e(replyWatch.taskTrackingStatus)}</p>` : ''}
+    </fieldset>` : ''}
+    ${savedDraft ? `<div class="mail-compose-draft-actions">
+      <button type="button" data-action="save-mail-draft"${draftAttr}>${renderActionIcon('save')}<span>Save draft</span></button>
+      <button type="button" data-action="save-mail-draft-to-mailbox"${mailboxAttr} title="${
+        cannotSaveToMailbox
+          ? 'This mailbox cannot keep drafts in its own Drafts folder.'
+          : 'Save a copy into this account&#39;s Drafts folder so you can finish it in your mail app.'
+      }">${renderActionIcon('mailbox')}<span>${savedDraft.mailboxStatus ?? 'Save to mailbox'}</span></button>
+    </div>
+    <p role="status" data-mail-draft-status>${e(savedDraft.status)}</p>` : ''}
+    ${submitError}
+  `.trim();
   return `
     <div
       class="mail-compose-backdrop"
@@ -242,67 +317,48 @@ export const renderMailComposeDialog = (
         ${props.discardConfirm ? `<div class="mail-compose-discard" role="alertdialog" aria-modal="true" aria-labelledby="mail-compose-leave-title"><p id="mail-compose-leave-title">${props.recovery ? 'Keep this email for later?' : 'Discard this unsaved draft?'}</p>${props.recovery ? '<p>Keep this draft in this browser tab for up to 7 days, discard it, or continue editing.</p>' : ''}${props.discardError ? `<p role="alert">${e(props.discardError)}</p>` : ''}<div class="mail-compose-discard-actions"><button type="button" data-action="keep-mail-compose">Keep editing</button>${props.recovery ? `<button type="button" data-action="keep-mail-compose-for-later"${props.state.submitting || assistBusy || attachmentBusy ? ' disabled' : ''}>Keep draft for later</button>` : ''}<button type="button" data-action="discard-mail-compose">Discard draft</button></div></div>` : ''}
         <div class="mail-compose-body">
           <form class="mail-compose-form" data-form-kind="mail_message">
-            ${props.recovery ? `<div class="mail-compose-recovery"><p role="status" data-mail-compose-recovery-status>${e(props.recovery.message)}</p>
-              ${props.recovery.locked ? `<p><a href="${e(props.recovery.approvalsHref)}">Open Approvals</a> · <a href="${e(props.recovery.historyHref)}">Recipe run history</a></p>` : ''}</div>` : ''}
-            <fieldset class="mail-compose-fields" aria-label="Message details"${props.state.submitting || props.recovery?.locked || props.discardConfirm ? ' disabled' : ''}>
-            ${senderPicker}
-            ${props.replySubject ? `<p class="mail-compose-reply-context">Replying to <strong>${e(props.replySubject)}</strong></p>` : ''}
-            ${fields('to')}
-            <details class="mail-compose-copy-recipients" data-mail-compose-copy-recipients${copyRecipientsOpen || props.state.errors.cc || props.state.errors.bcc ? ' open' : ''}>
-              <summary>Cc and Bcc${copyCount ? ` (${copyCount})` : ''}</summary>
-              ${fields('copies')}
-            </details>
-            ${fields('message')}
-            ${props.state.original_attachments_omitted ? '<p role="status" class="mail-compose-reply-context">Original attachments are not added automatically. Add any files you want to forward below.</p>' : ''}
-            ${renderMailComposeAttachmentPicker({
-              attachment_ids: props.state.values.attachments,
-              known: props.attachments ?? [],
-              submitting: props.state.submitting || props.recovery?.locked || assistBusy || attachmentBusy,
-            })}
-            ${submitError}
-            ${sendUnavailable}
-            ${props.savedDraft ? `<p role="status" data-mail-draft-status>${e(props.savedDraft.status)}</p>
-              ${props.savedDraft.scheduling ? `<label>Send at <input type="datetime-local" data-mail-draft-time value="${e(props.savedDraft.runAt)}"${submittingAttr}></label>
-                ${((): string => {
-                  // D-269 — a `datetime-local` is read in the BROWSER's zone and
-                  // the send is dispatched by the SERVER. The instant is right;
-                  // the sentence saying which clock was missing. Silent when the
-                  // two agree.
-                  const picked = Date.parse(props.savedDraft!.runAt);
-                  if (!Number.isFinite(picked)) return '';
-                  const note = describePickedInstantOnServer(
-                    picked, props.savedDraft!.serverTimeZone,
-                  );
-                  return note === null ? '' : `<p data-mail-draft-server-time>${e(note)}</p>`;
-                })()}
-                <p>You will review the complete message and timing before approving the scheduled send.</p>` : ''}` : ''}
-            <footer class="mail-compose-actions">
-              ${props.savedDraft ? `<button type="button" data-action="save-mail-draft"${draftAttr}>${renderActionIcon('save')}<span>Save draft</span></button>
-                <button type="button" data-action="save-mail-draft-to-mailbox"${mailboxAttr} title="${
-                  cannotSaveToMailbox
-                    ? 'This mailbox cannot keep drafts in its own Drafts folder.'
-                    : 'Save a copy into this account&#39;s Drafts folder so you can finish it in your mail app.'
-                }">${renderActionIcon('mailbox')}<span>${props.savedDraft.mailboxStatus ?? 'Save to mailbox'}</span></button>
-                <button type="button" data-action="schedule-mail-draft"${submittingAttr}>${renderActionIcon('schedule')}<span>${props.savedDraft.scheduling ? 'Review scheduled send' : 'Schedule…'}</span></button>` : ''}
-              <button
-                type="button"
-                class="mail-compose-cancel"
-                data-action="close-mail-compose"${closeLockAttr}
-              >Cancel</button>
-              <button
-                type="button"
-                class="mail-compose-submit"
-                data-action="submit-mail-compose"${submittingAttr}
-              >${renderActionIcon('send')}<span>${e(submitLabel)}</span></button>
-            </footer>
-            </fieldset>
+            <div class="mail-compose-message">
+              ${props.recovery ? `<div class="mail-compose-recovery"><p role="status" data-mail-compose-recovery-status>${e(props.recovery.message)}</p>
+                ${props.recovery.locked ? `<p><a href="${e(props.recovery.approvalsHref)}">Open Approvals</a> · <a href="${e(props.recovery.historyHref)}">Recipe run history</a></p>` : ''}</div>` : ''}
+              <fieldset class="mail-compose-fields" aria-label="Message details"${fieldsAttr}>
+                ${senderPicker}
+                ${props.replySubject ? `<p class="mail-compose-reply-context">Replying to <strong>${e(props.replySubject)}</strong></p>` : ''}
+                ${fields('to')}
+                <details class="mail-compose-copy-recipients" data-mail-compose-copy-recipients${copyRecipientsOpen || props.state.errors.cc || props.state.errors.bcc ? ' open' : ''}>
+                  <summary>Cc and Bcc${copyCount ? ` (${copyCount})` : ''}</summary>
+                  ${fields('copies')}
+                </details>
+                ${fields('message')}
+                ${props.state.original_attachments_omitted ? '<p role="status" class="mail-compose-reply-context">Original attachments are not added automatically. Add any files you want to forward below.</p>' : ''}
+                ${renderMailComposeAttachmentPicker({
+                  attachment_ids: props.state.values.attachments,
+                  known: props.attachments ?? [],
+                  submitting: props.state.submitting || props.recovery?.locked || assistBusy || attachmentBusy,
+                })}
+              </fieldset>
+            </div>
+            <div class="mail-compose-side">
+              ${delivery.length === 0 ? '' : `<fieldset class="mail-compose-delivery" aria-label="Delivery and drafts"${fieldsAttr}>${delivery}</fieldset>`}
+              ${renderAiAssistSidebar({
+                submitting: props.state.submitting || props.recovery?.locked || attachmentBusy || props.discardConfirm === true,
+                mode: props.state.mode,
+                ...props.aiAssist,
+              })}
+            </div>
           </form>
-          ${renderAiAssistSidebar({
-            submitting: props.state.submitting || props.recovery?.locked || attachmentBusy || props.discardConfirm === true,
-            mode: props.state.mode,
-            ...props.aiAssist,
-          })}
         </div>
+        <footer class="mail-compose-actions">
+          ${schedule ? `<button type="button" data-action="back-from-mail-schedule"${fieldsAttr}>Back to message</button>` : ''}
+          <button type="button" class="mail-compose-cancel" data-action="close-mail-compose"${closeLockAttr || fieldsAttr}>Cancel</button>
+          ${schedule
+            ? `<button type="button" class="mail-compose-submit" data-action="schedule-mail-draft"${submittingAttr}>
+                ${renderActionIcon('schedule')}<span>${e(schedule.busyLabel ?? 'Review scheduled send')}</span>
+              </button>`
+            : `${savedDraft ? `<button type="button" data-action="schedule-mail-draft"${submittingAttr}>${renderActionIcon('schedule')}<span>Schedule…</span></button>` : ''}
+              <button type="button" class="mail-compose-submit" data-action="submit-mail-compose"${submittingAttr}>
+                ${renderActionIcon('send')}<span>${e(submitLabel)}</span>
+              </button>`}
+        </footer>
       </div>
     </div>
   `;

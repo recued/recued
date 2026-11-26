@@ -56,10 +56,19 @@ describe('D-335 slice AA — a read names its page by address', () => {
     expect(String(result!.outline)).toContain('[link: Babbage](e5)');
   });
 
-  it('matched as a batch step\'s url: www, a trailing slash and the fragment aside', async () => {
+  it('matched as a batch step\'s url: www and a trailing slash aside', async () => {
     const { run, requests } = harness([HN]);
-    await run('dom-inspect', { page: 'https://www.news.ycombinator.com#top', form: 'outline' });
+    await run('dom-inspect', { page: 'https://www.news.ycombinator.com/', form: 'outline' });
     expect(requests.at(-1)).toMatchObject({ action: 'inspect', args: { page: HN.page } });
+  });
+
+  it('a fragment names a view: a tab showing the page without it is not that view (v40)', async () => {
+    // The v40 Bridge integration (11-26) matches tabs by destination, fragment kept (`browserDestinationsMatch`):
+    // a fragment may select a different view in the same document, and reading the wrong view answers wrongly.
+    const { run, requests } = harness([HN]);
+    const { error } = await run('dom-inspect', { page: 'https://www.news.ycombinator.com#top', form: 'outline' });
+    expect(error?.code).toBe('DOM_PAGE_NOT_MATCHING');
+    expect(requests.map((r) => r.action)).toEqual(['list_tabs']);
   });
 
   it('a wait names its page by address too, and waits on that tab', async () => {
@@ -75,8 +84,9 @@ describe('D-335 slice AA — a read names its page by address', () => {
     const { run, requests } = harness([HN]);
     const { error } = await run('dom-inspect', { page: 'https://en.wikipedia.org/wiki/Ada_Lovelace', form: 'text' });
     expect(error?.code).toBe('DOM_PAGE_NOT_MATCHING');
+    // Opening a page asks nothing since 2026-11-23, so the correction no longer says it does.
     expect(error?.message).toBe('No open tab shows https://en.wikipedia.org/wiki/Ada_Lovelace, and a read opens none: open it with '
-      + 'Open a web page, which asks first unless it is allowed on that site, then read it by its address or the handle that answers');
+      + 'Open a web page, then read it by its address or the handle that answers');
     expect(requests.map((r) => r.action)).toEqual(['list_tabs']);
   });
 

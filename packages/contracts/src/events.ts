@@ -358,6 +358,10 @@ export type ServerEvent =
        *  D-121 broadcast bus. Webclients render a one-way card; no
        *  response affordance. */
       kind: 'notification.notify';
+      /** Stable history identity for deduplication and an in-place status update. */
+      activity_id?: string;
+      /** Update a visible card only; never creates a new interruption. */
+      replace_existing?: boolean;
       title?: string;
       text: string;
       link_url?: string;

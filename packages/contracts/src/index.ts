@@ -20,6 +20,7 @@ export * from './browser-retained-data.js';
 export * from './browser-extraction.js';
 export * from './browser-act-authoring.js';
 export * from './browser-failure.js';
+export { BROWSER_FIELD_TAGS, isBrowserTitleTag } from './browser-field-evidence.js';
 export * from './browser-file-receipts.js';
 export * from './browser-post-action.js';
 export * from './browser-read-state.js';
@@ -102,7 +103,7 @@ export {
   crmFieldPackTypeConforms,
   vendorEntitiesFromComposition,
 } from './connection-agnostic.js';
-export { parseMailDraftId, parseMailDraftContent, readStoredMailDraftContent, parseMailDraftCreate, parseMailDraftGet, parseMailDraftUpdate, parseMailDraftDelete, parseMailDraftList,
+export { parseMailDraftId, parseMailDraftContent, mailDraftRecipeConfig, readStoredMailDraftContent, parseMailDraftCreate, parseMailDraftGet, parseMailDraftUpdate, parseMailDraftDelete, parseMailDraftList,
   type MailDraft, type MailDraftContent, type MailDraftSummary, type MailDraftCreateRequest, type MailDraftUpdateRequest, type MailDraftDeleteRequest } from './mail-drafts.js';
 
 export type {
@@ -948,7 +949,10 @@ export * from './kernel-ops.js';
 // registered closed-kind domain).
 export * from './kernel-op-registry.js';
 // D-327 — an agreement's grants, read as its key's tool list.
-export { keyToolNameForGrantEntry, keyChecklistFromAgreementGrants, keyGrantCheckName } from './key-authority.js';
+export {
+  BROWSER_JOB_TOOLS, BROWSER_TOOLKIT_RECIPE_SLUGS, isBrowserKeyTool,
+  keyToolNameForGrantEntry, keyChecklistFromAgreementGrants, keyGrantCheckName,
+} from './key-authority.js';
 export {
   COLLECTION_GUIDE,
   KERNEL_OP_GUIDE,
@@ -5141,7 +5145,11 @@ export {
   BRIDGE_TABS_MAX,
   BRIDGE_OPEN_OUTPUT_KEYS,
   BRIDGE_CLICK_OUTPUT_KEYS,
+  BRIDGE_GENERATED_DOWNLOAD_KEY,
+  BRIDGE_GENERATED_DOWNLOADS_KEY,
   BRIDGE_FILL_OUTPUT_KEYS,
+  BRIDGE_PASTE_OUTPUT_KEYS,
+  BRIDGE_TEXT_MAX_CHARS,
   BRIDGE_SUBMIT_OUTPUT_KEYS,
   BRIDGE_PICK_OUTPUT_KEYS,
   BRIDGE_PICK_MAX_MS,
@@ -5151,11 +5159,14 @@ export {
   type BridgeKeyPress,
   BRIDGE_SCROLL_OUTPUT_KEYS,
   BRIDGE_SCROLL_TO,
+  isHorizontalScrollDirection,
   type BridgeScrollTo,
   // D-335 slice X — a tab moved, closed or pointed at.
   BRIDGE_NAVIGATE_OUTPUT_KEYS,
   BRIDGE_CLOSE_OUTPUT_KEYS,
   BRIDGE_HOVER_OUTPUT_KEYS,
+  BRIDGE_DRAG_OUTPUT_KEYS,
+  BRIDGE_SEEK_OUTPUT_KEYS,
   // D-335 slice W — the element acted on, found again another day.
   BRIDGE_ACTED_ON_KEY,
   readBridgeActedOn,
@@ -5180,9 +5191,12 @@ export {
   BRIDGE_WAIT_OUTPUT_KEYS,
   BRIDGE_TABLE_MAX_ROWS,
   BRIDGE_TABLE_OUTPUT_KEYS,
+  type BridgeTableSort,
+  isBridgeTableSort,
   BRIDGE_SCREENSHOT_MAX_EDGE,
   BRIDGE_SCREENSHOT_MAX_BASE64,
   BRIDGE_FILE_MAX_BYTES,
+  BRIDGE_UPLOAD_MAX_FILES,
   BRIDGE_DOWNLOAD_OUTPUT_KEYS,
   BRIDGE_UPLOAD_OUTPUT_KEYS,
   BRIDGE_SCREENSHOT_OUTPUT_KEYS,
@@ -5730,6 +5744,26 @@ export type {
 // (work_entity.{list,get,upsert,delete}). The webclient Data route (D11)
 // talks these over the pair-WS-rpc channel; mirrors the `contact.*`
 // warehouse-CRUD family. `data.timeline` reuses TimelineRequest/Response.
+export {
+  REFUND_CREDIT_LIMIT, REFUND_STATEMENT_KIND, REFUND_STATEMENT_OWNER, REFUND_WATCH_RECIPE,
+  formatRefundCents, refundCents, refundWatchOrder,
+} from './refund-credits.js';
+export {
+  FOCUS_BLOCK_RECIPE_ID, FOCUS_BLOCK_PACK, FOCUS_BLOCK_PUBLISHER, focusBlockStarterSettings,
+  isInstalledFocusBlockStarter, isReadableFocusBlockStarter,
+} from './focus-block-starter.js';
+export type { FocusBlocksPreviewRequest } from './focus-block-starter.js';
+export {
+  CUSTOMER_ACCOUNT_SCOPES, DECISION_WATCH_ENTITY, DECISION_WATCH_OWNER,
+} from './customer-decision-watch.js';
+export type {
+  CustomerAccountScope, CustomerAccountRef, CustomerAccountChoice, CustomerDecisionRef, CustomerInteractionEvidence,
+  CustomerDecisionReview, CustomerDecisionWatchView, CustomerDecisionWatchChange,
+} from './customer-decision-watch.js';
+export type {
+  RefundCreditCaseRef, RefundCreditLineRef, RefundCreditMatch, RefundCreditsChange,
+  RefundCreditsRead, RefundCreditsView, RefundStatementCredit,
+} from './refund-credits.js';
 export { WORK_ENTITY_SEARCH_KINDS } from './work-entity-rpc.js';
 export type {
   WorkEntitySearchKind,
@@ -5770,6 +5804,9 @@ export type {
   RunFeedRow,
   ExecutionListQuery,
   ExecutionListResponse,
+  ExecutionSearchCursor,
+  ExecutionSearchRequest,
+  ExecutionSearchResponse,
   ExecutionGetRequest,
   RunAuditSummary,
   RunYield,
@@ -5789,6 +5826,9 @@ export type {
 // for the owner-facing notice, the reactive predicate and the case compiler, so
 // three surfaces cannot drift into three different ideas of "produced nothing".
 export { deriveRunYield, runYieldIsTotalRefusal } from './execution-rpc.js';
+export { RUN_SEARCH_OUTCOMES, RUN_SEARCH_TIME_RANGES, parseRunSearchFilters, parseRunSearchScope,
+  sameRunSearchScope, resolveRunSearchScope, validRunYield, runHistoryOutcomeKind, runMatchesSearchScope } from './run-search-filters.js';
+export type { RunSearchFilters, RunSearchScope, RunSearchOutcome, RunSearchTimeRange, RunHistoryOutcomeKind } from './run-search-filters.js';
 export {
   runIsAuditExemptRender,
   NON_DISPATCHING_STEP_TYPES,
@@ -7268,7 +7308,7 @@ export type { RequiredConnection } from './required-connections.js';
 export { MAILBOX_ARGUMENT_OPS, recipeMailboxSettings } from './mailbox-settings.js';
 export type { MailboxCollection, MailboxSetting } from './mailbox-settings.js';
 // D-402 slice H2 — the settings that name one of the owner's browsers.
-export { recipeBrowserSettings, recipeBrowserSteps } from './browser-settings.js';
+export { browserStepBinding, recipeBrowserSettings, recipeBrowserSteps } from './browser-settings.js';
 export type { BrowserSetting, BrowserSettingStep } from './browser-settings.js';
 /** D-323 — what chat offers to install when nothing installed can do the job. */
 export { INSTALL_OFFER_LIMIT, INSTALL_OFFER_RECIPE_NAMES_LIMIT, installOffersOf } from './install-offers.js';
@@ -7456,3 +7496,8 @@ export type { SavedTextUrl, SavedWorkAddress, SavedWorkLink } from './saved-work
 export { readReminderRecordReference, sameReminderRecordReference } from './reminder.js';
 export { readReminderMailReference, sameReminderMailReference, reminderMailReference } from './reminder.js';
 export type { ReminderMailReference } from './reminder.js';
+
+export * from './mail-follow-up.js';
+export * from './mail-follow-up-recipient.js';
+export * from './mail-follow-up-send.js';
+export * from './mail-follow-up-task.js';

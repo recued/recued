@@ -10,7 +10,9 @@
  *  ⚠ A style sheet's `:hover` rule does not apply: only a real pointer sets it. A menu drawn by
  *  CSS alone stays shut, and the answer cannot tell; the read after it can.
  *
- *  ⛔ INJECTED, SO SELF-CONTAINED: nothing is imported. */
+ *  ⛔ INJECTED, SO SELF-CONTAINED: only types are imported. */
+
+import type { PageInteractionWorld } from './page-inspect.js';
 
 export const hoverPageElement = (selector: string, expectedUrl?: string | null, ref?: string | null):
   { hovered: true } | { blocked: true } | { missing: true } | { stale: true } => {
@@ -22,6 +24,9 @@ export const hoverPageElement = (selector: string, expectedUrl?: string | null, 
   if (ref != null && !found?.isConnected) return { stale: true };
   if (!found) return { missing: true };
   const element = found as HTMLElement;
+  const inertOf = (globalThis as PageInteractionWorld).recuedInertOf
+    ?? ((node: Element) => node.closest('[inert], dialog:modal')?.hasAttribute('inert') === true);
+  if (inertOf(element)) return { stale: true };
   element.scrollIntoView?.({ block: 'center', inline: 'center' });
   const box = element.getBoundingClientRect();
   const win = (element.ownerDocument.defaultView ?? window) as Window & typeof globalThis;

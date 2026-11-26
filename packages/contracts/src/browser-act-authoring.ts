@@ -2,6 +2,7 @@ import { BROWSER_ACT_MAX_STEPS, BROWSER_ACT_MAX_WAIT_SECONDS, BROWSER_ACT_READ_M
 import { BROWSER_COLLECT_MAX_ITEMS, BROWSER_COLLECT_MAX_PAGES, BROWSER_COLLECT_MAX_SECONDS } from './browser-collect.js';
 import { BROWSER_DATA_MAX_OPERATIONS, BROWSER_DATA_TRANSFORMS } from './browser-data.js';
 import { OPS } from './conditions.js';
+import { BRIDGE_SCROLL_TO, BRIDGE_UPLOAD_MAX_FILES } from './bridge.js';
 
 /** Compact common authoring surface. The strict runtime parsers remain the
  * authority for operation-specific combinations; advanced parameters are open
@@ -18,25 +19,40 @@ export const BROWSER_ACT_STEPS_ARGUMENT_SCHEMA = {
     if: { properties: { do: { const: 'collect' } }, required: ['do'] },
     then: { required: ['items', 'fields', 'max_pages'] },
   }, {
+    if: { properties: { do: { const: 'seek' } }, required: ['do'] },
+    then: { required: ['at_seconds'], oneOf: [{ required: ['ref'] }, { required: ['selector'] }, { required: ['text'] }] },
+  }, {
     if: { properties: { do: { const: 'data' } }, required: ['do'] },
     then: { not: { required: ['id'] } },
   }], properties: {
-    do: { type: 'string', enum: ['type', 'click', 'press', 'submit', 'wait', 'read', 'collect', 'data', 'table', 'ask', 'scroll', 'go', 'back', 'reload', 'close', 'hover', 'download', 'upload'],
+    do: { type: 'string', enum: ['type', 'click', 'press', 'submit', 'wait', 'read', 'collect', 'data', 'table', 'ask', 'scroll', 'go', 'back', 'reload', 'close', 'hover', 'drag', 'seek', 'download', 'upload'],
       description: `Choose an operation supported by the observed target. type requires a captured editable target; links/buttons use click. For an unfamiliar destination, batch its observed click and a read. collect requires max_pages (integer 1-${BROWSER_COLLECT_MAX_PAGES}); max_items is integer 1-${BROWSER_COLLECT_MAX_ITEMS}. Larger limits refuse the whole batch before actions.` },
     page: { type: 'string', description: 'Each new browser batch needs a starting page: supply the call page or the first step page/url. Later steps in that batch may omit page to follow its current tab, including a read after navigation. Exact returned document handle for observed refs; copy page/ref together. A URL does not bind refs after navigation. Do not combine with url.' },
     url: { type: 'string', description: 'HTTP/S address of this step\'s tab; use page for a handle. Do not combine with page.' },
     ref: { type: 'string', pattern: '^e[1-9]\\d{0,8}$', description: 'Observed outline ref for an action, table or scoped read. [button: Save](e13) means {"do":"click","ref":"e13"}; e13 belongs in ref, not selector. Refs name one document: page must be its returned handle after navigation. Wait does not take ref.' },
     selector: { type: 'string', description: 'Observed CSS selector for an action, table, wait or scoped read. A read selects one matching root, not all matches. matched_count counts matches; selected_index is 1-based DOM order: 1=first, 2=second. Complete covers only that root subtree, not another ordinal or the full page. Outline refs such as e13 belong in ref.' },
     role: { type: 'string', description: 'Element action: optionally narrow an observed text label by its role, such as button or link.' },
-    value: { type: 'string', description: 'Type: replacement text, username/email or an observed native select option; checkbox uses "true"/"false", radio "true". Password/PIN/sign-in code use secret instead; omit value for those steps.' },
-    key: { type: 'string', description: 'Press: key such as Enter, Escape or Tab, with supported modifiers when needed.' },
+    value: { type: 'string', description: 'Type: actual text or an observed native option. Finish any data call first and copy its result into value. $input and {{...}} are literal text here. Set delivery:"paste" for a paste event. Checkbox uses "true"/"false", radio "true". Password/PIN/sign-in code use secret.' },
+    key: { type: 'string', description: 'Press: a key such as ArrowDown, Enter, Escape or Tab. Supply the observed target ref or selector. Use the focus owner ref to move within a focused widget.' },
+    at_seconds: { type: 'number', minimum: 0, description: 'Seek: absolute playback timestamp in seconds on an observed audio or video element. Preserves play/pause.' },
+    count: { type: 'integer', enum: [1, 2], description: 'Click only. Set count: 2 for one double-click gesture on the observed target. Default 1.' },
+    download_wait: { type: 'number', exclusiveMinimum: 0, maximum: BROWSER_ACT_MAX_WAIT_SECONDS,
+      description: 'Click: seconds to wait for a generated export. For an observed file link use do:"download" with its ref. Returns stored file_ref values.' },
     secret: { type: 'string', enum: ['password', 'PIN', 'sign-in code'], description: 'Type: supported site-bound secret entry. Name the observed field by ref/selector/text and omit value. The server uses a saved secret or asks the owner outside the model; it types the answer into that field.' },
     submit: { type: 'boolean', description: 'Type: true sends the field\'s form after filling. Submit only when requested.' },
     pick: { type: 'string', description: 'Type: exact observed suggestion label to choose after typing.' },
     address: { type: 'string', description: 'Go: destination URL. Download: observed file URL. url/page select the tab, not the destination.' },
     file: { type: 'string', pattern: '^file:[0-9a-f]{32}$', description: 'Upload: copy the entire returned file: reference with exactly 32 lowercase hex digits. Attachment references name stored files; use their exact canonical value.' },
+    files: { type: 'array', minItems: 1, maxItems: BRIDGE_UPLOAD_MAX_FILES, uniqueItems: true,
+      items: { type: 'string', pattern: '^file:[0-9a-f]{32}$' },
+      description: 'Upload uses files instead of file for several stored files in one selection or drop.' },
+    delivery: { type: 'string', enum: ['paste', 'drop'], description: 'Type: "paste" sends the provided value as plain-text paste data (including tabs and newlines) to the observed field or paste area. Read the result before submitting. Upload: "drop" delivers stored files to an observed drop area. Omit for ordinary typing or a file input.' },
+    drop: { type: 'object', additionalProperties: false, oneOf: [{ required: ['ref'] }, { required: ['selector'] }],
+      properties: { ref: { type: 'string', pattern: '^e[1-9]\\d{0,8}$' }, selector: { type: 'string' } },
+      description: 'Drag goes from the draggable element named by the step ref or selector to this observed target on the same page.' },
     question: { type: 'string', description: 'Ask: page question; invokes a separate AI. Use read/table for direct extraction.' },
-    to: { type: 'string', enum: ['next', 'previous', 'top', 'bottom'], description: 'Scroll direction; next is default. This is scrolling, not pagination.' },
+    to: { type: 'string', enum: [...BRIDGE_SCROLL_TO],
+      description: 'Scroll direction. next and previous move vertically, left and right horizontally. Scope by ref or selector when the page has several panels. Defaults to next.' },
     screen: { type: 'integer', minimum: 1, description: 'Scroll: numbered screen from the top, instead of to.' },
     success_when: { type: 'object', additionalProperties: false, properties: {
       page_changes: { type: 'boolean', description: 'Document/address navigation, not an in-place DOM update. Same-URL pagination needs wait/read or an observed result condition.' },

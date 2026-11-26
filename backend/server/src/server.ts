@@ -404,6 +404,11 @@ export interface ServerConfig {
   /** D-315 — the owner's mail templates and standards switches (`mail_fact.*`). */
   mailFactRpcDeps?: import('./mail-facts/mail-fact-rpc-handler.js').MailFactRpcDeps;
   mailWorkService?: import('./mail-work-service.js').MailWorkService;
+  /** Mail follow-ups (`mail.follow_up.*`) and the follow-up checks a held run makes. ⛔ Forwarded by name below like
+   *  every member: undeclared here, `composeListeners` set it inside a conditional spread, nothing carried it to the
+   *  websocket binding, and every `mail.follow_up.*` call answered `unknown_method` on a real server while each
+   *  handler's own test stayed green (found at the 26.11.26 cut by `server-config-forwarding.test.ts`). */
+  mailFollowUpDeps?: import('./mail-follow-up-rpc-handler.js').MailFollowUpRpcDeps;
   /** D-221 owner-only pack Records explorer and lifecycle rpc deps. */
   recordsRpcDeps?: import('./records-rpc-handler.js').RecordsRpcDeps;
   /** D-403 — the owner's storage view and purge. */
@@ -1639,6 +1644,7 @@ export const createServerHandlerSet = (config: ServerConfig = {}): ServerHandler
     formResponseDeps: config.formResponseDeps,
     mailFactRpcDeps: config.mailFactRpcDeps,
     mailWorkService: config.mailWorkService,
+    mailFollowUpDeps: config.mailFollowUpDeps,
     recordsRpcDeps: config.recordsRpcDeps,
     ownerStorageRpcDeps: config.ownerStorageRpcDeps,
     savedDataViewStore: config.savedDataViewStore,

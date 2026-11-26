@@ -228,6 +228,7 @@ export const composeObservabilityRpcDeps = (
           checkpointStore,
           commitStore,
           serverInstanceId,
+          recipeNameOf: id => recipeStore.get(id)?.metadata?.name,
           ...(gatedActionStore !== undefined ? { gatedActionStore } : {}),
           ...(settledRunResults !== undefined ? { settledRunResults } : {}),
           ...(triggerPreapprovals !== undefined ? { triggerPreapprovals } : {}),

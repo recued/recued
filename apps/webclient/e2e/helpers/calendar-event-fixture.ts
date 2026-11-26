@@ -94,6 +94,11 @@ export const installCalendarEventFixture = async (page: Page, mode: CalendarEven
       readPending() { return releaseRead !== undefined; },
       releaseRead(fail = false) { if (!releaseRead) throw new Error('No calendar read is waiting.'); const done = releaseRead; releaseRead = undefined; done(fail); },
       changeSavedTitle(title: string) { saved.event.summary = title; saved.resource_version = `v${++version}`; },
+      moveSavedEvent(start: number) {
+        saved.event.end_at = start + (saved.event.end_at - saved.event.start_at);
+        saved.event.start_at = start;
+        saved.resource_version = `v${++version}`;
+      },
       saved: view,
     };
     const overlapRequests: CalendarOverlapRequest[] = [];
@@ -274,7 +279,7 @@ declare global { interface Window { __calendarEvent: {
   removeOnDecline(): void; allowResponses(allowed: boolean): void;
   failNextSave(): void; loseNextReply(): void; holdNextSave(): void; releaseSave(fail?: boolean): void;
   holdNextRead(): void; releaseRead(fail?: boolean): void; readPending(): boolean;
-  changeSavedTitle(title: string): void; saved(): CalendarEventSnapshot;
+  changeSavedTitle(title: string): void; moveSavedEvent(start: number): void; saved(): CalendarEventSnapshot;
 } } }
 declare global { interface Window { __calendarAgenda: {
   reads: { slug: string; offset: number; from: number; before: number; allDay: boolean }[];

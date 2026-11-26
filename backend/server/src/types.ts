@@ -224,6 +224,8 @@ export interface ApprovedRunFailure {
  *  builder — a misbehaving dispatcher cannot accidentally overwrite an
  *  unrelated run's audit row by setting these fields. */
 export interface InternalExecuteOverrides {
+  /** Host-side proof for a surface that offered the exact installed recipe. */
+  verifyRecipe?: (recipe: import('@recued/contracts').RecipeDefinition) => void;
   /** D-402 slice F3 (§7.4) — the owner's answer to the question before this run: "Yes, this time",
    *  "Always, for this recipe" or "Ask me at each step". Set only by the resumer as it starts a run
    *  held before step 1 afresh, never by an ExecuteRequest: the run is not asked again. */
@@ -298,7 +300,7 @@ export interface InternalExecuteOverrides {
   onRunMinted?: (run_id: string) => void;
   /** Host-only durable subscriber receipt. Must commit before recipe execution;
    * a failed claim aborts rather than entering a second run. Never wire input. */
-  beforeRunStart?: (run_id: string) => void;
+  beforeRunStart?: (run_id: string) => void | Promise<void>;
   /** Stable receipt for the checkpointed gated STEP being resumed. It is not
    * the run id (a run can gate more than once) and not an ask id (one ask can
    * cover many steps and be re-rendered). Populated only by the host resumer. */

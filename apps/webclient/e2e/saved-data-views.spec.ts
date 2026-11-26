@@ -105,12 +105,12 @@ test('Saved views keeps a failed Refresh focused for a quiet retry', async ({ pa
   const f = await openManagedViews(page);
   await page.evaluate(() => {
     let fail = true;
-    window.__connectionsFixture = async method => {
+    Object.assign(window, { __connectionsFixture: async (method: string) => {
       if (method === 'data_views.list' && fail) {
         fail = false; return { error: { code: 'unavailable', message: 'Saved views are temporarily unavailable.' } };
       }
       return undefined;
-    };
+    } });
   });
   const refresh = tools(page).locator('[data-view-action="refresh"]');
   await refresh.focus(); await refresh.press('Enter');
@@ -170,7 +170,30 @@ test('a pending Saved views refresh adds no navigation blocker and cannot reclai
   await expect(page.getByRole('dialog')).toHaveCount(0);
 });
 
+test('a Data refresh during a Save view click keeps its pressed control connected and saves once', async ({ page }) => {
+  await page.goto(`${URL_BASE}?data=contacts#data/contact`);
+  await ready(page);
+  await page.evaluate(() => window.__app.holdRpcResponses?.('contact.search.local'));
+  const before = await page.evaluate(() => window.__app.rpcCallCount('contact.search.local'));
+  await query(page).fill('Acme');
+  await expect.poll(() => page.evaluate(() => window.__app.rpcCallCount('contact.search.local'))).toBeGreaterThan(before);
+  await tools(page).getByRole('button', { name: 'Save current view', exact: true }).click();
+  await tools(page).getByLabel('View name', { exact: true }).fill('Keep the pressed save');
+  const save = tools(page).getByRole('button', { name: 'Save view', exact: true });
+  await save.hover(); await page.mouse.down();
+  const pressed = await save.elementHandle();
+  expect(await page.evaluate(() => window.__app.releaseRpcResponses?.('contact.search.local'))).toBeGreaterThan(0);
+  await expect(page.getByText('No contacts match your search.', { exact: true })).toBeVisible();
+  await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  expect(await pressed!.evaluate(node => node.isConnected)).toBe(true);
+  await page.mouse.up();
+  await expect(tools(page).locator('[data-view-notice]')).toContainText('Saved “Keep the pressed save”');
+  const stored = await page.evaluate(() => JSON.parse(sessionStorage.getItem('recued-test-saved-data-views') ?? '[]'));
+  expect(stored).toHaveLength(1); expect(stored[0]).toMatchObject({ name: 'Keep the pressed save', definition: { tab: 'contact', query: 'Acme' } });
+});
+
 test('Saved views persist search settings through reload, rename, Back, and deletion', async ({ page }) => {
+  await page.setViewportSize({ width: 1100, height: 900 });
   const errors: string[] = [];
   page.on('pageerror', (error) => errors.push(error.message));
   await page.goto(`${URL_BASE}?data=contacts#data/contact`);
@@ -248,7 +271,7 @@ test('Saved views still open from a pre-D-291 #data/view bookmark', async ({ pag
 
   await page.evaluate((legacy) => window.__app.setHash(legacy), `#data/view/${id}`);
   await expect(query(page)).toHaveValue('Acme');
-  await expect(tools(page).locator('.saved-data-opened')).toContainText('Acme');
+  await expect(tools(page).getByRole('button', { name: 'Update view', exact: true })).toBeVisible();
 });
 
 test('Saved views keep a missing or unavailable bookmark explicit and retryable', async ({ page }) => {
@@ -292,7 +315,7 @@ test('Saved views discard a delayed bookmark load after navigation', async ({ pa
 
 test('Saved views keep a save single-flight and remain usable on a phone', async ({ page }) => {
   await page.setViewportSize({ width: 375, height: 812 });
-  await page.goto(`${URL_BASE}?data=contacts&saved_views_write=slow#data/contact`);
+  await page.goto(`${URL_BASE}?data=contacts&hold_rpc=data_views.create_once#data/contact`);
   await ready(page);
   await query(page).fill('Acme');
   await tools(page).getByRole('button', { name: 'Save current view' }).click();
@@ -301,6 +324,7 @@ test('Saved views keep a save single-flight and remain usable on a phone', async
   await tools(page).locator('[data-view-editor]').dispatchEvent('submit');
   await expect(tools(page).getByRole('button', { name: 'Saving…' })).toBeDisabled();
   expect(await page.evaluate(() => window.__app.rpcCallCount('data_views.create_once'))).toBe(1);
+  expect(await page.evaluate(() => window.__app.releaseRpcResponses?.('data_views.create_once'))).toBe(1);
   await expect(tools(page).locator('[data-view-notice]')).toContainText('Saved');
   await openViewsList(page);
   await openSavedViewList(page);
@@ -312,7 +336,8 @@ test('Saved views keep a save single-flight and remain usable on a phone', async
 test('Saved views retain the exact Records publisher, pack, and kind', async ({ page }) => {
   await page.goto(`${URL_BASE}?data=records-navigation#data/records`);
   await ready(page);
-  await page.locator('[data-records-namespace="publisher-b/same-board"]').click();
+  await expect(page.getByRole('button', { name: 'Open record invoice-1', exact: true })).toBeVisible();
+  await page.getByRole('combobox', { name: 'Pack', exact: true }).selectOption('publisher-b/same-board');
   await page.locator('[data-action="records-select-kind"][data-records-kind="job"]').click();
   await expect(page.getByRole('button', { name: 'Open record job-b', exact: true })).toBeVisible();
   await saveView(page, 'Publisher B jobs');
@@ -390,6 +415,8 @@ test('Saved views keep a conflicting rename for review before retrying', async (
 });
 
 test('Saved views can be deleted without discarding an open Data draft', async ({ page }) => {
+  // The narrow layout offers in-place management beside the mounted reader.
+  await page.setViewportSize({ width: 1100, height: 900 });
   await page.goto(`${URL_BASE}?data=contacts&saved_views_write=slow#data/contact`);
   await ready(page);
   await saveView(page, 'Contacts');

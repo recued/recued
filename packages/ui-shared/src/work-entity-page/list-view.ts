@@ -204,7 +204,7 @@ export interface TaskListTools {
 }
 
 export const renderWorkEntityListView = (
-  props: WorkEntityListViewProps & { opening_entity_id?: string; task_selection?: TaskListSelection; note_selection?: TaskListSelection; toolbar_html?: string; task_tools?: TaskListTools },
+  props: WorkEntityListViewProps & { opening_entity_id?: string; current_entity_id?: string; task_selection?: TaskListSelection; note_selection?: TaskListSelection; toolbar_html?: string; task_tools?: TaskListTools },
 ): string => {
   const search = renderSearchInput(
     props.search_query,
@@ -224,6 +224,7 @@ export const renderWorkEntityListView = (
           props.rows,
           props.show_source_label,
           props.opening_entity_id,
+          props.current_entity_id,
           props.kind === 'note' ? props.note_selection : props.task_selection,
           props.counterparty_labels,
         );
@@ -332,6 +333,7 @@ const renderRows = (
   rows: readonly WorkEntityListRow[],
   show_source_label: boolean,
   opening_entity_id: string | undefined,
+  current_entity_id: string | undefined,
   selection?: TaskListSelection,
   counterpartyLabels?: Readonly<Record<string, string>>,
 ): string => {
@@ -340,6 +342,7 @@ const renderRows = (
       row,
       show_source_label,
       row.entity.id === opening_entity_id,
+      row.entity.id === current_entity_id,
       selection,
       row.entity._kind === 'commitment' ? commitmentCounterpartyLabel(row.entity, counterpartyLabels) : undefined,
     ))
@@ -415,6 +418,7 @@ const renderRow = (
   row: WorkEntityListRow,
   show_source_label: boolean,
   opening: boolean,
+  current: boolean,
   selection?: TaskListSelection,
   counterpartyLabel?: string,
 ): string => {
@@ -447,6 +451,7 @@ const renderRow = (
         data-entity-id="${e(row.entity.id)}"
         data-source-id="${e(row.entity.source_id)}"
         data-kind="${e(row.entity._kind)}"
+        ${current ? 'aria-current="true"' : ''}
         ${opening ? 'aria-disabled="true" aria-busy="true"' : ''}
       >
         <div class="work-entity-list-row-primary">${e(text.primary)}</div>

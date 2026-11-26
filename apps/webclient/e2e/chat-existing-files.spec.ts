@@ -54,6 +54,39 @@ const setup = async (browser: Browser, data = false, messenger = false) => {
   };
 };
 
+for (const viewport of [{ width: 1280, height: 800 }, { width: 390, height: 640 }, { width: 844, height: 390 }]) {
+  test(`a long file picker keeps Cancel and Attach reachable at ${viewport.width}×${viewport.height}`, async ({ browser }) => {
+    const f = await setup(browser);
+    try {
+      await f.page.setViewportSize(viewport);
+      for (let index = 0; index < 35; index++) await f.fixture.files!.ingest({
+        filename: `Picker file ${index}.txt`, bytes: Buffer.from(`File ${index}`), mime_type: 'text/plain',
+        origin: 'webclient_upload', source_id: `picker-${index}`, scan_status: 'clean',
+      });
+      await f.input.fill('Keep this draft while choosing files');
+      await f.pick();
+      const dialog = f.page.getByRole('dialog', { name: 'Choose from Files', exact: true });
+      const files = dialog.locator('.file-options').getByRole('checkbox');
+      const cancel = dialog.getByRole('button', { name: 'Cancel', exact: true });
+      await expect(files).toHaveCount(30);
+      // Check before click/check can automatically scroll a clipped action into view.
+      await expect(cancel).toBeInViewport({ ratio: 1, timeout: 2_000 });
+      await files.first().hover(); await f.page.mouse.wheel(0, 10_000);
+      await expect(files.last()).toBeInViewport({ ratio: 1 });
+      await expect(cancel).toBeInViewport({ ratio: 1 });
+      await files.last().check();
+      await expect(dialog.getByRole('button', { name: 'Attach 1 file', exact: true })).toBeInViewport({ ratio: 1 });
+      await expect(cancel).toBeInViewport({ ratio: 1 });
+      await cancel.click();
+      await expect(dialog).toHaveCount(0);
+      await expect(f.page.getByRole('button', { name: 'Attach a file', exact: true })).toBeFocused();
+      await expect(f.input).toHaveValue('Keep this draft while choosing files');
+      await expect(f.page.locator('[data-recued-chat-route-attachment]')).toHaveCount(0);
+      expect(f.calls.some(call => call.method === 'chat.send' || call.method === 'data.file.attachments.import')).toBe(false);
+    } finally { await f.close(); }
+  });
+}
+
 test('Data Use in Chat joins the production shell, retains the draft, and sends the same stored version', async ({ browser }) => {
   const f = await setup(browser, true);
   try {

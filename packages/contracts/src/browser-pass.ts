@@ -90,15 +90,21 @@ export const BROWSER_PASS_SESSION_OPTION_ID = 'allow_site_session';
 export const BROWSER_PASS_ALWAYS_OPTION_ID = 'allow_site_always';
 /** D-341 slice A — beside them on an ask from the owner's own chat: turn the switch beside Send on. */
 export const BROWSER_PASS_REQUEST_OPTION_ID = 'allow_request';
+/** D-402 (2026-11-23) — beside them on an ask from an AI app that has a job going (`recued_startJob`): the site's
+ *  writes of this kind, for this app, until the job ends. */
+export const BROWSER_PASS_JOB_OPTION_ID = 'allow_site_job';
 export type BrowserPassOptionId = typeof BROWSER_PASS_SESSION_OPTION_ID | typeof BROWSER_PASS_ALWAYS_OPTION_ID
-  | typeof BROWSER_PASS_REQUEST_OPTION_ID;
+  | typeof BROWSER_PASS_REQUEST_OPTION_ID | typeof BROWSER_PASS_JOB_OPTION_ID;
 export const isBrowserPassOptionId = (id: unknown): id is BrowserPassOptionId =>
-  id === BROWSER_PASS_SESSION_OPTION_ID || id === BROWSER_PASS_ALWAYS_OPTION_ID || id === BROWSER_PASS_REQUEST_OPTION_ID;
-/** What an answer gives: a pass on the site, of its kind, or (D-341 slice A) the conversation's
- *  request approved ahead. */
-export type BrowserPassAnswerKind = BrowserPassKind | 'request';
+  id === BROWSER_PASS_SESSION_OPTION_ID || id === BROWSER_PASS_ALWAYS_OPTION_ID || id === BROWSER_PASS_REQUEST_OPTION_ID
+  || id === BROWSER_PASS_JOB_OPTION_ID;
+/** What an answer gives: a pass on the site, of its kind, (D-341 slice A) the conversation's request
+ *  approved ahead, or (D-402) a pass on the site for the AI app's job: a session pass whose conversation
+ *  is the job, ending when it does. */
+export type BrowserPassAnswerKind = BrowserPassKind | 'request' | 'job';
 export const browserPassKindOfOption = (id: BrowserPassOptionId): BrowserPassAnswerKind =>
-  id === BROWSER_PASS_ALWAYS_OPTION_ID ? 'always' : id === BROWSER_PASS_REQUEST_OPTION_ID ? 'request' : 'session';
+  id === BROWSER_PASS_ALWAYS_OPTION_ID ? 'always' : id === BROWSER_PASS_REQUEST_OPTION_ID ? 'request'
+    : id === BROWSER_PASS_JOB_OPTION_ID ? 'job' : 'session';
 
 /** A host short enough for a button: Slack refuses a button text over 75 characters, and it
  *  refuses the whole message with it. */
@@ -109,8 +115,13 @@ export const browserPassOptions = (
   options: {
     /** D-341 slice A — offer to stop asking about browser actions in this chat conversation. */
     readonly request?: boolean;
+    /** D-402 — offer to stop asking about these on the site until the AI app's job ends. */
+    readonly job?: boolean;
   } = {},
 ): ReadonlyArray<{ id: BrowserPassOptionId; label: string }> => [
+  // D-402 — the narrowest first: this job only, then this session, then always.
+  ...(options.job === true
+    ? [{ id: BROWSER_PASS_JOB_OPTION_ID as BrowserPassOptionId, label: `Allow on ${buttonHost(host)} until this job ends` }] : []),
   { id: BROWSER_PASS_SESSION_OPTION_ID, label: `Allow on ${buttonHost(host)} for this session` },
   { id: BROWSER_PASS_ALWAYS_OPTION_ID, label: `Always allow on ${buttonHost(host)}` },
   ...(options.request === true
@@ -121,6 +132,19 @@ export const browserPassOptions = (
  *  owner's own chat in the Recued app has the switch it turns on. */
 export const browserPassOffersRequest = (offer: BrowserPassOffer): boolean =>
   offer.key.principal.kind === 'owner_chat' && offer.channel_session_id.startsWith('chat:');
+
+/** D-402 — whether an ask may offer "until this job ends": an AI app's write, made in a job it started. */
+export const browserPassOffersJob = (offer: BrowserPassOffer): offer is BrowserPassOffer & { readonly job: BrowserPassJob } =>
+  offer.key.principal.kind === 'ai_app' && offer.job !== undefined;
+
+/** D-402 (2026-11-23) — the AI app's job a held write is part of: the conversation a pass "until this job
+ *  ends" is kept under (the job's own, `job:<id>`, which only the app's runs in that job are bound to), and
+ *  when the job ends at the latest. The app's runs leave the job when it ends it, starts another or the hour
+ *  passes, so the pass covers nothing after, whatever its row says. */
+export interface BrowserPassJob {
+  readonly channel_session_id: string;
+  readonly expires_at: number;
+}
 
 /** What a held browser write's answers would mint, as the hold read it: present only when
  *  who, recipe and site are all known. The answer mints exactly this, never a key read again. */
@@ -134,9 +158,20 @@ export interface BrowserPassOffer {
   /** D-402 slice H4d — the owner's name for the browser the key names, as the hold could name it: the
    *  ask says its answers are for that browser alone. */
   readonly browser_name?: string;
+  /** D-402 — the AI app's job the write is part of, when it has one going: the ask offers "until this job ends". */
+  readonly job?: BrowserPassJob;
 }
 
 const nonEmptyString = (value: unknown): value is string => typeof value === 'string' && value.length > 0;
+
+/** A persisted job read back: its conversation is a job's (`job:<id>`), and its end a time. */
+const jobOf = (value: unknown): BrowserPassJob | undefined => {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const job = value as Record<string, unknown>;
+  return nonEmptyString(job.channel_session_id) && job.channel_session_id.startsWith('job:') && job.channel_session_id.length > 4
+    && typeof job.expires_at === 'number' && Number.isFinite(job.expires_at)
+    ? { channel_session_id: job.channel_session_id, expires_at: job.expires_at } : undefined;
+};
 
 /** A persisted offer read back (it round-trips through the checkpoint's JSON), or undefined:
  *  an offer this version cannot read offers nothing, and its ask has no site answers. */
@@ -164,6 +199,8 @@ export const readBrowserPassOffer = (value: unknown): BrowserPassOffer | undefin
     channel_session_id: offer.channel_session_id,
     // D-402 slice H4d — only beside a browser the key names; a name it cannot read is left out (it is words).
     ...(key.browser !== undefined && nonEmptyString(offer.browser_name) ? { browser_name: offer.browser_name } : {}),
+    // D-402 — an AI app's job, when it reads: one that does not offers no "until this job ends", and the rest stands.
+    ...(jobOf(offer.job) !== undefined && principal.kind === 'ai_app' ? { job: jobOf(offer.job)! } : {}),
   };
 };
 

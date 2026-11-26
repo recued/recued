@@ -23,6 +23,7 @@ import { resolvePackInput } from './resolve-pack-input.js';
 import {
   DISCOVER_PANEL_ACTION_ATTR,
   DISCOVER_PANEL_CARD_ATTR,
+  type DiscoverPanelMount,
 } from '../discover/discover-panel.js';
 import {
   LIST_PREVIEW_STYLES,
@@ -73,6 +74,8 @@ export interface MountPacksSurfaceOptions {
     onPreview: (content: ListPreviewContent, opener: HTMLElement) => void,
   ) => {
     dispose: () => void;
+    /** Browse controls that can share a toolbar with the source toggle. */
+    panel?: Pick<DiscoverPanelMount, 'controls'>;
     /** Optional readiness seam used to restore list state after a route remount. */
     whenLoaded?: () => Promise<void>;
     /** Switch the list between the marketplace corpus and the installed roster.
@@ -364,6 +367,15 @@ export const mountPacksSurface = (
     installedToggle.remove();
     installedToggleError.remove();
   } else {
+    const controls = listMount.panel?.controls;
+    if (controls?.parentElement != null) {
+      const toolbar = doc.createElement('div');
+      toolbar.className = 'packs-catalogue-toolbar';
+      controls.parentElement.insertBefore(toolbar, controls);
+      toolbar.appendChild(installedToggle);
+      toolbar.appendChild(installedToggleError);
+      toolbar.appendChild(controls);
+    }
     // The list turns this on for itself when the roster shows anything installed
     // (see `applyInstalledFirstDefault`). Mirror it onto the control, which is
     // the only place the state is visible to the user.

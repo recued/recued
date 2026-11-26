@@ -27,11 +27,24 @@ export const yoursNavigation = (parent: HTMLElement, title: string) => {
     nav.scrollBy({ left: (atEnd ? -1 : 1) * nav.clientWidth * .8,
       behavior: parent.ownerDocument.defaultView?.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' });
   });
-  nav.addEventListener('scroll', update);
-  const Observer = parent.ownerDocument.defaultView?.ResizeObserver;
-  const observer = Observer ? new Observer(update) : undefined; observer?.observe(nav);
-  const frame = parent.ownerDocument.defaultView?.requestAnimationFrame(update);
-  return { nav, dispose: () => { observer?.disconnect(); if (frame !== undefined) parent.ownerDocument.defaultView?.cancelAnimationFrame(frame); } };
+  const view = parent.ownerDocument.defaultView;
+  let frame: number | undefined;
+  const scheduleUpdate = () => {
+    if (!view) { update(); return; }
+    if (frame !== undefined) return;
+    // Showing the scroll control resizes the observed navigation rail.
+    frame = view.requestAnimationFrame(() => { frame = undefined; update(); });
+  };
+  nav.addEventListener('scroll', scheduleUpdate);
+  const Observer = view?.ResizeObserver;
+  const observer = Observer ? new Observer(scheduleUpdate) : undefined;
+  observer?.observe(nav);
+  scheduleUpdate();
+  return { nav, dispose: () => {
+    nav.removeEventListener('scroll', scheduleUpdate);
+    observer?.disconnect();
+    if (frame !== undefined) view?.cancelAnimationFrame(frame);
+  } };
 };
 export const yoursInput = (parent: HTMLElement, title: string, name: string, value: string, changed: () => void, type = 'text') => {
   const label = node(parent, 'label', '', title); const input = node(label, 'input', ''); input.type = type; input.name = name; input.value = value;

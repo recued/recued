@@ -48,6 +48,27 @@ describe('D-343 slice 5 — Episodes reads in the order things happened', () => 
     expect(titles.slice(0, 1)).toEqual(['Went for a walk']);
     expect(titles.slice(1).sort()).toEqual(['Ran 5 km', 'Spanish lesson']);
   });
+
+  it('follows a corrected episode to its page among visible records and leaves a hidden anchor out', async () => {
+    const f = fixture();
+    const [selected] = f.close('2026-11-04', [{ title: 'Design review', outcome: 'done' }]);
+    const [hidden] = f.close('2026-11-03', [{ title: 'Private check-in', outcome: 'done' }]);
+    const [other] = f.close('2026-11-02', [{ title: 'Design review', outcome: 'done' }]);
+    expect((await f.service.snapshot({ limit: 1 })).episodes.map(row => row.id)).toEqual([selected!.id]);
+    const ref = { collection: 'episode', id: selected!.id };
+    await f.command({ action: 'sphere.item', ref, sphere: 'professional' });
+    await f.command({ action: 'episode.hide', id: hidden!.id });
+    const when = { from: Date.parse('2026-10-30T10:00Z'), to: Date.parse('2026-10-30T11:00Z') };
+    await f.command({ action: 'episode.save', episode: { ...selected!, when } });
+
+    const anchored = await f.service.snapshot({ limit: 1, episode_anchor: selected!.id });
+    expect(anchored.episode_page_offset).toBe(1);
+    expect(anchored.episodes).toMatchObject([{ id: selected!.id, when }]);
+    expect(anchored.sphere_placements).toContainEqual(expect.objectContaining({ ref, sphere: 'professional' }));
+    const defaultPage = await f.service.snapshot({ limit: 1, episode_anchor: hidden!.id });
+    expect(defaultPage.episode_page_offset).toBeUndefined();
+    expect(defaultPage.episodes.map(row => row.id)).toEqual([other!.id]);
+  });
 });
 
 describe('D-343 slice 5 (D-342 §7) — a pursuit’s history', () => {

@@ -4088,10 +4088,9 @@ describe('D-228 slice 3 — installGeneratedPack builds a valid packs.install ca
 // ──────────────────────────────────────────────────────────────────
 // Audit P2-14 / P2-15 — the composition root's own obligations.
 //
-// ⚠ SOURCE-LEVEL, for the reason the D-273 wiring test is: both defects were a
-// MISSING LINE IN A COMPOSITION ROOT, and every layer below passed its own tests
-// without it. The supervisor's `stop()` is unit-tested; only this proves anyone
-// calls it.
+// Shutdown is exercised through the composed server. The source checks below
+// cover the remaining composition callbacks, where the lower layers alone
+// cannot prove that their live inputs were supplied.
 // ──────────────────────────────────────────────────────────────────
 describe('composeListeners — the port-mapping supervisor is wired to teardown', () => {
   const SRC = readFileSync(
@@ -4099,11 +4098,27 @@ describe('composeListeners — the port-mapping supervisor is wired to teardown'
     'utf-8',
   );
 
-  it('⛔⛔ closeServer DRAINS it — it was started and never stopped', () => {
+  it('closeServer stops the started supervisor once and waits for its drain', async () => {
     // Its renewal timer and config subscription outlived listener teardown, so a
     // reconcile could be writing its record while the database closed underneath.
-    const drains = SRC.slice(SRC.indexOf('const closeServer'), SRC.indexOf('const closeServer') + 3000);
-    expect(drains).toMatch(/portMappingSupervisorRef\?\.stop\(\)/);
+    const module = await import('../network/port-mapping-supervisor.js');
+    let release!: () => void;
+    const draining = new Promise<void>(done => { release = done; });
+    const supervisor = { start: vi.fn(), stop: vi.fn(() => draining), reconcile: vi.fn(async () => {}),
+      status: () => ({ last: null, unavailable: null, checkedAt: null, support: null }) };
+    const create = vi.spyOn(module, 'createPortMappingSupervisor').mockReturnValue(supervisor);
+    let result: Awaited<ReturnType<typeof composeListeners>> | undefined;
+    let closing: Promise<void> | undefined;
+    try {
+      result = await composeListeners(makeOptions());
+      expect(supervisor.start).toHaveBeenCalledTimes(1);
+      closing = result.server.close();
+      expect(result.server.close()).toBe(closing);
+      expect(supervisor.stop).toHaveBeenCalledTimes(1);
+      let closed = false; void closing.then(() => { closed = true; });
+      await Promise.resolve(); await Promise.resolve(); expect(closed).toBe(false);
+      release(); await closing; expect(closed).toBe(true);
+    } finally { release(); await (closing ?? result?.server.close()); create.mockRestore(); }
   });
 
   it('⛔ the mapping resolves THIS MACHINE’S ADDRESS PER RECONCILE, not at boot', () => {

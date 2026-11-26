@@ -199,31 +199,86 @@ export const renderByRecipe = (view: ByRecipeView): string => {
 
 /** One run coming up. */
 export interface ComingUpEntry {
+  readonly id: string;
   readonly at: number;
   /** A recipe's name or a saved prompt's title. */
   readonly recipe_name: string;
   readonly href: string;
   /** A prompt has separate destinations for its saved schedule and its chat. */
-  readonly prompt?: { readonly id: string; readonly conversationHref: string };
+  readonly conversationHref?: string;
   /** Its dish's name, when the recipe has more than one. */
   readonly dish_name: string | null;
   /** What it is: "Weekdays at 9:00 AM", "Every 15 minutes". */
   readonly what: string;
 }
 
+const comingUpPromptLinks = (entry: ComingUpEntry, conversationHref: string): string => `
+  <a href="${e(entry.href)}" data-coming-up-prompt="${e(entry.id)}" aria-label="Schedule details for ${e(entry.recipe_name)}">Schedule details</a>
+  <a href="${e(conversationHref)}" data-coming-up-conversation="${e(entry.id)}" aria-label="Open conversation for ${e(entry.recipe_name)}">Open conversation</a>`;
+
+const localDayKey = (date: Date): string =>
+  `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+
+const renderComingUpAgenda = (sorted: readonly ComingUpEntry[], now: number): string => {
+  const tomorrow = new Date(now);
+  const todayKey = localDayKey(tomorrow);
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  const tomorrowKey = localDayKey(tomorrow);
+  const dayLabel = new Intl.DateTimeFormat(undefined, { weekday: 'long', year: 'numeric', month: 'short', day: 'numeric' });
+  const clock = new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit', timeZoneName: 'short' });
+  const days = new Map<string, ComingUpEntry[]>();
+  for (const entry of sorted) {
+    const key = localDayKey(new Date(entry.at));
+    const group = days.get(key);
+    if (group) group.push(entry);
+    else days.set(key, [entry]);
+  }
+  return `<div class="automation-agenda" ${AUTOMATION_COMING_UP_ATTR}>
+    ${Array.from(days, ([key, runs]) => {
+      const firstDate = new Date(runs[0]!.at);
+      const heading = key === todayKey ? 'Today' : key === tomorrowKey ? 'Tomorrow' : dayLabel.format(firstDate);
+      const headingId = `automation-agenda-day-${key}`;
+      return `<section class="automation-agenda-day" aria-labelledby="${headingId}">
+        <h2 id="${headingId}">${e(heading)}</h2>
+        <ol class="automation-agenda-rows" role="list">
+          ${runs.map((entry) => {
+            const date = new Date(entry.at);
+            return `<li>
+              <time datetime="${e(date.toISOString())}">${e(clock.format(date))}</time>
+              <div class="automation-agenda-entry">
+                <p><strong class="automation-coming-up-name">${e(entry.recipe_name)}</strong>${entry.dish_name !== null
+                  ? ` <span class="automation-agenda-dish">· ${e(entry.dish_name)}</span>` : ''}</p>
+                <span class="automation-coming-up-what">${e(entry.what)}</span>
+              </div>
+              <div class="automation-agenda-actions">
+                ${entry.conversationHref !== undefined ? comingUpPromptLinks(entry, entry.conversationHref)
+                  : `<a href="${e(entry.href)}" data-coming-up-recipe="${e(entry.id)}" aria-label="Open recipe for ${e(entry.recipe_name)}">Open recipe</a>`}
+              </div>
+            </li>`;
+          }).join('')}
+        </ol>
+      </section>`;
+    }).join('')}
+  </div>`;
+};
+
 /** "Coming up": the next runs, soonest first. */
-export const renderComingUp = (entries: readonly ComingUpEntry[], emptyText = 'Nothing is due to run on its own.'): string => {
+export const renderComingUp = (
+  entries: readonly ComingUpEntry[],
+  emptyText = 'Nothing is due to run on its own.',
+  agendaNow?: number,
+): string => {
   const sorted = [...entries].sort((a, b) => a.at - b.at);
   if (sorted.length === 0) {
     return `<p class="automation-section-hint" ${AUTOMATION_COMING_UP_ATTR}>${e(emptyText)}</p>`;
   }
+  if (agendaNow !== undefined) return renderComingUpAgenda(sorted, agendaNow);
   return `<ol class="automation-coming-up" ${AUTOMATION_COMING_UP_ATTR}>
     ${sorted.map((entry) => `<li>
       <time datetime="${e(new Date(entry.at).toISOString())}">${e(formatClientDateTime(entry.at, { includeSeconds: false }))}</time>
-      ${entry.prompt ? `<span class="automation-coming-up-prompt"><strong class="automation-coming-up-name">${e(entry.recipe_name)}</strong>
-        <span class="automation-coming-up-actions"><a href="${e(entry.href)}" data-coming-up-prompt="${e(entry.prompt.id)}" aria-label="Schedule details for ${e(entry.recipe_name)}">Schedule details</a>
-        <a href="${e(entry.prompt.conversationHref)}" data-coming-up-conversation="${e(entry.prompt.id)}" aria-label="Open conversation for ${e(entry.recipe_name)}">Open conversation</a></span></span>`
-        : `<a class="automation-coming-up-name" href="${e(entry.href)}">${e(entry.recipe_name)}</a>`}${entry.dish_name !== null ? ` · ${e(entry.dish_name)}` : ''}
+      ${entry.conversationHref !== undefined ? `<span class="automation-coming-up-prompt"><strong class="automation-coming-up-name">${e(entry.recipe_name)}</strong>
+        <span class="automation-coming-up-actions">${comingUpPromptLinks(entry, entry.conversationHref)}</span></span>`
+        : `<a class="automation-coming-up-name" href="${e(entry.href)}" data-coming-up-recipe="${e(entry.id)}">${e(entry.recipe_name)}</a>`}${entry.dish_name !== null ? ` · ${e(entry.dish_name)}` : ''}
       <span class="automation-coming-up-what">${e(entry.what)}</span>
     </li>`).join('')}
   </ol>`;
@@ -271,6 +326,24 @@ export const BY_RECIPE_STYLES = `
 .automation-coming-up-actions { display: flex; flex-wrap: wrap; gap: 8px 16px; }
 .automation-coming-up-actions a { display: inline-flex; align-items: center; min-height: 36px; }
 .automation-coming-up-what { color: var(--fg-muted); min-width: 0; overflow-wrap: anywhere; }
+.automation-agenda { display: grid; gap: var(--wc-space-lg, 24px); min-width: 0; }
+.automation-agenda-day { min-width: 0; }
+.automation-agenda-day > h2 { margin: 0 0 8px; font-size: 15px; font-weight: 650; }
+.automation-agenda-rows {
+  list-style: none; margin: 0; padding: 0; border: 1px solid var(--border);
+  border-radius: var(--wc-radius-lg, 12px); background: var(--surface);
+}
+.automation-agenda-rows > li {
+  display: grid; grid-template-columns: 9rem minmax(0, 1fr) minmax(0, 16rem); align-items: center;
+  gap: 12px 20px; padding: 10px 16px; min-width: 0; font-size: 13px;
+}
+.automation-agenda-rows > li + li { border-top: 1px solid var(--border); }
+.automation-agenda-rows time { min-width: 0; font-weight: 600; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.automation-agenda-entry { display: grid; gap: 3px; min-width: 0; overflow-wrap: anywhere; }
+.automation-agenda-entry p { margin: 0; }
+.automation-agenda-dish { color: var(--fg-muted); }
+.automation-agenda-actions { display: flex; flex-wrap: wrap; justify-content: end; gap: 4px 16px; min-width: 0; }
+.automation-agenda-actions a { display: inline-flex; align-items: center; min-height: var(--wc-control-h, 40px); overflow-wrap: anywhere; }
 @media (max-width: 640px) {
   .automation-coming-up-actions a { min-height: 44px; }
   .automation-recipe { padding: 16px; }

@@ -20,6 +20,7 @@ import {
 import type { ResolvedCall } from '@recued/ingredients';
 
 import type { BridgeDispatcher, DispatchOutcome, DispatchRequest } from '../bridges/dispatcher.js';
+import type { BrowserFiles } from '../bridges/browser-files.js';
 import { createBridgeDomAdapter, describeBridgeDomCall, PAGE_UNCHANGED_NOTE, PICK_NOT_REVIEWABLE_MESSAGE } from '../bridges/dom-adapter.js';
 import { createBrowserBatchAdmissions, type BrowserBatchAdmissions } from '../bridges/browser-batch-admission.js';
 import { createPageReadStore } from '../bridges/page-outline.js';
@@ -46,7 +47,8 @@ const failed = (code: string, message: string): DispatchOutcome => ({ kind: 'com
 
 /** The answers a Bridge gives, one per command in order (the last repeating), or by action. */
 type Answer = DispatchOutcome | ((request: DispatchRequest) => DispatchOutcome);
-const act = async (steps: unknown, answers: Answer[] | Partial<Record<string, Answer>>) => {
+const act = async (steps: unknown, answers: Answer[] | Partial<Record<string, Answer>>, runs?: BridgeDispatcher['runs'],
+  files?: BrowserFiles) => {
   const requests: DispatchRequest[] = [];
   const dispatch = vi.fn<BridgeDispatcher['dispatch']>(async (request) => {
     requests.push(request);
@@ -57,7 +59,8 @@ const act = async (steps: unknown, answers: Answer[] | Partial<Record<string, An
   });
   const adapter = createBridgeDomAdapter({
     manifests: { get: (slug) => KERNEL_MANIFESTS.find((manifest) => manifest.slug === slug) ?? null },
-    getDispatcher: () => ({ dispatch, cancel: vi.fn(), canResolve: vi.fn(() => false) }),
+    getDispatcher: () => ({ dispatch, cancel: vi.fn(), canResolve: vi.fn(() => false), ...(runs ? { runs } : {}) }),
+    ...(files ? { files } : {}),
   });
   const manifest = KERNEL_MANIFESTS.find((m) => m.slug === 'dom-act')!;
   const call: ResolvedCall = { slug: 'dom-act', risk_tier: 'write', output: manifest.output,
@@ -71,6 +74,24 @@ const act = async (steps: unknown, answers: Answer[] | Partial<Record<string, An
 };
 const message = (error: unknown) => (error as { message?: string }).message;
 const code = (error: unknown) => (error as { code?: string }).code;
+
+it('preserves the first file and click receipt when storing a later export file fails', async () => {
+  const file = { file_ref: 'file:' + '1'.repeat(32), filename: 'overview.csv', mime_type: 'text/csv',
+    size_bytes: 1, sha256: 'a'.repeat(64) };
+  const keep = vi.fn<BrowserFiles['keep']>().mockResolvedValueOnce(file).mockRejectedValueOnce(new Error('storage unavailable'));
+  const downloads = ['overview.csv', 'details.csv'].map(filename => ({ filename, mime_type: 'text/csv', size: 1, data: 'YQ==' }));
+  const { error, requests } = await act([
+    { do: 'click', ref: 'e1', download_wait: 0.2 }, { do: 'click', ref: 'e2' },
+  ], { click: ok({ clicked: true, generated_downloads: downloads }) }, undefined,
+  { keep, read: vi.fn(), about: vi.fn() });
+  expect(requests.map(request => request.args.ref)).toEqual(['e1']);
+  expect(keep.mock.calls.map(([input]) => input.step_id)).toEqual(['act#download1.1', 'act#download1.2']);
+  expect(message(error)).toContain('1 of 2 files were kept');
+  const details = readBrowserFailure(error)?.details;
+  expect(details?.batch_progress?.effects).toEqual([{ step: 1, attempted: 1, acknowledged: 1 }]);
+  expect(details?.completed_files).toEqual([{ step: 1, file_ref: file.file_ref, filename: file.filename,
+    mime_type: file.mime_type, size_bytes: file.size_bytes }]);
+});
 
 const SIGN_IN = [
   { do: 'type', ref: 'e3', value: 'ada@example.com' },
@@ -103,6 +124,17 @@ describe('D-335 slice J — a sequence runs step by step, one approval for all o
     const first = await act(SIGN_IN, answers);
     const again = await act(SIGN_IN, answers);
     expect(again.requests.map((r) => r.idempotency_key)).toEqual(first.requests.map((r) => r.idempotency_key));
+  });
+
+  it('requires horizontal scrolling support before a batch starts', async () => {
+    const older = { supported_actions: ['click', 'scroll', 'describe', 'reread'] };
+    expect(bridgeRunsCommand(older, 'scroll', { page: PAGE, to: 'next' })).toBe(true);
+    const result = await act([{ do: 'click', ref: 'e1' }, { do: 'scroll', to: 'right' }], {},
+      ({ action, args }) => bridgeRunsCommand(older, action, args));
+    expect(code(result.error)).toBe('ROLE_RESTRICTION');
+    expect(message(result.error)).toContain('scroll horizontally at step 2');
+    expect(result.requests).toEqual([]);
+    expect(result.rereads).toEqual([]);
   });
 
   it('a CAPTCHA stops the sequence where it shows, saying how far it got and where the tab is', async () => {
@@ -532,7 +564,9 @@ describe('D-335 slice X — one batch across tabs, reading as it goes', () => {
     expect((result!.tabs as Array<Record<string, unknown>>)[0]).toMatchObject({ page: HN.page, opened: true });
   });
 
-  it('a batch let through because it only read opens no tab: one that closed in between stops its step', async () => {
+  // The admission this records, "open no tab", was a batch of reads' until 2026-11-23, when opening a page became a read
+  // (it now records any tab); the mechanism stands for an admission that lets a batch open none.
+  it('a batch whose admission lets it open no tab: one that closed in between stops its step', async () => {
     const admissions = createBrowserBatchAdmissions();
     const steps = [{ url: PY.url, do: 'read' }];
     admissions.record('run-x', { page: undefined, steps }, { open: new Set() });
@@ -696,8 +730,8 @@ describe('D-335 slice X — the tabs showing one address (core.dom.tabs with add
   };
 
   it('answers only the tabs showing it, an empty address every tab, and refuses one that is no web address', async () => {
-    expect((await list('http://news.ycombinator.com')).result).toEqual({ tabs: [
-      { page: '1:A', url: 'https://news.ycombinator.com/', title: 'Hacker News' }], truncated: false });
+    const matched = { page: '1:A', url: 'https://news.ycombinator.com/', title: 'Hacker News' };
+    expect((await list('http://news.ycombinator.com')).result).toEqual({ tabs: [matched], matched_tab: matched, truncated: false });
     expect((await list('https://example.com/a')).result).toMatchObject({ tabs: [{ page: '3:C' }] });
     expect((await list('https://example.com/b')).result).toEqual({ tabs: [], truncated: false });
     expect(((await list('')).result as { tabs: unknown[] }).tabs).toHaveLength(3);
@@ -1220,10 +1254,17 @@ describe('a check watched longer than 10 seconds after a click', () => {
     expect(usual.requests[0]!.timeout_ms).toBeUndefined();
   });
 
-  it('is refused before step 1 on a Bridge that stops watching at 10 seconds, with nothing done', async () => {
+  it.each([
+    { unsupported: long, refused: 'Update the Browser Bridge: step 2 checks for longer than 10 seconds after it acts, which the connected '
+      + 'Browser Bridge cannot watch (0.0.14 or later can). Nothing was done.' },
+    { unsupported: [{ do: 'click', ref: 'e9', count: 2 }],
+      refused: 'Update the Browser Bridge to double-click at step 2. Nothing was done.' },
+    { unsupported: [{ do: 'type', ref: 'e9', value: 'a\tb', delivery: 'paste' }],
+      refused: 'Update the Browser Bridge to paste text at step 2. Nothing was done.' },
+  ])('refuses a batch with an unsupported second step before any write ($refused)', async ({ unsupported, refused }) => {
     const requests: DispatchRequest[] = [];
     const older = { software_version: '0.0.13', chrome_version: '140', permissions_granted: ['tabs', 'scripting'], granted_origins: ['*://*/*'],
-      offscreen_supported: true, alarms_supported: true, supported_actions: ['click', 'describe', 'inspect', 'reread'] } as unknown as BridgeCapabilityProfile;
+      offscreen_supported: true, alarms_supported: true, supported_actions: ['click', 'fill', 'describe', 'inspect', 'reread'] } as unknown as BridgeCapabilityProfile;
     const adapter = createBridgeDomAdapter({
       manifests: { get: (slug) => KERNEL_MANIFESTS.find((manifest) => manifest.slug === slug) ?? null },
       getDispatcher: () => ({ dispatch: vi.fn(async (request: DispatchRequest) => { requests.push(request); return ok({ clicked: true, moved: true, ...HOME }); }),
@@ -1232,11 +1273,10 @@ describe('a check watched longer than 10 seconds after a click', () => {
     });
     const manifest = KERNEL_MANIFESTS.find((m) => m.slug === 'dom-act')!;
     const error = await adapter({ slug: 'dom-act', risk_tier: 'write', output: manifest.output,
-      input: { target: '*://*/*', page: PAGE, steps: [{ do: 'click', ref: 'e1' }, ...long] },
+      input: { target: '*://*/*', page: PAGE, steps: [{ do: 'click', ref: 'e1' }, ...unsupported] },
       stepMeta: { recipe_id: 'act-on-web-page', step_id: 'act', run_id: 'run-1' } }).then(() => undefined, (failure: unknown) => failure);
     expect(code(error)).toBe('ROLE_RESTRICTION');
-    expect(message(error)).toBe('Update the Browser Bridge: step 2 checks for longer than 10 seconds after it acts, which the connected '
-      + 'Browser Bridge cannot watch (0.0.14 or later can). Nothing was done.');
+    expect(message(error)).toBe(refused);
     expect(requests).toHaveLength(0);
   });
 });

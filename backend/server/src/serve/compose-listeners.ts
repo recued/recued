@@ -1,3 +1,14 @@
+import { createMailReplacementSourceReader } from '../mail-follow-up-replacement-source.js';
+import { getMailMessageAttachments } from '../collections/mail/message-attachments.js';
+import { createMailAttachmentReader } from '../mail-attachment-evidence.js';
+import { legacyAttachmentsAmbiguousIn } from '../collections/mail/mail-attachment-source-id.js';
+import { createMailFollowUpAlertRuntime, createMailFollowUpAlertStore } from '../mail-follow-up-alerts.js';
+import { createMailFollowUpReplyAlertRuntime, createMailFollowUpReplyAlertStore } from '../mail-follow-up-reply-alerts.js';
+import { createMailFollowUpService } from '../mail-follow-up-service.js';
+import { createMailFollowUpTaskWriter } from '../mail-follow-up-task-create.js';
+import { createMailFollowUpSendService } from '../mail-follow-up-send-service.js';
+import { createMailFollowUpRuntime } from '../mail-follow-up-runtime.js';
+import { requirePreapprovalOwner } from '../preapproval-handler.js';
 import { createKitchenDraftStore, describeKitchenDraftOrigin } from '../kitchen-draft-store.js';
 import { createKitchenPackSourceStore } from '../ingredient-authoring/kitchen-pack-source-store.js';
 import { installedPackInstalledAt } from '../pack-inventory.js';
@@ -14,6 +25,9 @@ import { createSavedDataViewStore } from '../saved-data-view-store.js';
 import { createSavedTaskViewReader } from '../saved-data-view-task-reader.js';
 import { createSavedRecordsViewReader } from '../saved-data-view-records-reader.js';
 import { createSavedDataViewAlertRuntime } from '../saved-data-view-alert-runtime.js';
+import { createCustomerDecisionWatch } from '../customer-decision-watch.js';
+import { connectionIdentity, connectionRevision } from '../connection-revision.js';
+import { connectionVendorOf } from '../work-entity-source-boot.js';
 import { createAuthenticationAlertStore } from '../authentication-alert-store.js';
 import { sourceIdConnectionName } from '../work-entity-source-boot.js';
 import { collectionOAuthSourceName } from '../collection-oauth-sources.js';
@@ -213,6 +227,7 @@ import {
   createVendorOAuthResultStore,
 } from '../connection-vendor-oauth-flow.js';
 import { createWorkEntityResolver } from '../work-entity-resolver.js';
+import { createRefundCreditsService } from '../refund-credits-service.js';
 import {
   buildLoadFileCollectionRecord,
   createFileRefDescriber,
@@ -387,6 +402,8 @@ export interface ComposeListenersOptions {
     | 'auditLog'
     | 'preapprovalStorage'
     | 'mailWorkStore'
+    | 'mailFollowUpStore'
+    | 'mailFollowUpSendStore'
     // D-175 P5 — account-binding manager backs the `account.*` pair-RPC.
     | 'accountBindingManager'
     // D-175 P8 — Pro convenience provisioner backs `pro_convenience.status`.
@@ -3529,6 +3546,104 @@ export const composeListeners = async (
     }
   }
 
+  let mailFollowUpsRunning = true;
+  const replyWatchTaskRead = (id: string): import('../mail-follow-up-task-read.js').MailFollowUpTaskRead => {
+    const deps = app.workEntityCrudDepsRef.current;
+    if (!deps) throw new RpcError('unavailable', 'Tasks are unavailable.', 503);
+    const entity = deps.resolver.readEntity('task', id);
+    const source = entity ? deps.store.getSource(entity.source_id) : null;
+    const [source_freshness] = entity ? deps.resolver.sourceFreshness('task', { source_id: entity.source_id }) ?? [] : [];
+    return { entity, source, ...(source_freshness ? { source_freshness } : {}) };
+  };
+  const mailFollowUpService = storage.mailFollowUpStore && preapproval?.handlers.drafts && storage.preapprovalStorage && collection.mailStack
+    ? createMailFollowUpService({
+      store: storage.mailFollowUpStore,
+      ...(storage.workEntityStoreRef ? { tasks: { read: async (id: string) => replyWatchTaskRead(id), current: replyWatchTaskRead,
+        create: createMailFollowUpTaskWriter(() => app.workEntityCrudDepsRef.current) } } : {}),
+      mailbox: slug => collection.collectionRegistry.get('mail', slug) as MailCollection | undefined,
+      incarnation: slug => collection.mailStack!.instances?.getIncarnation?.('mail', slug) ?? null,
+      canRun: () => mailFollowUpsRunning && (app.isVaultUnlocked?.() ?? !app.keys) && !(app.serverState?.isPaused() ?? false),
+      readReplacement: createMailReplacementSourceReader({
+        mailbox: slug => collection.collectionRegistry.get('mail', slug) as MailCollection | undefined,
+        incarnation: slug => collection.mailStack!.instances.getIncarnation?.('mail', slug) ?? null,
+        attachments: ref => getMailMessageAttachments({ registry: collection.collectionRegistry, annotations: app.annotationStoreRef,
+          blobs: app.cacheBlobs, getIncarnation: slug => collection.mailStack!.instances.getIncarnation?.('mail', slug) ?? null },
+          { slug: ref.slug, record_id: ref.record_id, expected_incarnation: ref.incarnation }),
+        assertAttachments: (ref, items) => {
+          const record = collection.collectionRegistry.get('mail', ref.slug)?.get(ref.record_id);
+          const links = record && createMailAttachmentReader(collection.collectionRegistry, app.annotationStoreRef,
+            legacyAttachmentsAmbiguousIn(collection.collectionRegistry))(record, ref.slug);
+          const files = collection.collectionRegistry.get('file', 'received') as import('../collections/file/inbound-file-collection.js').InboundFileCollection | undefined;
+          if (!links || links.warnings.length || links.truncated || links.attachments.length !== items.length
+            || items.some(item => !links.attachments.some(link => link.file_ref === item.file_id && link.content_hash === item.content_hash && link.available)
+              || files?.get(item.file_id)?.blob_hash !== item.content_hash || files?.attachmentLifecycle?.selection(item.file_id).selection_revision !== item.selection_revision))
+            throw new RpcError('resource_changed', 'The original attachments changed. Refresh Mail before preparing a replacement.', 409);
+        },
+      }),
+      createDraft: (input, tokenId, current) => {
+        const tokens = preapproval.handlers.clientTokens, token = tokens.get(tokenId);
+        const origin = requirePreapprovalOwner({ client_kind: 'webclient', client_token_id: tokenId,
+          instance_id: token?.metadata?.instance_id } as import('../ws-server.js').WsClient, tokens, storage.serverInstanceId).origin;
+        const principal = preapproval.handlers.drafts!.principal(origin, 'create');
+        return storage.preapprovalStorage!.drafts.create(input, { ...principal, validate() { current(); principal.validate(); } });
+      },
+    }) : undefined;
+  const mailFollowUpSend = mailFollowUpService && storage.mailFollowUpSendStore && preapproval ? createMailFollowUpSendService({
+    store: storage.mailFollowUpSendStore, watches: mailFollowUpService,
+    mailbox: slug => collection.collectionRegistry.get('mail', slug) as MailCollection | undefined,
+    incarnation: slug => collection.mailStack!.instances?.getIncarnation?.('mail', slug) ?? null,
+    validateOwner: tokenId => {
+      const token = preapproval.handlers.clientTokens.get(tokenId);
+      requirePreapprovalOwner({ client_kind: 'webclient', client_token_id: tokenId, instance_id: token?.metadata?.instance_id } as import('../ws-server.js').WsClient,
+        preapproval.handlers.clientTokens, storage.serverInstanceId);
+    },
+    runStatus: async id => (await storage.auditLog?.get(id))?.commit_status,
+    canRun: () => mailFollowUpsRunning && (app.isVaultUnlocked?.() ?? !app.keys) && !(app.serverState?.isPaused() ?? false),
+  }) : undefined;
+  execution.executeDeps.mailFollowUpSend = mailFollowUpSend;
+  const mailFollowUpRuntime = mailFollowUpService ? createMailFollowUpRuntime({ sweep: async () => { await mailFollowUpSend?.sweep(); await mailFollowUpService.sweep(); } }) : undefined;
+  const mailFollowUpAlerts = mailFollowUpService && storage.db && storage.auditLog && execution.notificationBlock && preapproval
+    ? createMailFollowUpAlertRuntime({ store: createMailFollowUpAlertStore(storage.db), service: mailFollowUpService,
+      auditLog: storage.auditLog, notifier: execution.notificationBlock,
+      canRun: () => mailFollowUpsRunning && (app.isVaultUnlocked?.() ?? !app.keys) && !(app.serverState?.isPaused() ?? false),
+      isQuiet: at => shouldSuppressForQuietHours({ policy: storage.quietHoursStore?.read() ?? defaultQuietHoursPolicy(), instant: at,
+        timeZone: resolveServerTimeZone(storage.serverTimeZoneStore?.read(), Intl.DateTimeFormat().resolvedOptions().timeZone) }),
+      getPublicBaseUrl: () => storage.publicAddress.baseUrl('root'),
+      validateDraft: async watch => {
+        const stored = await storage.mailFollowUpStore!.get(watch.id);
+        if (!stored || stored.watch.revision !== watch.revision || stored.watch.draft_id !== watch.draft_id)
+          throw new Error('The reply watch changed.');
+        const token = preapproval.handlers.clientTokens.get(stored.owner_token_id);
+        const origin = requirePreapprovalOwner({ client_kind: 'webclient', client_token_id: stored.owner_token_id,
+          instance_id: token?.metadata?.instance_id } as import('../ws-server.js').WsClient, preapproval.handlers.clientTokens, storage.serverInstanceId).origin;
+        const principal = preapproval.handlers.drafts!.principal(origin, 'get');
+        await storage.preapprovalStorage!.drafts.get({ draft_id: watch.draft_id }, principal);
+        return () => principal.validate();
+      },
+      update: (message, activityId, hash) => { storage.eventBus?.emit({ kind: 'notification.notify',
+        title: message.title, text: message.text, activity_id: activityId, link_url: hash, replace_existing: true }); },
+    }) : undefined;
+  const mailReplyAlerts = mailFollowUpService && storage.db && storage.auditLog && execution.notificationBlock && preapproval
+    ? createMailFollowUpReplyAlertRuntime({ store: createMailFollowUpReplyAlertStore(storage.db), service: mailFollowUpService,
+      auditLog: storage.auditLog, notifier: execution.notificationBlock,
+      canRun: () => mailFollowUpsRunning && (app.isVaultUnlocked?.() ?? !app.keys) && !(app.serverState?.isPaused() ?? false),
+      isQuiet: at => shouldSuppressForQuietHours({ policy: storage.quietHoursStore?.read() ?? defaultQuietHoursPolicy(), instant: at,
+        timeZone: resolveServerTimeZone(storage.serverTimeZoneStore?.read(), Intl.DateTimeFormat().resolvedOptions().timeZone) }),
+      getPublicBaseUrl: () => storage.publicAddress.baseUrl('root'),
+      validateOwner: async watch => {
+        const stored = await storage.mailFollowUpStore!.get(watch.id);
+        if (!stored || stored.watch.revision !== watch.revision) throw new Error('The reply watch changed.');
+        const tokenId = stored.reply_notification_owner_token_id ?? stored.owner_token_id;
+        const current = () => {
+          const token = preapproval.handlers.clientTokens.get(tokenId);
+          requirePreapprovalOwner({ client_kind: 'webclient', client_token_id: tokenId,
+            instance_id: token?.metadata?.instance_id } as import('../ws-server.js').WsClient, preapproval.handlers.clientTokens, storage.serverInstanceId);
+        };
+        current(); return current;
+      },
+      update: (body, activityId, hash) => { storage.eventBus?.emit({ kind: 'notification.notify', title: body.title,
+        text: body.text, activity_id: activityId, link_url: hash, replace_existing: true }); },
+    }) : undefined;
   const savedDataViewStore = createSavedDataViewStore(storage.db, {
     ...(storage.workEntityStoreRef && execution.notificationBlock && storage.auditLog
       ? { readTasks: createSavedTaskViewReader(storage.workEntityStoreRef) } : {}),
@@ -3548,6 +3663,17 @@ export const composeListeners = async (
       // D-188 — held while the owner's pause holds.
       ...(app.serverState !== undefined ? { isPaused: () => app.serverState!.isPaused() } : {}),
     }) : undefined;
+  const customerWatches = storage.db && app.crmRecordMirrorStoreRef && app.enrichmentStoreRef
+    && app.contactEngagementsResolveDepsRef && app.connectionStoreRef
+    ? createCustomerDecisionWatch({
+        db: storage.db, records: storage.recordsStore, mirror: app.crmRecordMirrorStoreRef, enrichment: app.enrichmentStoreRef,
+        accountRevision: (name, vendor) => {
+          const connection = app.connectionStoreRef!.get('api', name);
+          return connection && connectionVendorOf(connection) === vendor
+            ? connectionRevision(connectionIdentity(connection, app.connectionStoreRef!.getAuthSourceId?.('api', name))) : undefined;
+        },
+        paused: () => app.serverState?.isPaused() ?? false,
+      }) : undefined;
   // The owner worklist and unattended alerts read the same passive inventory.
   // No broker, OAuth refresh or provider request is needed by either reader.
   const authenticationRepairSnapshot = storage.db && app.connectionStoreRef ? createAuthenticationRepairSnapshot({
@@ -3617,6 +3743,9 @@ export const composeListeners = async (
     storage.workEntityStoreRef && collection.workEntityDispatchers
       ? {
           store: storage.workEntityStoreRef,
+          ...(storage.db ? { refundCredits: createRefundCreditsService({
+            db: storage.db, work: storage.workEntityStoreRef, records: storage.recordsStore,
+          }) } : {}),
           // The owner's zone, for the Tasks filter's reading of a date-only due.
           timeZone: (): string => resolveServerTimeZone(
             storage.serverTimeZoneStore?.read(),
@@ -4956,6 +5085,7 @@ export const composeListeners = async (
     // `data.records.*` resolver or the agent-facing Tier-P executor.
     recordsRpcDeps: {
       store: storage.recordsStore,
+      ...(customerWatches ? { customerWatches } : {}),
       // The owning pack's name for Data → Records, from the same roster the Packs screen
       // reads. Only when the publisher matches: two packs may share a slug (D-221 full refs).
       packName: (owner) => bundledPackName(owner, rpc.packInstallDeps?.packDir),
@@ -4975,6 +5105,8 @@ export const composeListeners = async (
       ...(app.chatDeps ? { hasInvestigation: async sessionId => (await app.chatDeps!.store.listRecentConversational(sessionId, 1)).length > 0 } : {}),
       ...(app.privateAiCall ? { ai: mailFactAiCallThrough(app.privateAiCall, MAIL_WORK_MANIFEST) } : {}),
     }) } : {}),
+    ...(mailFollowUpService && preapproval ? { mailFollowUpDeps: { service: mailFollowUpService, send: mailFollowUpSend,
+      authorize: (client: import('../ws-server.js').WsClient) => requirePreapprovalOwner(client, preapproval.handlers.clientTokens, storage.serverInstanceId).origin.credential_id! } } : {}),
     savedDataViewStore,
     // D-198 — `memory.*` owner-trusted pair-RPCs (Memory lens). Slice 1
     // `memory.list` reuses the audit store's `listRecent` origin filter; Slice
@@ -5729,7 +5861,11 @@ export const composeListeners = async (
     : undefined;
   webhookOutboxRuntime?.start();
   webhookUnsettledCreateSweep?.start();
+  mailFollowUpRuntime?.start();
+  mailFollowUpAlerts?.start();
+  mailReplyAlerts?.start();
   savedDataViewAlerts?.start();
+  customerWatches?.start();
   authenticationAlerts?.start();
   promptScheduleAlerts?.start();
   promptScheduleDone?.start();
@@ -5800,7 +5936,12 @@ export const composeListeners = async (
     // Close every independent admission door before waiting for a potentially
     // slow or failed sibling. Database teardown happens later in lifecycle;
     // report failures only after every network/background branch has drained.
+    mailFollowUpsRunning = false;
+    customerWatches?.stop();
     const drains = [
+      ...(mailFollowUpAlerts ? [begin(() => mailFollowUpAlerts.stop())] : []),
+      ...(mailReplyAlerts ? [begin(() => mailReplyAlerts.stop())] : []),
+      ...(mailFollowUpRuntime ? [begin(() => mailFollowUpRuntime.stop())] : []),
       ...(savedDataViewAlerts ? [begin(() => savedDataViewAlerts.stop())] : []),
       ...(authenticationAlerts ? [begin(() => authenticationAlerts.stop())] : []),
       ...(promptScheduleAlerts ? [begin(() => promptScheduleAlerts.stop())] : []),

@@ -5411,6 +5411,9 @@ export const createKernelAdapter = (dispatchers: KernelDispatchers): Adapter => 
         if (call.stepMeta?.step_id) {
           dispatchInput.step_id = call.stepMeta.step_id;
         }
+        // Host identity also joins an opted-in compose request to its native
+        // send receipt. Never read a run id from recipe-authored input.
+        if (call.stepMeta?.run_id) dispatchInput.run_id = call.stepMeta.run_id;
         // ⛔ A TEMP ATTACHMENT NEEDS ITS RUN SCOPE, and is refused without one.
         // `readConfinedTempFile` confines the read to the producing run's
         // scratch root — that confinement IS the authorization on a temp ref

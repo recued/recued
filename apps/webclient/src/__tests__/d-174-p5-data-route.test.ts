@@ -325,8 +325,9 @@ const emitChange = (
   routeRoot: FakeEl,
   target: { value: string; getAttribute(k: string): string | null },
 ): void => {
+  const control = { ...target, hasAttribute: (name: string) => target.getAttribute(name) !== null };
   for (const listener of routeRoot.listeners.get('change') ?? []) {
-    listener({ target } as unknown as Event);
+    listener({ target: control } as unknown as Event);
   }
 };
 

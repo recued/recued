@@ -115,7 +115,7 @@ const strings = (value: unknown, out: string[] = [], depth = 0): string[] => {
 
 const describeStep = (step: BrowserFlowStep, n: number): string => {
   const what = step.do === 'type' ? 'typed into' : step.do === 'pick' ? 'picked in' : step.do === 'press' ? 'pressed a key in'
-    : step.do === 'submit' ? 'sent' : 'clicked';
+    : step.do === 'submit' ? 'sent' : step.do === 'seek' ? 'sought within' : 'clicked';
   return `step ${n} (${what} "${step.element.label}" on ${step.title || step.url})`;
 };
 

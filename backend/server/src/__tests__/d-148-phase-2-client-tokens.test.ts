@@ -15,7 +15,8 @@
  */
 
 import Database from 'better-sqlite3';
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { verifyBearerToken } from '../keys/index.js';
 import {
   createClientTokenStore,
   CLIENT_KINDS,
@@ -25,6 +26,13 @@ import {
 } from '../pairing/client-tokens.js';
 
 const FAST_ARGON2 = { t: 1, m: 1024, p: 1 };
+
+// The Argon2id verify every path must run, wrapped so a test can count it; it
+// still runs the real thing.
+vi.mock('../keys/index.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../keys/index.js')>();
+  return { ...actual, verifyBearerToken: vi.fn(actual.verifyBearerToken) };
+});
 
 let db: Database.Database;
 let store: ClientTokenStore;
@@ -182,42 +190,62 @@ describe('D-148 P2 — client_tokens kind taxonomy', () => {
 });
 
 describe('D-148 P2 — client_tokens constant-time verify discipline', () => {
-  it('verify against unknown token_id takes comparable time to verify against known-but-wrong bearer', async () => {
-    // Statistical timing tests are notoriously flaky; this asserts
-    // the *path* (every verify routes through Argon2id whether or
-    // not the token_id exists). We measure that both paths take
-    // non-trivial time + are within a generous ratio of each other.
+  // ⛔ THIS USED TO BE A TIMING RATIO, AND IT STOPPED A RELEASE (2026-11-22). Five
+  // verifies of one path, then five of the other, had to stay within 5x; with the
+  // test's fast Argon2 the absolute time is tiny, so a burst of load during one
+  // block decided it: 5.35 in the 26.11.22 cut's exported suite, green alone 3 of
+  // 3. Its own comment said what it was for: the PATH, every verify running an
+  // Argon2id whether or not the token_id exists. That is now asserted directly,
+  // and the timing check that stays compares each path's FASTEST run, interleaved:
+  // load only ever adds time, so it can no longer tip the ratio.
+  const verifies = vi.mocked(verifyBearerToken);
+
+  it('runs one Argon2id verify for an unknown token_id, as for a known one with a wrong bearer', async () => {
     const { token_id } = await store.issue({ client_kind: 'webclient' });
+    const dummy = await dummyRecordFor(FAST_ARGON2);
+    verifies.mockClear();
 
-    // Warm Argon2 caches.
+    expect((await store.verify('does-not-exist', 'wrong-bearer')).ok).toBe(false);
+    expect(verifies).toHaveBeenCalledTimes(1);
+    // Against the dummy record: an Argon2id record with this store's parameters.
+    expect(verifies.mock.calls[0]![1]).toBe(dummy);
+
+    verifies.mockClear();
+    expect((await store.verify(token_id, 'wrong-bearer')).ok).toBe(false);
+    expect(verifies).toHaveBeenCalledTimes(1);
+    expect(verifies.mock.calls[0]![1]).not.toBe(dummy);
+  });
+
+  it('runs one for a row whose hash cannot be read, against the same dummy', async () => {
+    const { token_id } = await store.issue({ client_kind: 'webclient' });
+    db.prepare('UPDATE client_tokens SET token_hash_json = ? WHERE token_id = ?').run('not json', token_id);
+    const dummy = await dummyRecordFor(FAST_ARGON2);
+    verifies.mockClear();
+    expect((await store.verify(token_id, 'wrong-bearer')).ok).toBe(false);
+    expect(verifies).toHaveBeenCalledTimes(1);
+    expect(verifies.mock.calls[0]![1]).toBe(dummy);
+  });
+
+  it('takes comparable time either way, by each path\'s fastest run', async () => {
+    const { token_id } = await store.issue({ client_kind: 'webclient' });
+    // Warm Argon2 and the dummy record.
     await store.verify(token_id, 'wrong');
+    await store.verify('does-not-exist', 'wrong');
 
-    const ITERS = 5;
-    const measure = async (
-      tid: string,
-      bearer: string,
-    ): Promise<number> => {
+    const once = async (tid: string): Promise<number> => {
       const start = performance.now();
-      for (let i = 0; i < ITERS; i++) {
-        await store.verify(tid, bearer);
-      }
+      await store.verify(tid, 'wrong-bearer');
       return performance.now() - start;
     };
-
-    const t_known = await measure(token_id, 'wrong-bearer');
-    const t_unknown = await measure('does-not-exist', 'wrong-bearer');
-
-    // Both should be non-trivial (Argon2id ran).
-    expect(t_known).toBeGreaterThan(0);
-    expect(t_unknown).toBeGreaterThan(0);
-
-    // Ratio within 5x — with FAST_ARGON2 the absolute time is small
-    // so measurement noise dominates. We're checking the *path*
-    // (Argon2id was actually called), not a precise constant-time
-    // claim — that's enforced by Node's timingSafeEqual deeper in
-    // the stack.
-    const ratio = Math.max(t_known, t_unknown) / Math.min(t_known, t_unknown);
-    expect(ratio).toBeLessThan(5);
+    let known = Infinity;
+    let unknown = Infinity;
+    for (let round = 0; round < 8; round += 1) {
+      known = Math.min(known, await once(token_id));
+      unknown = Math.min(unknown, await once('does-not-exist'));
+    }
+    expect(known).toBeGreaterThan(0);
+    expect(unknown).toBeGreaterThan(0);
+    expect(Math.max(known, unknown) / Math.min(known, unknown)).toBeLessThan(5);
   });
 });
 

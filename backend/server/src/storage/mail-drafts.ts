@@ -75,7 +75,10 @@ export const createMailDraftStore = (db: Database.Database, codec: PreapprovalCo
     const content = readStoredMailDraftContent(await codec.open(row.ciphertext!));
     const fresh = read(draft_id, principal);
     if (fresh.revision !== row.revision || fresh.incarnation !== row.incarnation || preapprovalHash(content) !== row.content_hash) stale();
+    const source = /^mail-follow-up:(mfw_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/.exec(row.idempotency_key);
+    const replacement = /^mail-follow-up-replacement:(mfw_[0-9a-f-]{36}):[0-9a-f-]{36}$/.exec(row.idempotency_key);
     return { draft_id, incarnation: row.incarnation, revision: row.revision, content,
+      ...(replacement ? { reply_watch_id: replacement[1]!, delivery_replacement: true as const } : {}), ...(source ? { reply_watch_id: source[1]! } : {}),
       origin_contract_id: row.contract_id, created_at: row.created_at, updated_at: row.updated_at };
   };
   return {

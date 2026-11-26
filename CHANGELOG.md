@@ -7,6 +7,179 @@ checkpoint was cut. One entry per published export; the machine-readable
 provenance for each — source commit, tree, payload digest, and what was omitted
 — lives in `.recued-public-export.json`.
 
+## 26.11.26 — 2026-11-26
+
+136 commits since 26.11.22.
+
+The web app has a desktop layout for nearly every screen, and the pages your visitors open are laid
+out for wide screens too. Recued can watch an email you sent and, when nobody replies, save a
+follow-up draft for you to review. Search finds runs, settings, connections, saved views and reply
+watches, and lets you step through what it found. Opening and reading web pages no longer ask, and
+with Browser Bridge 0.0.15 your AI can do and read more in them. Updates after this one finish on a
+slow connection.
+
+### Before you update
+
+- **Update Recued before installing or updating Browser Toolkit.** Its new version needs this
+  release; an older server refuses it and keeps the version it has.
+- **Update Recued before updating Receipts.** Its new version leaves each refund for you to confirm
+  with "Review statement credits", which needs this release.
+- **Some browser improvements need Browser Bridge 0.0.15**, which is being submitted to the Chrome
+  Web Store. They include double-clicking, pasting, dragging, choosing several files at once or
+  dropping them on a page, scrolling sideways, moving a video or audio player to a time, waiting for
+  a file a page prepares, collecting a table that loads as you scroll, and the fuller page reading
+  below. Until your Bridge updates, steps that need them say to update it, and everything else
+  works as before. Publishing Recued does not update your installed Bridge.
+- **On a slow connection, this update can still stop after 10 minutes.** Your current server
+  downloads it with its old 10-minute limit, and so does `recued update apply`. If "Updating…"
+  turns back into "Update to 26.11.26" after about 10 minutes, update over a faster connection.
+  Updates after this one allow a slow download up to 6 hours.
+- **The hosted app's new controls need this release.** On an older server, reply watches, statement
+  credits, customer watches and the Focus block preview cannot be used until you update it, and
+  Search cannot look through your runs.
+
+### Added
+
+- **A desktop layout for nearly every screen.** In a window at least 1,280 pixels wide, used with a
+  mouse or trackpad, lists keep what you open beside them. Mail has a reading pane; Contacts, Files,
+  Logs, Records, Memory and Installed recipes preview the row you pick; and Tasks, Notes,
+  Commitments, Bookings, Reminders, Form responses and Mail facts open beside their lists. A project
+  keeps its tasks in view, Calendar shows the chosen day beside the month, Today keeps due reminders
+  and ready drafts in a column of their own, Chat fills the window's height, and Back returns you to
+  the same row with your filters.
+- **Desktop workspaces across the app.** Yours gives Assets, Pursuits, Occasions and Episodes a list
+  with a preview, and Proposals and Due a queue. Automation shows Schedules, Triggers and Auto-run
+  with their details beside the list and groups Coming up as an agenda. Connections does the same
+  for mailboxes, calendars, file sources, Apps & APIs and Webhooks, and Contracts for each kind of
+  contract, with Connect, Ops sections you can jump to, Permission tests, app approvals, "Rules for
+  every contract" and a new contract beside the list. Approvals is a queue you move through with
+  the arrow keys. Set up, Stats, Kitchen, Packs, Recipes, Settings, Active Logs and writing an email
+  have wide layouts too, and a switcher moves between your saved views.
+- **Pin the navigation.** In a window at least 1,536 pixels wide, "Pin navigation" keeps the menu
+  beside every page, and on a desktop "Collapse collections" folds Data's list of collections away
+  to make room.
+- **Your visitors' pages on wide screens.** Reception's public pages for booking, rescheduling,
+  intake forms, uploads, sign-offs, request status and receipts, its landing page, and the page
+  where a customer claims the access you issued them are laid out for desktop. A closed link now
+  shows "This link is unavailable" and tells the visitor to ask you for a new one. In the app,
+  "View as visitor" sits beside a page's sharing details.
+- **Follow up when nobody replies.** Open a sent email in Data → Mail and choose "Follow up if no
+  reply" with a time to check. If nobody you wrote to has replied by then, Recued saves a short
+  follow-up draft in that conversation for you to review and send; it never sends it itself. A
+  reply, or a newer email from you, ends the watch, and "Open received reply" opens that reply. An
+  automatic reply such as an out-of-office does not end it, and anything Recued cannot be sure of
+  waits for you. "Waiting for" can name one recipient instead of anyone on To or Cc, you can change
+  the check time or snooze a ready follow-up, and "Reply watches" lists them all.
+- **Watch for a reply as you send.** When you write an email in the app, "Watch for a reply" starts
+  a watch once it is sent, checking after 1 hour, 1 day, 2 days or 1 week, and works with a
+  scheduled send too. You are told when a follow-up draft is ready and, with "Notify me when a reply
+  arrives", when someone replies; neither notice names the email's subject, recipients or text.
+  Today lists due checks, ready drafts and watches that need you, and Search everything finds them.
+- **Schedule a follow-up unless they reply first.** Scheduling a follow-up draft offers "Skip if
+  they've replied": a reply from a recipient before the send time skips the send, and an unclear
+  conversation holds it for you to review.
+- **Keep a task with the email you are waiting on.** A reply watch can link one of your tasks, or
+  create one for it, and the task shows how the watch stands. A reply never completes the task;
+  that stays your choice. "Keep tracking this task", when you send or schedule the follow-up, moves
+  the link to its new watch once Recued finds the email in Sent.
+- **Emails that could not be delivered.** When your mailbox gets a report that a watched email
+  could not be delivered to a recipient for good, the watch shows "Delivery failed for" that
+  address, the reported reason and "Open delivery report", and stops preparing a follow-up. "Draft
+  replacement" copies the email as plain text, with its attachments, to that recipient alone, so
+  you can correct the address and send or schedule it. A report counts only when it names that
+  exact email; anything less certain waits for you.
+- **Search finds runs, settings, connections and saved views.** In Search everything, Runs finds
+  history by recipe name, recipe ID or run ID, filtered by outcome, such as Failed, Partial result,
+  Needs checking or Awaiting approval, and by start time in the last 24 hours, 7 days or 30 days; a
+  saved view keeps the filters. Settings finds a setting by name and opens its panel, Connections
+  shows each account and API connection with its health, and Saved views finds your saved views.
+- **Review what Search found, one at a time.** "Review matching runs" steps through them with
+  "Previous matching run" and "Next matching run", loading older ones as you go, and reruns
+  nothing. A pending decision opened from Search offers "Next matching decision".
+- **Watch for a customer coming back.** A decision from Decision Log, in Data → Records, offers
+  "Watch customer reengagement": link it to a customer account synced from HubSpot or Salesforce,
+  and when that customer emails again after at least 60 quiet days, the decision returns to Today
+  under "Customer decisions to review" with its original rationale.
+- **Confirm a refund from your bank statement.** A refund commitment from Receipts offers "Review
+  statement credits": choose the credits that posted for that order from a statement you brought in
+  with Bank statement import, and the commitment shows what was expected, what you confirmed and
+  what is still outstanding.
+- **Try Focus block proposer from Set up.** Set up shows a worked example of a meeting-heavy day,
+  then "Use my calendar" previews tomorrow's focus blocks from one of your calendars without
+  changing anything, and "Set up a recurring run" schedules it. It needs Daily Ops.
+- **Add Yours assets to a chat message.** "Add records" finds your Yours assets by name. The message
+  calls each one "Selected asset", so its name stays out of the message, and your AI reads the
+  asset itself.
+- **More your AI can do in web pages, with Browser Bridge 0.0.15.** It can double-click, paste text
+  into a field, drag an item onto another, choose several files at once or drop them on an upload
+  area, scroll left and right, and move a video or audio player to a time. After a click it can
+  wait for a file the page prepares, such as an export, and keep up to 20 of them among your files,
+  2.5 MB together, to upload elsewhere. Each asks as typing and clicks do, naming what moves and
+  which files go.
+- **Pages read more fully, with Browser Bridge 0.0.15.** Reads show the current step of a
+  multi-step page, which item has keyboard focus, how a table is sorted, a field's validation
+  message, the text selected in a field, a video's captions, meters and sliders, the labels of icons
+  and drawings, list numbers, items in the order they appear on screen, and frames inside frames.
+  Keys act as they do for you: Escape clears a search box, Tab follows the page's order, Home and
+  End move through text, with Shift to select, arrows step number fields and sliders, and Control+Z
+  or Command+Z undoes typing. Asked for a whole table that loads as you scroll, your chat keeps
+  scrolling until it has every row, or stops with the rows it could confirm.
+- **Allow an AI app on a site until its job ends.** When an AI app types, clicks or sends on a site
+  during a job it started, the ask offers "Allow on <site> until this job ends". That kind of change
+  on that site then runs without asking until the app ends the job, or an hour after it began.
+  Uploads, other sites and other kinds of change still ask, and Contracts lists the pass as "For one
+  job of this app".
+
+### Changed
+
+- **Opening and reading web pages no longer ask.** For your chat, AI apps and recipes, opening a
+  page, reading it, going to another address in a tab and turning a list's pages by its Next link
+  are reads, as other reads are, so a recipe that only reads pages raises no question before it
+  runs. A page that does something just by being visited can now be opened without asking. Typing,
+  clicks, keys, sent forms, uploads, Back, reloading and closing a tab still ask unless you allowed
+  them on that site, and the Bridge still acts only on sites you allowed it on. "Try it" in Kitchen
+  now asks before changes only.
+- **A task or note you pick is the one your chat works with.** When you add one with "Add records",
+  another record of the same title is no longer marked as unclear, which made those replies slower.
+  It is still considered when your words name a person or place on it.
+- **AI apps and your chat no longer pass credentials to a recipe they run.** Running a recipe
+  offered a place for keys and tokens, which put them in the AI's own record of the conversation.
+  Credentials stay in your connections, and a run that sends them anyway is refused before it
+  starts, without repeating them.
+- **Receipts confirms refunds from your statement.** "Refunds to watch for" still adds a commitment
+  when an email says an order was cancelled, but an email saying the refund was issued no longer
+  marks it done. Confirm the refund with "Review statement credits", then choose "Mark fulfilled".
+- **When several tabs show the same address,** your AI looks at each and uses the one you meant,
+  instead of the first it finds.
+- **"Download a file from a web address" gives up on a silent site after 20 seconds** instead of
+  waiting 2 minutes, and says the site sent nothing for 20 seconds.
+- **Long dialogs keep their buttons in view.** On short screens, the Run a Recipe dialog, with its
+  Schedule and Trigger tabs, and long editors such as New contact scroll as one body, with Cancel
+  and the main button always showing. On a phone, Search shows its first matches on the first
+  screen, Back keeps your query, type and place, and Today lists overdue and due-today work before
+  reminders.
+
+### Fixed
+
+- **Updates on a slow connection finish.** A release download now stops only when nothing arrives
+  for a minute, or after 6 hours, instead of after 10 minutes in all. When an update fails before
+  the restart, Settings → Updates says your server is still on its version and the update did not
+  take effect, and why, such as a download that stalled or was too slow.
+- **AI apps on a contract's key can start and end a job.** When its contract switches on a browser
+  tool, an AI app connected with that contract's key can start and end a job, so its work in your
+  browser can become a recipe draft; both were refused before. The contract's Ops and Recipes tabs
+  say so.
+- **Saving a large file from a web page waits while it is still arriving.** Your server keeps
+  downloading for up to 2 minutes, giving up after 20 seconds with nothing new, instead of stopping
+  at 1 minute. When it cannot, the message says why, rather than only that the file was too large
+  for the Browser Bridge.
+- **Browser Toolkit installed from the Marketplace works fully in your chat.** Its tools were
+  described to your chat less fully than they should be, so steps that pick out part of a page or
+  filter what it read could be refused as not coming from your words.
+- **Asking your chat to answer in JSON works.** An answer the AI writes as JSON is delivered as text
+  instead of failing.
+- **Chat's "Choose from Files" keeps Attach and Cancel in view**, however long the list.
+
 ## 26.11.22 — 2026-11-22
 
 Webhooks hold through restarts, long runs and failures, and a message that could not reach its

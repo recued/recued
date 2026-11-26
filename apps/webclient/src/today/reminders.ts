@@ -158,10 +158,10 @@ export const createTodayReminders = (deps: {
         { key: 'today', label: 'Today', matches: (row: ReminderView) => row.at > span.now && row.at < span.tomorrow },
         { key: 'next', label: 'Next seven days', matches: (row: ReminderView) => row.at >= span.tomorrow }];
       return `<section class="today-view today-reminders" data-today-reminders aria-label="One-off reminders" aria-busy="${loading}">
-        <header class="today-header"><div><h2 tabindex="-1" ${focus('heading')}>Reminders</h2>
-          <p>One-off reminders, grouped by your local day. Times use each reminder’s time zone.</p></div>
+        <header class="today-header today-reminder-summary"><div><h2 tabindex="-1" ${focus('heading')}>Reminders</h2>
+          <p>${loaded ? `${rows.length} waiting` : 'One-off reminders'} · Your local day</p></div>
           <button type="button" class="today-refresh" ${act('refresh')} ${focus('refresh')}${blocked}>Refresh reminders</button></header>
-        <p role="status" tabindex="-1" ${focus('notice')}>${e(notice ?? '')}</p>
+        ${notice ? `<p role="status" tabindex="-1" ${focus('notice')}>${e(notice)}</p>` : ''}
         ${loading ? `<p role="status">${loaded ? 'Updating reminders. These are the last confirmed results.' : 'Loading reminders…'}</p>` : ''}
         ${error ? `<p role="${unsupported ? 'status' : 'alert'}" tabindex="-1" ${focus('error')}>${e(error)} <a href="#data/reminder">Open Reminders</a></p>` : ''}
         ${loaded && !rows.length && !error && !loading ? '<p>No one-off reminders waiting in this window.</p>' : ''}

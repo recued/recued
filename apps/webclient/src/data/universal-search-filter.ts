@@ -5,9 +5,9 @@ import type { UniversalSearchProps } from './universal-search.js';
 export const SEARCH_TYPE_ATTR = 'data-recued-universal-search-type';
 export const SEARCH_CLEAR_TYPE_ACTION = 'universal-search-clear-type';
 export const SEARCH_TYPE_LABELS: Record<UniversalSearchResultType, string> = {
-  all: 'All types', chat: 'Chats', mail: 'Mail', draft: 'Drafts', file: 'Files', contact: 'Contacts',
+  all: 'All types', chat: 'Chats', mail: 'Mail', draft: 'Drafts', follow_up: 'Reply watches', file: 'Files', contact: 'Contacts',
   task: 'Tasks', note: 'Notes', project: 'Projects', commitment: 'Commitments', booking: 'Bookings', calendar: 'Calendar',
-  reminder: 'Reminders', scheduled_prompt: 'Scheduled prompts', decision: 'Pending decisions', asset: 'Assets', capability: 'Recipes & packs',
+  reminder: 'Reminders', scheduled_prompt: 'Scheduled prompts', decision: 'Pending decisions', run: 'Runs', connection: 'Connections', saved_view: 'Saved views', setting: 'Settings', asset: 'Assets', capability: 'Recipes & packs',
 };
 export interface SearchTypeCount { loaded: number; more: boolean; pending: boolean; unavailable: boolean }
 const count = (loaded = 0, more = false, pending = false, unavailable = false): SearchTypeCount => ({ loaded, more, pending, unavailable });
@@ -33,8 +33,17 @@ export const searchTypeCounts = (props: UniversalSearchProps): Record<UniversalS
     props.reminderSearch?.loading === true, !props.reminderSearch || props.reminderSearch.unsupported === true || props.reminderSearch.error !== undefined);
   result.scheduled_prompt = count(props.promptSearch?.matches.length ?? 0, false, props.promptSearch?.loading === true,
     !props.promptSearch || props.promptSearch.unsupported === true || props.promptSearch.error !== undefined);
+  result.follow_up = count(props.followUpSearch?.matches.length ?? 0, !!props.followUpSearch?.next_cursor, props.followUpSearch?.loading === true,
+    !props.followUpSearch || props.followUpSearch.unsupported === true || props.followUpSearch.error !== undefined);
   result.decision = count(props.decisionSearch?.matches.length ?? 0, false, props.decisionSearch?.loading === true,
     !props.decisionSearch || props.decisionSearch.incomplete === true);
+  result.setting = count(props.settingsSearch?.matches.length ?? 0, false, false, !props.settingsSearch);
+  result.saved_view = count(props.savedViewSearch?.matches.length ?? 0, false, props.savedViewSearch?.loading === true,
+    !props.savedViewSearch || props.savedViewSearch.unsupported === true || !!props.savedViewSearch.error);
+  result.connection = count(props.connectionSearch?.matches.length ?? 0, false, props.connectionSearch?.loading === true,
+    !props.connectionSearch || props.connectionSearch.sources.some(source => source.unavailable || !!source.error));
+  result.run = count(props.runSearch?.matches.length ?? 0, !!props.runSearch?.next_cursor,
+    props.runSearch?.loading === true, !props.runSearch || props.runSearch.unsupported === true || !!props.runSearch.error);
   result.draft = count((props.draftSearch?.matches.length ?? 0) + (props.recoveryDraftSearch?.matches.length ?? 0), !!props.draftSearch?.next_cursor,
     props.draftSearch?.loading === true || props.recoveryDraftSearch?.loading === true,
     (!props.draftSearch && !props.recoveryDraftSearch?.available) || props.draftSearch?.unsupported === true || props.draftSearch?.error !== undefined || !!props.recoveryDraftSearch?.issues.length);
@@ -80,9 +89,20 @@ export const filterUniversalSearch = (props: UniversalSearchProps, type: Univers
     chatSearch: type === 'chat' ? props.chatSearch : undefined,
     reminderSearch: type === 'reminder' ? props.reminderSearch : undefined,
     promptSearch: type === 'scheduled_prompt' ? props.promptSearch : undefined,
+    followUpSearch: type === 'follow_up' ? props.followUpSearch : undefined,
     promptOpening: type === 'scheduled_prompt' ? props.promptOpening : undefined,
     promptOpenError: type === 'scheduled_prompt' ? props.promptOpenError : undefined,
     decisionSearch: type === 'decision' ? props.decisionSearch : undefined,
+    settingsSearch: type === 'setting' ? props.settingsSearch : undefined,
+    savedViewSearch: type === 'saved_view' ? props.savedViewSearch : undefined,
+    savedViewOpening: type === 'saved_view' ? props.savedViewOpening : undefined,
+    savedViewOpenError: type === 'saved_view' ? props.savedViewOpenError : undefined,
+    connectionSearch: type === 'connection' ? props.connectionSearch : undefined,
+    connectionOpening: type === 'connection' ? props.connectionOpening : undefined,
+    connectionOpenError: type === 'connection' ? props.connectionOpenError : undefined,
+    runSearch: type === 'run' ? props.runSearch : undefined,
+    runOpening: type === 'run' ? props.runOpening : undefined,
+    runOpenError: type === 'run' ? props.runOpenError : undefined,
     decisionOpening: type === 'decision' ? props.decisionOpening : undefined,
     decisionOpenError: type === 'decision' ? props.decisionOpenError : undefined,
     documentSearch: type === 'file' ? props.documentSearch : undefined,
@@ -96,7 +116,7 @@ export const filterUniversalSearch = (props: UniversalSearchProps, type: Univers
   };
 };
 
-export const renderSearchTypeFilter = (props: UniversalSearchProps): string => {
+export const renderSearchTypeFilter = (props: UniversalSearchProps, compact = false): string => {
   const selected = props.resultType ?? 'all', counts = searchTypeCounts(props), searching = props.query.trim().length > 0;
   return `<div class="rq-type-controls">
     <label for="rq-result-type">Result type</label><select id="rq-result-type" ${SEARCH_TYPE_ATTR} aria-describedby="rq-type-counts"${props.searchWriting || props.reminderTriage?.writing ? ' disabled' : ''}>${UNIVERSAL_SEARCH_RESULT_TYPES.map(type => {
@@ -106,8 +126,8 @@ export const renderSearchTypeFilter = (props: UniversalSearchProps): string => {
       const suffix = searching ? ` · ${value.loaded || !state ? number : ''}${value.loaded && state ? ' · ' : ''}${state}` : '';
       return `<option value="${type}"${type === selected ? ' selected' : ''}>${e(SEARCH_TYPE_LABELS[type] + suffix)}</option>`;
     }).join('')}</select>
-    ${selected !== 'all' ? `<button type="button" class="rq-retry" ${e(props.actionAttr)}="${SEARCH_CLEAR_TYPE_ACTION}"${props.searchWriting || props.reminderTriage?.writing ? ' disabled' : ''}>Clear type filter</button>` : ''}
-  </div><p class="rq-subtle" id="rq-type-counts">Counts show loaded results. + means more may be available.</p>`;
+    ${!compact && selected !== 'all' ? `<button type="button" class="rq-retry" ${e(props.actionAttr)}="${SEARCH_CLEAR_TYPE_ACTION}"${props.searchWriting || props.reminderTriage?.writing ? ' disabled' : ''}>Clear type filter</button>` : ''}
+  </div>${compact ? '' : '<p class="rq-subtle" id="rq-type-counts">Counts show loaded results. + means more may be available.</p>'}`;
 };
 
 /** Retire old numbers at the edit boundary without replacing the search input

@@ -69,6 +69,29 @@ const BOXES = `<!doctype html><html><head><title>Boxes</title></head><body style
 <div id="article" style="width:600px">${bands(500).split('</div>').slice(0, 6).join('</div>')}</div></div>
 <div style="height:400px"></div></body></html>`;
 
+const NESTED_SCROLL = `<!doctype html><html><head><title>Nested scroll</title><style>
+body { margin:0 }
+#outer { height:320px; width:460px; overflow:auto; overflow-anchor:none }
+#inner { height:180px; overflow:auto; overflow-anchor:none }
+#tiny { height:495px; overflow:auto }
+.spacer { height:600px }
+button { display:block; height:20px }
+</style></head><body>
+<input id="owner" aria-label="Owner field">
+<div id="outer">
+  <div id="inner"><div class="spacer"></div><button id="anchor">Anchored row</button><div class="spacer"></div></div>
+  <div id="tiny"><div style="height:500px"><button id="tiny-anchor">First item</button></div></div>
+  <div class="spacer"></div>
+</div></body></html>`;
+
+const WIDE_PANEL = `<!doctype html><html><head><title>Wide panel</title><style>
+body { margin:0 }
+#pan { width:320px; height:160px; overflow:auto; overflow-anchor:none }
+#pan-content { width:1280px; height:500px; }
+</style></head><body><div id="pan" role="region" aria-label="Ledger">
+  <div id="pan-content"><button id="column">First column</button></div>
+</div></body></html>`;
+
 /** D-335 slice U — a feed that loads twenty more items each time it is scrolled to its end, up to sixty. */
 const FEED_MORE = `<!doctype html><html><head><title>Feed</title></head><body style="margin:0"><div id="items">${
   Array.from({ length: 20 }, (_, i) => `<div style="height:100px">Item ${String(i + 1)}</div>`).join('')}</div>
@@ -109,7 +132,7 @@ beforeAll(async () => {
     response.writeHead(200, { 'content-type': 'text/html' });
     const path = new URL(request.url ?? '/', 'http://127.0.0.1').pathname;
     const pages: Record<string, string> = { '/picture': PICTURE, '/framed': FRAMED(other), '/inner': INNER, '/tall': TALL,
-      '/panel': PANEL, '/boxes': BOXES, '/feed-more': FEED_MORE };
+      '/panel': PANEL, '/boxes': BOXES, '/feed-more': FEED_MORE, '/nested-scroll': NESTED_SCROLL, '/wide-panel': WIDE_PANEL };
     response.end(pages[path] ?? OWNER);
   });
   base = await listen(server);
@@ -389,7 +412,8 @@ describe('D-335 slice U — a page scrolled a screen at a time, and left there, 
       expect(rest).toEqual({ page, url: `${base}${path}`, title: expect.any(String) });
       return { screen, screens };
     };
-    return { behind, scroll };
+    const read = () => send('inspect', { page }, BRIDGE_INSPECT_OUTPUT_KEYS);
+    return { behind, scroll, read };
   };
 
   it('the page: one screen on, to the end, back to the top, to a screen named; and it stays there', async () => {
@@ -413,6 +437,114 @@ describe('D-335 slice U — a page scrolled a screen at a time, and left there, 
     const [page, panel, shown] = await behind.evaluate(() => [scrollY, document.querySelector('#list')!.scrollTop,
       Math.min(document.querySelector('#list')!.clientHeight, innerHeight)]);
     expect([page, panel]).toEqual([0, Math.floor(shown! * 0.875)]);
+
+    const incidental = await behind.evaluate(() => {
+      document.querySelector('#list')!.scrollTop = 0;
+      document.body.style.overflow = 'visible';
+      document.body.style.height = 'calc(100vh + 5px)';
+      const root = document.scrollingElement!;
+      return root.scrollHeight - root.clientHeight;
+    });
+    expect(incidental).toBe(5);
+    expect((await scroll({ to: 'next' })).screen).toBe(2);
+    expect(await behind.evaluate(() => [scrollY, document.querySelector('#list')!.scrollTop]))
+      .toEqual([0, Math.floor(shown! * 0.875)]);
+  }, 180_000);
+
+  it('reveals an inspected anchor inside the inner scroll panel and advances from there', async () => {
+    const { behind, scroll, read } = await opened('/nested-scroll');
+    await behind.locator('#owner').focus();
+    const inspected = await read();
+    const ref = /ref="(e\d+)"[^>]*>Anchored row<\/button>/.exec(String(inspected.outputs?.html))?.[1];
+    expect(ref).toBeDefined();
+    expect((await scroll({ ref, to: 'next' })).screen).toBe(4);
+    const result = await behind.evaluate(() => {
+      const inner = document.querySelector('#inner')!;
+      const clip = inner.getBoundingClientRect();
+      const item = document.querySelector('#anchor')!.getBoundingClientRect();
+      return { inner: inner.scrollTop, outer: document.querySelector('#outer')!.scrollTop, page: scrollY,
+        visible: item.top >= clip.top && item.bottom <= clip.bottom, focus: document.activeElement?.id };
+    });
+    expect(result).toEqual({ inner: 3 * Math.floor(180 * 0.875), outer: 0, page: 0, visible: true, focus: 'owner' });
+  }, 180_000);
+
+  it('passes a short wrapper when inferring a panel and honors an explicitly named short panel', async () => {
+    const { behind, scroll } = await opened('/nested-scroll');
+    const positions = () => behind.evaluate(() =>
+      ['#outer', '#tiny'].map(selector => document.querySelector(selector)!.scrollTop));
+    const outerEnd = await behind.locator('#outer').evaluate(panel => panel.scrollHeight - panel.clientHeight);
+    const inferred = await scroll({ selector: '#tiny-anchor', to: 'bottom' });
+    expect(inferred.screen).toBe(inferred.screens);
+    expect(await positions()).toEqual([outerEnd, 0]);
+    await scroll({ selector: '#outer', to: 'top' });
+    expect(await positions()).toEqual([0, 0]);
+    await scroll({ selector: '#tiny', to: 'bottom' });
+    // The outer panel reveals the top of the named box. The box then takes the requested scroll.
+    expect(await positions()).toEqual([180, 5]);
+  }, 180_000);
+
+  it('keeps advancing inside a tall section after settling', async () => {
+    const { behind, scroll } = await opened('/boxes');
+    const first = await scroll({ selector: '#article', to: 'next' });
+    const position = await behind.evaluate(() => scrollY);
+    const second = await scroll({ selector: '#article', to: 'next' });
+    expect(first.screen).toBe(2);
+    expect(second.screen).toBe(3);
+    expect(await behind.evaluate(() => scrollY)).toBeGreaterThan(position);
+  }, 180_000);
+
+  it('scrolls a sole visible panel horizontally in both directions', async () => {
+    const { behind, scroll } = await opened('/wide-panel');
+    const panel = behind.locator('#pan');
+    const distance = await panel.evaluate(port => {
+      port.scrollTop = 60;
+      return Math.floor(port.clientWidth * 0.875);
+    });
+    expect((await scroll({ to: 'right' })).screen).toBe(2);
+    expect(await panel.evaluate(port => [port.scrollLeft, port.scrollTop, scrollX])).toEqual([distance, 60, 0]);
+    expect((await scroll({ selector: '#pan', to: 'left' })).screen).toBe(1);
+    expect(await panel.evaluate(port => [port.scrollLeft, port.scrollTop, scrollX])).toEqual([0, 60, 0]);
+    expect((await scroll({ to: 'left' })).screen).toBe(1);
+    expect(await panel.evaluate(port => port.scrollLeft)).toBe(0);
+  }, 180_000);
+
+  it('skips incidental horizontal overflow around an inspected element', async () => {
+    const { behind, scroll, read } = await opened('/wide-panel');
+    const distance = await behind.evaluate(() => {
+      const column = document.querySelector('#column')!;
+      const wrapper = document.createElement('div');
+      wrapper.id = 'thin-pan';
+      wrapper.style.cssText = 'overflow-x:auto;width:180px';
+      const content = document.createElement('div');
+      content.style.width = '185px';
+      column.replaceWith(wrapper);
+      wrapper.append(content);
+      content.append(column);
+      return Math.floor(document.querySelector('#pan')!.clientWidth * 0.875);
+    });
+    const view = await read();
+    const ref = /ref="(e\d+)"[^>]*>First column<\/button>/.exec(String(view.outputs?.html))?.[1];
+    expect(ref).toBeDefined();
+    await scroll({ ref, to: 'right' });
+    expect(await behind.evaluate(() => ['#pan', '#thin-pan'].map(id => document.querySelector(id)!.scrollLeft)))
+      .toEqual([distance, 0]);
+    await scroll({ selector: '#thin-pan', to: 'right' });
+    expect(await behind.locator('#thin-pan').evaluate(port => port.scrollLeft)).toBe(5);
+  }, 180_000);
+
+  it('moves a right-to-left panel in the named physical direction', async () => {
+    const { behind, scroll } = await opened('/wide-panel');
+    const panel = behind.locator('#pan');
+    const distance = await panel.evaluate(port => {
+      (port as HTMLElement).dir = 'rtl';
+      return Math.floor(port.clientWidth * 0.875);
+    });
+    const left = await scroll({ selector: '#pan', to: 'left' });
+    expect(left.screen).toBeLessThan(left.screens);
+    expect(await panel.evaluate(port => port.scrollLeft)).toBe(-distance);
+    const right = await scroll({ selector: '#pan', to: 'right' });
+    expect(right.screen).toBe(right.screens);
+    expect(await panel.evaluate(port => port.scrollLeft)).toBe(0);
   }, 180_000);
 
   it('a feed that loads more at its end: scrolled there, it is given the moment to draw them, and says it has more', async () => {

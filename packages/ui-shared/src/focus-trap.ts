@@ -24,6 +24,10 @@
 interface TrapNode {
   readonly tagName?: string;
   readonly disabled?: boolean;
+  readonly checked?: boolean;
+  readonly form?: unknown;
+  getClientRects?(): { length: number };
+  scrollIntoView?(options: ScrollIntoViewOptions): void;
   readonly children?: Iterable<TrapNode> | ArrayLike<TrapNode>;
   getAttribute?(name: string): string | null;
   focus?(): void;
@@ -76,7 +80,11 @@ const attr = (node: TrapNode, name: string): string | null =>
  *  link-with-href / form control / `<summary>` / explicitly-tabbable element.
  *  A negative or non-numeric `tabindex` (`-1` / `-2` / `bogus`) removes it. */
 const isFocusable = (node: TrapNode): boolean => {
-  if (node.disabled === true) return false;
+  if (node.disabled === true || attr(node, 'hidden') !== null || attr(node, 'inert') !== null || attr(node, 'aria-hidden') === 'true') return false;
+  if (node.getClientRects && node.getClientRects().length === 0) return false;
+  const element = node as HTMLElement;
+  const style = element.ownerDocument?.defaultView?.getComputedStyle?.(element);
+  if (style?.visibility === 'hidden' || style?.visibility === 'collapse') return false;
   const tabindex = attr(node, 'tabindex');
   if (tabindex !== null) {
     const order = Number.parseInt(tabindex, 10);
@@ -103,6 +111,7 @@ const childList = (node: TrapNode): TrapNode[] => {
 
 const walk = (root: TrapNode, visit: (node: TrapNode) => void): void => {
   for (const child of childList(root)) {
+    if (attr(child, 'hidden') !== null || attr(child, 'inert') !== null) continue;
     visit(child);
     // A collapsed <details> keeps ONLY its <summary> in the tab order; its
     // content is still in the DOM tree but unreachable, so visit the summary
@@ -122,7 +131,17 @@ const collectFocusable = (root: TrapNode): TrapNode[] => {
   walk(root, (node) => {
     if (isFocusable(node)) out.push(node);
   });
-  return out;
+  // A radio group has one Tab stop; arrow keys remain native within it.
+  return out.filter(node => {
+    const name = attr(node, 'name');
+    if (tag(node) !== 'INPUT' || attr(node, 'type') !== 'radio' || !name) return true;
+    const group = out.filter(other => tag(other) === 'INPUT' && attr(other, 'type') === 'radio'
+      && attr(other, 'name') === name && other.form === node.form);
+    return node === (group.find(other => other.checked === true) ?? group[0]);
+  }).sort((a, b) => {
+    const order = (node: TrapNode) => { const n = Number(attr(node, 'tabindex')); return n > 0 ? n : Infinity; };
+    return order(a) - order(b);
+  });
 };
 
 /** The element to focus on open: the container itself if it's the dialog
@@ -139,7 +158,20 @@ const initialFocusTarget = (container: TrapNode): TrapNode => {
 };
 
 const focusNode = (node: TrapNode | null): void => {
-  if (node !== null && typeof node.focus === 'function') node.focus();
+  if (node !== null && typeof node.focus === 'function') {
+    node.focus();
+    node.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
+  }
+};
+
+/** Traverse the currently rendered dialog, including Safari-skipped buttons. */
+export const focusNextInDialog = (container: HTMLElement, active: Element | null, backwards = false): void => {
+  const focusables = collectFocusable(container as unknown as TrapNode);
+  if (!focusables.length) { focusNode(container); return; }
+  const index = focusables.indexOf(active as unknown as TrapNode);
+  const next = index < 0 ? (backwards ? focusables.length - 1 : 0)
+    : (index + (backwards ? -1 : 1) + focusables.length) % focusables.length;
+  focusNode(focusables[next]!);
 };
 
 export const wireFocusTrap = (
@@ -165,35 +197,9 @@ export const wireFocusTrap = (
     if ((event as KeyboardEvent).key !== 'Tab') return;
     const container = opts.getContainer();
     if (container === null) return; // dialog gone → leave focus alone
-    const focusables = collectFocusable(container as unknown as TrapNode);
-    const active = docEvents.activeElement ?? null;
-    const preventDefault = (event as { preventDefault?: () => void })
-      .preventDefault;
-    if (focusables.length === 0) {
-      // Nothing tabbable → keep focus on the dialog surface itself.
-      preventDefault?.call(event);
-      focusNode(container as unknown as TrapNode);
-      return;
-    }
-    const first = focusables[0]!;
-    const last = focusables[focusables.length - 1]!;
-    const inTrap =
-      active === (container as unknown as TrapNode) || focusables.includes(active as TrapNode);
-    if (!inTrap) {
-      // Focus escaped (or a re-render detached it) → pull it back in.
-      preventDefault?.call(event);
-      focusNode((event as KeyboardEvent).shiftKey ? last : first);
-      return;
-    }
-    if ((event as KeyboardEvent).shiftKey) {
-      if (active === first || active === (container as unknown as TrapNode)) {
-        preventDefault?.call(event);
-        focusNode(last);
-      }
-    } else if (active === last) {
-      preventDefault?.call(event);
-      focusNode(first);
-    }
+    if ((event as KeyboardEvent).isComposing) return;
+    event.preventDefault?.();
+    focusNextInDialog(container, doc.activeElement, (event as KeyboardEvent).shiftKey);
   };
 
   let released = false;

@@ -16,7 +16,7 @@ import type { ReceptionManageRescheduleRun } from '../../../backend/server/src/p
 // The whole recovery flow uses native links and forms, under the shipped CSP.
 // The dispatcher and SQLite stores are real; calendar reads and the held
 // approval runner are controlled fixtures, with no provider writes.
-test.use({ javaScriptEnabled: false });
+test.use({ javaScriptEnabled: false, viewport: { width: 1280, height: 620 } });
 
 const startManage = async () => {
   const db = new Database(':memory:');
@@ -74,25 +74,35 @@ const startManage = async () => {
   };
 };
 
-test('a time taken after the picker loaded can be replaced on the same link and goes to approval once', async ({ page }) => {
+test('a time taken after the picker loaded can be replaced on the same link and goes to approval once', async ({ page, browserName }) => {
   const manage = await startManage();
   try {
-    await page.goto(manage.url);
+    expect((await page.goto(manage.url))?.status()).toBe(200);
+    const time = page.getByRole('combobox', { name: 'Choose a time' });
+    const currentBooking = page.getByRole('region', { name: 'Current booking' });
+    const requestTime = page.getByRole('button', { name: 'Request new time', exact: true });
+    await expect(currentBooking).toContainText('Times shown in UTC');
+    await expect(time).toHaveAccessibleDescription('Times shown in UTC');
+    const originalBooking = await currentBooking.innerText();
     const originalNonce = await page.locator('[name="form_nonce"]').inputValue();
-    const originalSlot = await page.getByLabel('Choose a time').inputValue();
+    const originalSlot = await time.inputValue();
     const [start_at, end_at] = originalSlot.split('|').map(Number);
     manage.setEvents([manage.currentSlot, { start_at: start_at!, end_at: end_at! }]);
     const conflict = page.waitForResponse(response => response.url() === manage.url && response.request().method() === 'POST');
-    await page.getByRole('button', { name: 'Request new time', exact: true }).click();
+    await requestTime.press('Enter');
     expect((await conflict).status()).toBe(409);
     await expect(page.getByRole('alert')).toContainText('Availability has been refreshed');
-    await expect(page.getByLabel('Choose a time').locator(`option[value="${originalSlot}"]`)).toHaveCount(0);
+    await expect(time).toHaveAccessibleDescription(/Availability has been refreshed.*Times shown in UTC/);
+    await expect(currentBooking).toHaveText(originalBooking);
+    await expect(time.locator(`option[value="${originalSlot}"]`)).toHaveCount(0);
     expect(await page.locator('[name="form_nonce"]').inputValue()).not.toBe(originalNonce);
     expect(manage.credentials.peek(manage.issued.secret, manage.now, 'manage').status).toBe('ok');
     expect(manage.calls).toHaveLength(0);
-    const replacement = await page.getByLabel('Choose a time').inputValue();
+    const replacement = await time.inputValue();
     expect(replacement).not.toBe(originalSlot);
-    await page.getByRole('button', { name: 'Request new time', exact: true }).focus();
+    await time.focus();
+    await page.keyboard.press(browserName === 'webkit' && process.platform === 'darwin' ? 'Alt+Tab' : 'Tab');
+    await expect(requestTime).toBeFocused();
     await page.keyboard.press('Enter');
     await expect(page.getByRole('heading', { name: 'Reschedule requested', exact: true })).toBeVisible();
     await expect(page.locator('body')).toContainText('sent for approval');

@@ -1,5 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
-import { TIER1_TOOL_GUIDE, type CatalogIngredientView, type OverrideView } from '@recued/contracts';
+import { TIER1_TOOL_GUIDE, type CatalogIngredientView, type ContractDefinitionView, type ContractListRequest, type OverrideView, type PermissionWorkbenchView } from '@recued/contracts';
 import { HARNESS_URL, installFullAppHooks } from './helpers/full-app.js';
 
 /** Contracts browser journeys against the deterministic full-app harness. */
@@ -90,6 +90,314 @@ test('Contracts restores the exact inventory row after Back', async ({ page }) =
   await expect(owner).toBeFocused();
 });
 
+const installPreviewInventory = async (page: Page): Promise<void> => {
+  await page.addInitScript(() => {
+    const contracts: ContractDefinitionView[] = Array.from({ length: 50 }, (_, index) => {
+      const number = index + 1;
+      return {
+        contract_id: `door_preview_${number}`,
+        display_name: `App contract ${number}`,
+        minted_at: 1_790_000_000_000,
+        minted_by: 'user',
+        scope: {},
+        grant_kind: 'standing',
+        lifecycle_state: number === 43 ? 'expired' : 'active',
+        door_types: number % 2 === 0 ? ['mcp'] : ['llm_gateway'],
+        max_uses: 5,
+        uses_remaining: 3,
+        use_period: 'day',
+        expiry_at: number === 43 ? 1_790_100_000_000 : 1_900_000_000_000,
+      };
+    });
+    window.__connectionsFixture = async (method, args) => {
+      if (method !== 'collection.contract.listContracts') return undefined;
+      const request = args as ContractListRequest;
+      if (request.contract_id) {
+        const row = contracts.find((contract) => contract.contract_id === request.contract_id);
+        return row ? { result: { contracts: [row] } } : undefined;
+      }
+      if (!request.exclude_derived_doors) return undefined;
+      const offset = request.cursor === 'preview-page-two' ? 25 : 0;
+      return { result: {
+        contracts: contracts.slice(offset, offset + 25),
+        total: contracts.length,
+        next_cursor: offset === 0 ? 'preview-page-two' : null,
+      } };
+    };
+  });
+};
+
+test('desktop Other contracts previews read-only summaries and restores the second page from detail', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await installPreviewInventory(page);
+  await page.goto(`${HARNESS_URL}?contracts=paged#contracts/view/others`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+
+  const preview = page.getByRole('region', { name: 'Contract preview', exact: true });
+  const list = page.locator('[data-recued-contracts-list]');
+  const row = list.getByRole('link', { name: /^App contract 42\b/ });
+  const otherRow = list.getByRole('link', { name: /^App contract 43\b/ });
+  const pageStatus = page.locator('[data-recued-contracts-page-status]');
+  const otherContracts = /#contracts\/view\/others$/;
+  await page.locator('[data-recued-contracts-page-next]').press('Enter');
+  await expect(pageStatus).toHaveText('Showing 26–50 of 50');
+
+  const detailReads = () => page.evaluate(() => ({
+    keys: window.__app.rpcCallCount('chat.inbound_token.list'),
+    grants: window.__app.rpcCallCount('contract.grant.read'),
+  }));
+  const reads = await detailReads();
+  await otherRow.click();
+  await expect(preview).toContainText('Expired');
+  await expect(preview).toContainText('None enabled');
+  await row.press('Space');
+  await expect(preview.getByRole('heading', { name: 'App contract 42', exact: true })).toBeFocused();
+  await expect(row).toHaveAttribute('aria-current', 'true');
+  await expect(preview).toContainText('MCP tools');
+  await expect(preview).toContainText(/3 of 5 uses left.*expires/);
+  await expect(page).toHaveURL(otherContracts);
+  expect(await detailReads()).toEqual(reads);
+  await page.keyboard.press('Escape');
+  await expect(row).toBeFocused();
+  await expect(preview.getByRole('link', { name: 'Open contract', exact: true })).toHaveCount(0);
+
+  await row.scrollIntoViewIfNeeded();
+  await row.press('Space');
+  const open = preview.getByRole('link', { name: 'Open contract', exact: true });
+  await open.focus();
+  const top = await list.evaluate((node) => node.scrollTop);
+  expect(top).toBeGreaterThan(0);
+  await open.press('Enter');
+  const heading = page.locator(`[${CONTRACTS_DETAIL_HEADING}="door_preview_42"]`);
+  await expect(heading).toBeFocused();
+  await page.getByRole('tab', { name: 'Ops', exact: true }).click();
+  await expect(page).toHaveURL(/#contracts\/door_preview_42\/ops$/);
+  const aiDoor = page.getByRole('checkbox', { name: 'The AI door', exact: true });
+  await aiDoor.press('Space');
+  await expect(aiDoor).toBeChecked();
+  await expect(aiDoor).toBeEnabled();
+
+  await page.goBack();
+  await expect(page).toHaveURL(otherContracts);
+  await expect(pageStatus).toHaveText('Showing 26–50 of 50');
+  await expect(row).toBeFocused();
+  await expect(preview).toContainText('MCP tools, The AI door');
+  expect(await list.evaluate((node) => node.scrollTop)).toBe(top);
+
+  await page.locator('[data-recued-contracts-page-previous]').press('Enter');
+  await expect(pageStatus).toHaveText('Showing 1–25 of 50');
+  await page.goForward();
+  await expect(heading).toBeFocused();
+  await expect(page.getByRole('tab', { name: 'Ops', exact: true })).toHaveAttribute('aria-selected', 'true');
+  await page.locator('[data-recued-contracts-back]').click();
+  await expect(page).toHaveURL(otherContracts);
+  await expect(pageStatus).toHaveText('Showing 26–50 of 50');
+  await expect(row).toBeFocused();
+  expect(await list.evaluate((node) => node.scrollTop)).toBe(top);
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(preview).toBeHidden();
+  await row.click();
+  await expect(heading).toBeFocused();
+  await expect(page).toHaveURL(/#contracts\/door_preview_42$/);
+});
+
+test('desktop Built-in contracts pins Self and restores page two from Self and a generated contract', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await page.addInitScript(() => {
+    const contracts: ContractDefinitionView[] = Array.from({ length: 50 }, (_, index) => {
+      const number = index + 1;
+      const channel = number % 2 === 0 ? 'webhook' : 'reception';
+      return {
+        contract_id: `door_builtin_${number}`,
+        display_name: channel === 'webhook' ? `Delivery ${number}` : `Public form ${number}`,
+        minted_at: 1_790_000_000_000,
+        minted_by: 'user',
+        scope: { channels: [channel], actors: ['anonymous'] },
+        grant_kind: 'standing',
+        lifecycle_state: number === 43 ? 'revoked' : 'active',
+        door_types: [channel],
+      };
+    });
+    window.__connectionsFixture = async (method, args) => {
+      if (method !== 'collection.contract.listContracts') return undefined;
+      const request = args as ContractListRequest;
+      if (request.contract_id) {
+        return { result: { contracts: contracts.filter((row) => row.contract_id === request.contract_id) } };
+      }
+      if (!request.derived_doors_only) return undefined;
+      const offset = request.cursor === 'built-in-page-two' ? 25 : 0;
+      return { result: {
+        contracts: contracts.slice(offset, offset + 25),
+        total: contracts.length,
+        next_cursor: offset === 0 ? 'built-in-page-two' : null,
+      } };
+    };
+  });
+  await page.goto(`${HARNESS_URL}?contracts=paged#contracts`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+
+  const preview = page.getByRole('region', { name: 'Contract preview', exact: true });
+  const pinned = page.getByRole('list', { name: 'Your contract', exact: true });
+  const self = pinned.getByRole('link', { name: /^Self \(you\)/ });
+  const list = page.locator('[data-recued-contracts-list]');
+  const form = list.getByRole('link', { name: /^Public form 43\b/ });
+  const webhook = list.getByRole('link', { name: /^Delivery 42\b/ });
+  const pageStatus = page.locator('[data-recued-contracts-page-status]');
+  const open = preview.getByRole('link', { name: 'Open contract', exact: true });
+  const back = page.locator('[data-recued-contracts-back]');
+  const grantReads = () => page.evaluate(() => window.__app.rpcCallCount('contract.grant.read'));
+
+  await expect(pageStatus).toHaveText('Showing 1–25 of 50 contracts you look after');
+  const reads = await grantReads();
+  await self.click();
+  await expect(preview.getByRole('heading', { name: 'Self (you)', exact: true })).toBeFocused();
+  await expect(preview).toContainText('Your Recued account');
+  await page.locator('[data-recued-contracts-page-next]').press('Enter');
+  await expect(pageStatus).toHaveText('Showing 26–50 of 50 contracts you look after');
+  await expect(self).toHaveAttribute('aria-current', 'true');
+  const selfTop = await self.evaluate((node) => node.getBoundingClientRect().top);
+
+  await form.click();
+  await expect(preview).toContainText('Revoked');
+  await expect(preview.getByRole('link', { name: 'Reception endpoints' })).toHaveAttribute('href', '#reception/endpoints');
+  await webhook.scrollIntoViewIfNeeded();
+  await webhook.press('Space');
+  await expect(preview.getByRole('heading', { name: 'Delivery 42', exact: true })).toBeFocused();
+  await expect(preview).toContainText('Active');
+  await expect(preview.getByRole('link', { name: 'Connections → Webhooks' })).toHaveAttribute('href', '#connections/webhooks');
+  await expect(page).toHaveURL(/#contracts$/);
+  expect(await grantReads()).toBe(reads);
+  await expect(self).toBeInViewport();
+  expect(await self.evaluate((node) => node.getBoundingClientRect().top)).toBe(selfTop);
+
+  await open.focus();
+  const top = await list.evaluate((node) => node.scrollTop);
+  expect(top).toBeGreaterThan(0);
+  await open.press('Enter');
+  const webhookHeading = page.locator(`[${CONTRACTS_DETAIL_HEADING}="door_builtin_42"]`);
+  await expect(webhookHeading).toBeFocused();
+  await page.getByRole('tab', { name: 'Entities', exact: true }).click();
+  await expect(page).toHaveURL(/#contracts\/door_builtin_42\/entities$/);
+  await page.goBack();
+  await expect(page).toHaveURL(/#contracts$/);
+  await expect(pageStatus).toHaveText('Showing 26–50 of 50 contracts you look after');
+  await expect(webhook).toBeFocused();
+  await expect(webhook).toHaveAttribute('aria-current', 'true');
+  expect(await list.evaluate((node) => node.scrollTop)).toBe(top);
+  await page.goForward();
+  await expect(webhookHeading).toBeFocused();
+  await expect(page.getByRole('tab', { name: 'Entities', exact: true })).toHaveAttribute('aria-selected', 'true');
+  await back.press('Enter');
+  await expect(webhook).toBeFocused();
+  expect(await list.evaluate((node) => node.scrollTop)).toBe(top);
+
+  await self.press('Space');
+  await open.press('Enter');
+  const selfHeading = page.locator(`[${CONTRACTS_DETAIL_HEADING}="user_self"]`);
+  await expect(selfHeading).toBeFocused();
+  await page.goBack();
+  await expect(self).toBeFocused();
+  expect(await list.evaluate((node) => node.scrollTop)).toBe(top);
+  await page.goForward();
+  await expect(selfHeading).toBeFocused();
+  await page.goBack();
+  await expect(self).toBeFocused();
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(preview).toBeHidden();
+  const mobileSelf = list.getByRole('link', { name: /^Self \(you\)/ });
+  await expect(mobileSelf).toBeFocused();
+  await mobileSelf.click();
+  await expect(selfHeading).toBeFocused();
+  await expect(page).toHaveURL(/#contracts\/user_self$/);
+});
+
+test('desktop Customer contracts previews templates and restores the exact template on page two', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await page.addInitScript(() => {
+    const templates: ContractDefinitionView[] = Array.from({ length: 50 }, (_, index) => ({
+      contract_id: `ct_template_${index + 1}`,
+      display_name: `Access template ${index + 1}`,
+      minted_at: 1_790_000_000_000,
+      minted_by: 'user',
+      scope: {},
+      grant_kind: 'customer_template',
+      lifecycle_state: 'active',
+    }));
+    window.__connectionsFixture = async (method, args) => {
+      if (method !== 'collection.contract.listContracts') return undefined;
+      const request = args as ContractListRequest;
+      if (request.contract_id) {
+        return { result: { contracts: templates.filter((row) => row.contract_id === request.contract_id) } };
+      }
+      if (request.grant_kind !== 'customer_template') return undefined;
+      const offset = request.cursor === 'template-page-two' ? 25 : 0;
+      return { result: {
+        contracts: templates.slice(offset, offset + 25),
+        total: templates.length,
+        next_cursor: offset === 0 ? 'template-page-two' : null,
+      } };
+    };
+  });
+  await page.goto(`${HARNESS_URL}?contracts=paged&settle_reads=1#contracts/view/customer`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+
+  const preview = page.getByRole('region', { name: 'Contract preview', exact: true });
+  const list = page.locator('[data-recued-contracts-list]');
+  const row = list.getByRole('link', { name: /^Access template 42\b/ });
+  const pageStatus = page.locator('[data-recued-contracts-page-status]');
+  const seller = page.getByRole('link', { name: /^Open Seller/ });
+  const customerList = /#contracts\/view\/customer$/;
+  await expect(seller).toHaveAttribute('href', '#settings/seller');
+  await page.locator('[data-recued-contracts-page-next]').press('Enter');
+  await expect(pageStatus).toHaveText('Showing 26–50 of 50');
+
+  const grantReads = () => page.evaluate(() => window.__app.rpcCallCount('contract.grant.read'));
+  const reads = await grantReads();
+  await row.scrollIntoViewIfNeeded();
+  await row.press('Space');
+  await expect(preview.getByRole('heading', { name: 'Access template 42', exact: true })).toBeFocused();
+  await expect(preview).toContainText('Active');
+  await expect(preview).toContainText('copies this template’s Ops and Entities permissions');
+  await expect(page).toHaveURL(customerList);
+  expect(await grantReads()).toBe(reads);
+  const open = preview.getByRole('link', { name: 'Open template', exact: true });
+  await expect(open).toHaveAttribute('href', '#contracts/ct_template_42');
+  await open.focus();
+  const top = await list.evaluate((node) => node.scrollTop);
+  expect(top).toBeGreaterThan(0);
+
+  await open.press('Enter');
+  const heading = page.locator(`[${CONTRACTS_DETAIL_HEADING}="ct_template_42"]`);
+  const entities = page.getByRole('tab', { name: 'Entities', exact: true });
+  const back = page.locator('[data-recued-contracts-back]');
+  await expect(heading).toBeFocused();
+  await expect(page.getByRole('tab', { name: 'Ops', exact: true })).toHaveAttribute('aria-selected', 'true');
+  await entities.click();
+  await expect(page).toHaveURL(/#contracts\/ct_template_42\/entities$/);
+  await page.goBack();
+  await expect(page).toHaveURL(customerList);
+  await expect(pageStatus).toHaveText('Showing 26–50 of 50');
+  await expect(row).toBeFocused();
+  await expect(row).toHaveAttribute('aria-current', 'true');
+  expect(await list.evaluate((node) => node.scrollTop)).toBe(top);
+  await page.goForward();
+  await expect(heading).toBeFocused();
+  await expect(entities).toHaveAttribute('aria-selected', 'true');
+  await back.press('Enter');
+  await expect(row).toBeFocused();
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(preview).toBeHidden();
+  await row.click();
+  await expect(heading).toBeFocused();
+  await back.click();
+  await expect(page).toHaveURL(customerList);
+  await seller.click();
+  await expect(page).toHaveURL(/#settings\/seller$/);
+});
+
 test('Contracts category tabs form one arrow-key keyboard stop', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(`${HARNESS_URL}?contracts=paged#contracts/view/others`);
@@ -137,6 +445,101 @@ test('Contracts category tabs form one arrow-key keyboard stop', async ({ page }
   await expect(page.locator(
     `[${CONTRACTS_LIST_TAB}][tabindex="0"]`,
   )).toHaveCount(1);
+});
+
+test('desktop contract creation preserves the roster, preview, and draft through retry', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 620 });
+  await installPreviewInventory(page);
+  await page.goto(
+    `${HARNESS_URL}?contracts=paged`
+      + '&contracts_mint_response=fail-once-slow-retry'
+      + '&hold_rpc=collection.contract.mintContract'
+      + '#contracts/view/others',
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+
+  const opener = page.locator('[data-recued-contracts-new]');
+  const list = page.locator('[data-recued-contracts-list]');
+  const shell = page.locator('[data-recued-webclient-content]');
+  const previous = page.locator('[data-recued-contracts-page-previous]');
+  const pageStatus = page.locator('[data-recued-contracts-page-status]');
+  await page.locator('[data-recued-contracts-page-next]').press('Enter');
+  await expect(pageStatus).toHaveText('Showing 26–50 of 50');
+  const row = list.getByRole('link', { name: /^App contract 42\b/ });
+  await row.scrollIntoViewIfNeeded();
+  await row.press('Space');
+  const preview = page.locator('[data-recued-contracts-preview]');
+  const title = preview.getByRole('heading', { name: 'App contract 42', exact: true });
+  await expect(title).toBeFocused();
+  const listTop = await list.evaluate(node => node.scrollTop);
+  const pageTop = await shell.evaluate(node => {
+    node.scrollTop = 28;
+    return node.scrollTop;
+  });
+  expect(listTop).toBeGreaterThan(0);
+  expect(pageTop).toBeGreaterThan(0);
+
+  await opener.press('Enter');
+  const editor = page.getByRole('group', { name: 'New contract', exact: true });
+  const name = editor.getByRole('textbox', { name: 'Contract name' });
+  const submit = editor.getByRole('button', { name: 'Create contract', exact: true });
+  await expect(name).toBeFocused();
+  await expect(preview).toBeHidden();
+  await expect(row).toBeInViewport({ ratio: 1 });
+  await expect(previous).toBeInViewport({ ratio: 1 });
+  await expect(submit).toBeInViewport({ ratio: 1 });
+  await opener.press('Enter');
+  await expect(editor).toHaveCount(0);
+  await expect(opener).toBeFocused();
+  await expect(title).toBeVisible();
+  await expect(row).toHaveAttribute('aria-current', 'true');
+  await expect(pageStatus).toHaveText('Showing 26–50 of 50');
+  expect(await list.evaluate(node => node.scrollTop)).toBe(listTop);
+  expect(await shell.evaluate(node => node.scrollTop)).toBe(pageTop);
+
+  await opener.press('Enter');
+  await name.fill('Desktop retry contract');
+  const cap = editor.getByRole('spinbutton', { name: 'Use limit, if you want one' });
+  const refill = editor.getByRole('combobox', { name: 'Refill period' });
+  const expiry = editor.getByLabel('Expiry (optional)');
+  await cap.fill('24');
+  await refill.selectOption('day');
+  await expiry.fill('2030-04-12T12:30');
+  await expiry.focus();
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(expiry).toBeFocused();
+  await expect(expiry).toBeInViewport({ ratio: 1 });
+  await page.setViewportSize({ width: 1280, height: 620 });
+  await expect(expiry).toBeInViewport({ ratio: 1 });
+
+  const mintCount = () => page.evaluate(() => window.__app.rpcCallCount('collection.contract.mintContract'));
+  const releaseMint = () => page.evaluate(() => window.__app.releaseRpcResponses?.('collection.contract.mintContract'));
+  await submit.press('Enter');
+  const creating = editor.getByRole('button', { name: 'Creating…', exact: true });
+  await expect(creating).toBeFocused();
+  await expect(previous).toHaveAttribute('aria-disabled', 'true');
+  await previous.dispatchEvent('click');
+  await creating.dispatchEvent('click');
+  await expect.poll(mintCount).toBe(1);
+  expect(await releaseMint()).toBe(1);
+  await expect(editor.getByRole('alert')).toContainText('Check limits and retry.');
+  await expect(submit).toBeFocused();
+  await expect(submit).toBeInViewport({ ratio: 1 });
+  await expect(previous).not.toHaveAttribute('aria-disabled');
+  await expect(pageStatus).toHaveText('Showing 26–50 of 50');
+  await expect(name).toHaveValue('Desktop retry contract');
+  await expect(cap).toHaveValue('24');
+  await expect(refill).toHaveValue('day');
+  await expect(expiry).toHaveValue('2030-04-12T12:30');
+
+  await submit.press('Enter');
+  await expect.poll(mintCount).toBe(2);
+  expect(await releaseMint()).toBe(1);
+  await expect(page).toHaveURL(/#contracts\/door_paged_new\/connect$/);
+  const heading = page.locator(`[${CONTRACTS_DETAIL_HEADING}="door_paged_new"]`);
+  await expect(heading).toHaveText('Desktop retry contract');
+  await expect(heading).toBeFocused();
+  await expect(page.getByRole('tab', { name: 'Connect', exact: true })).toHaveAttribute('aria-selected', 'true');
 });
 
 test('Contracts keeps new-contract disclosure and slow creation keyboard-owned', async ({ page }) => {
@@ -629,6 +1032,7 @@ test('Contracts list keeps the rules for every agreement full-size on a phone', 
   await page.waitForFunction(() => window.__app?.ready === true);
 
   const rules = page.locator('[data-recued-contracts-rules]');
+  await expect(page.locator('[data-recued-contracts-rules-open]')).toBeHidden();
   await rules.locator('summary').click();
   const form = rules.locator('[data-recued-permissions-create]');
   const save = form.locator('[data-recued-permissions-create-save]');
@@ -791,6 +1195,127 @@ test('Contracts detail tabs form one arrow-key keyboard stop', async ({ page }) 
   await expect(ops).toBeFocused();
 });
 
+test('Contracts Ops jumps to grant sections and shows new matches from a deep scroll', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 800 });
+  await page.goto(`${HARNESS_URL}?contracts=paged&hold_rpc=contract.grant.write#contracts/door_paged_01/ops`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+
+  const ops = page.locator('[data-recued-contract-grants][data-grant-view="ops"]');
+  const jumps = ops.getByRole('navigation', { name: 'Jump to grant section' });
+  const search = ops.getByRole('searchbox', { name: 'Find an operation' });
+  const collections = jumps.getByRole('button', { name: 'Collections', exact: true });
+  await expect(ops.locator('[data-recued-contract-grants-cell]').first()).toBeInViewport({ ratio: 1 });
+  await expect(collections).toBeInViewport({ ratio: 1 });
+  await jumps.getByRole('button', { name: 'AI tools', exact: true }).press('Enter');
+  await expect(ops.getByRole('heading', { name: 'AI tools', exact: true })).toBeFocused();
+  await collections.press('Enter');
+  const heading = ops.getByRole('heading', { name: 'Collections', exact: true });
+  await expect(heading).toBeFocused();
+  await expect(heading).toBeInViewport({ ratio: 1 });
+  await expect(search).toBeInViewport({ ratio: 1 });
+  await expect(page).toHaveURL(/#contracts\/door_paged_01\/ops$/);
+
+  const toggle = ops.locator('[data-recued-contract-grants-kind][data-kind="collection"]')
+    .getByRole('checkbox').first();
+  const wasChecked = await toggle.isChecked();
+  await toggle.focus();
+  await page.keyboard.press('Space');
+  await expect(toggle).toHaveAttribute('aria-busy', 'true');
+  await expect(toggle).toBeFocused();
+  await expect.poll(() => page.evaluate(() => window.__app.rpcCallCount('contract.grant.write'))).toBe(1);
+  expect(await page.evaluate(() => window.__app.releaseRpcResponses?.('contract.grant.write'))).toBe(1);
+  await expect(toggle).toBeChecked({ checked: !wasChecked });
+  await expect(toggle).toBeFocused();
+
+  await search.fill('core.ai');
+  await expect(jumps.getByRole('button', { name: 'AI tools', exact: true })).toBeHidden();
+  await expect(ops.locator('[data-recued-contract-grants-cell][data-entry="core.ai.classify"]'))
+    .toBeInViewport({ ratio: 1 });
+  await expect(search).toBeFocused();
+  await expect(collections).toBeVisible();
+  await jumps.getByRole('button', { name: 'Operations', exact: true }).press('Enter');
+  await expect(ops.locator('[data-recued-contract-grants-kind][data-kind="op"]').getByRole('heading').first())
+    .toBeFocused();
+
+  await search.clear();
+  await expect(jumps.getByRole('button', { name: 'AI tools', exact: true })).toBeVisible();
+  await ops.evaluate((root) => {
+    const input = root.querySelector<HTMLInputElement>('[data-recued-contract-grants-op-filter]')!;
+    const operations = [...root.querySelectorAll<HTMLButtonElement>('nav button')]
+      .find((button) => button.textContent === 'Operations')!;
+    input.focus();
+    input.value = 'core.contact.engagements.read';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    // Jump before the filter's debounced repaint.
+    operations.click();
+  });
+  const contacts = ops.getByRole('heading', { name: 'Contacts', exact: true });
+  await expect(contacts).toBeFocused();
+  await expect(contacts).toBeInViewport({ ratio: 1 });
+});
+
+test('desktop Permission tests returns to the filtered grant list and restores its scroll', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 620 });
+  await page.addInitScript(() => {
+    window.__connectionsFixture = async (method, raw) => {
+      if (method !== 'contract.regression.get') return undefined;
+      return { result: {
+        contract_id: (raw as { contract_id: string }).contract_id,
+        supported: true, revision: 0, live_digest: 'fixture-grants', grants: [],
+        credentials: [], catalog: [], catalog_truncated: false, draft: null,
+        drafts: [], history: [], qualification: null,
+      } satisfies PermissionWorkbenchView };
+    };
+  });
+  await page.goto(`${HARNESS_URL}?contracts=paged#contracts/door_paged_01/ops`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  const launcher = page.getByRole('button', { name: 'Permission tests', exact: true });
+  const editor = page.locator('[data-permission-workbench]');
+  const search = page.getByRole('searchbox', { name: 'Find an operation' });
+  const shell = page.locator('[data-recued-webclient-content]');
+  const permissionReads = () => page.evaluate(() => window.__app.rpcCallCount('contract.regression.get'));
+
+  await expect(launcher).toBeInViewport({ ratio: 1 });
+  expect(await permissionReads()).toBe(0);
+  await search.fill('core.ai');
+  await expect(page.locator('[data-recued-contract-grants-cell][data-entry="core.ai.classify"]')).toBeVisible();
+  await expect(page.locator('[data-recued-contract-grants-cell][data-entry="primitive.account.search"]')).toHaveCount(0);
+  const before = await shell.evaluate((element) => {
+    element.scrollTop = 280;
+    return element.scrollTop;
+  });
+  expect(before).toBeGreaterThan(0);
+
+  await launcher.press('Enter');
+  await expect(editor.getByRole('heading', { name: 'Permission tests and reviewed grants' })).toBeFocused();
+  await expect(search).toBeHidden();
+  const title = editor.getByLabel('Test suite title');
+  await expect(title).toBeInViewport({ ratio: 1 });
+  await title.fill('Working contract test');
+  await shell.evaluate((element) => { element.scrollTop = element.scrollHeight; });
+  const back = page.getByRole('button', { name: 'Back to Ops', exact: true });
+  await expect(back).toBeInViewport({ ratio: 1 });
+  await back.press('Enter');
+
+  await expect(launcher).toBeFocused();
+  await expect(editor).toBeHidden();
+  await expect(search).toHaveValue('core.ai');
+  await expect(page.getByRole('tab', { name: 'Ops', exact: true })).toHaveAttribute('aria-selected', 'true');
+  await expect(page).toHaveURL(/#contracts\/door_paged_01\/ops$/);
+  expect(await shell.evaluate((element) => element.scrollTop)).toBe(before);
+  await launcher.press('Enter');
+  await expect(title).toHaveValue('Working contract test');
+  await title.focus();
+  await page.setViewportSize({ width: 1279, height: 620 });
+  await expect(page.locator('summary').filter({ hasText: /^Permission tests and reviewed grants$/ })).toBeVisible();
+  await expect(title).toBeFocused();
+  await page.setViewportSize({ width: 1280, height: 620 });
+  await expect(title).toHaveValue('Working contract test');
+  await back.press('Enter');
+  await expect(launcher).toBeFocused();
+  expect(await permissionReads()).toBe(1);
+});
+
 test('Contracts keeps an operation grant toggle focused and single-flight', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(
@@ -858,7 +1383,7 @@ interface ContractRuleRecoveryFixture {
 }
 declare global { interface Window { __contractRuleRecovery: ContractRuleRecoveryFixture } }
 
-const bootRuleRecovery = async (page: Page): Promise<void> => {
+const prepareRuleRecovery = async (page: Page): Promise<void> => {
   await page.goto(`${HARNESS_URL}?contracts=paged#contracts/view/others`);
   await page.waitForFunction(() => window.__app?.ready === true);
   await page.evaluate(() => {
@@ -882,6 +1407,7 @@ const bootRuleRecovery = async (page: Page): Promise<void> => {
         item.released = true; item.resolve(item.reply);
       },
     };
+    const inventoryFixture = window.__connectionsFixture;
     Object.assign(window, {
       __contractRuleRecovery: fixture,
       __connectionsFixture: async (method: string, raw: unknown) => {
@@ -910,17 +1436,107 @@ const bootRuleRecovery = async (page: Page): Promise<void> => {
           fixture.deletes++;
           return { error: { code: 'unexpected_write', message: 'Catalog recovery must not delete rules.' } };
         }
-        return undefined;
+        return inventoryFixture?.(method, raw);
       },
     });
   });
+};
+
+const bootRuleRecovery = async (page: Page): Promise<void> => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await prepareRuleRecovery(page);
   const rules = page.locator('[data-recued-contracts-rules]');
   await rules.locator('summary').click();
   await expect(rules.locator('[data-recued-permissions-catalog-retry]')).toBeVisible();
 };
 
-test('Contracts retries its rule catalog without losing the draft or writing permissions', async ({ page }) => {
+test('desktop rules workspace preserves the draft, removal review, and exact inventory return', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 620 });
+  await installPreviewInventory(page);
+  await prepareRuleRecovery(page);
+  const launcher = page.locator('[data-recued-contracts-rules-open]');
+  const rules = page.locator('[data-recued-contracts-rules]');
+  const list = page.locator('[data-recued-contracts-list]');
+  const shell = page.locator('[data-recued-webclient-content]');
+  const preview = page.getByRole('region', { name: 'Contract preview', exact: true });
+  const row = list.getByRole('link', { name: /^App contract 42\b/ });
+  const status = page.locator('[data-recued-contracts-page-status]');
+  const readActivity = () => page.evaluate(() => ({
+    inventory: window.__contractRuleRecovery.inventoryReads,
+    upserts: window.__contractRuleRecovery.upserts.length,
+    deletes: window.__contractRuleRecovery.deletes,
+  }));
+
+  await expect(launcher).toBeInViewport({ ratio: 1 });
+  expect(await readActivity()).toEqual({ inventory: 0, upserts: 0, deletes: 0 });
+  await page.locator('[data-recued-contracts-page-next]').press('Enter');
+  await expect(status).toHaveText('Showing 26–50 of 50');
+  await row.scrollIntoViewIfNeeded();
+  await row.press('Space');
+  const previewTitle = preview.getByRole('heading', { name: 'App contract 42', exact: true });
+  await expect(previewTitle).toBeFocused();
+  const rosterTop = await list.evaluate((node) => node.scrollTop);
+  const pageTop = await shell.evaluate((node) => {
+    node.scrollTop = 32;
+    return node.scrollTop;
+  });
+  expect(rosterTop).toBeGreaterThan(0);
+  expect(pageTop).toBeGreaterThan(0);
+
+  await launcher.press('Enter');
+  await expect(rules.getByRole('heading', { name: 'Rules for every contract' })).toBeFocused();
+  await expect(list).toBeHidden();
+  const actor = rules.locator('[data-recued-permissions-create-actor]');
+  const approval = rules.locator('[data-recued-permissions-create-approval]');
+  const ingredient = rules.locator('[data-recued-permissions-create-ingredient]');
+  await expect(ingredient).toBeDisabled();
+  await actor.selectOption('user_self');
+  await approval.selectOption('always');
+  await page.evaluate(() => { window.__contractRuleRecovery.mode = 'hold'; });
+  await rules.locator('[data-recued-permissions-catalog-retry]').press('Enter');
+  await expect.poll(() => page.evaluate(() => window.__contractRuleRecovery.pending)).toBe(1);
+
+  const existing = rules.locator('[data-recued-permissions-row]');
+  const deleteRule = existing.getByRole('button', { name: 'Delete', exact: true });
+  await deleteRule.press('Enter');
+  const confirm = existing.getByRole('button', { name: 'Confirm', exact: true });
+  await confirm.focus();
+  await page.evaluate(() => window.__contractRuleRecovery.release(0));
+  await expect(ingredient).toBeEnabled();
+  await expect(rules.locator('[data-recued-permissions-create-save]')).toBeInViewport({ ratio: 1 });
+  await expect(confirm).toBeFocused();
+  await expect(existing).toContainText('Remove this rule?');
+  await existing.getByRole('button', { name: 'Cancel', exact: true }).press('Enter');
+  await expect(deleteRule).toBeVisible();
+  await expect(actor).toHaveValue('user_self');
+  await expect(approval).toHaveValue('always');
+
+  await rules.getByRole('button', { name: 'Back to inventory' }).press('Enter');
+  await expect(launcher).toBeFocused();
+  await expect(launcher).toHaveAttribute('aria-expanded', 'false');
+  await expect(rules).toBeHidden();
+  await expect(page).toHaveURL(/#contracts\/view\/others$/);
+  await expect(page.getByRole('tab', { name: 'Others' })).toHaveAttribute('aria-selected', 'true');
+  await expect(status).toHaveText('Showing 26–50 of 50');
+  await expect(row).toHaveAttribute('aria-current', 'true');
+  await expect(previewTitle).toBeVisible();
+  expect(await list.evaluate((node) => node.scrollTop)).toBe(rosterTop);
+  expect(await shell.evaluate((node) => node.scrollTop)).toBe(pageTop);
+
+  await launcher.press('Enter');
+  await expect(approval).toHaveValue('always');
+  await actor.focus();
   await page.setViewportSize({ width: 390, height: 844 });
+  await expect(rules.locator('summary')).toBeVisible();
+  await expect(actor).toBeFocused();
+  await expect(actor).toBeInViewport({ ratio: 1 });
+  await page.setViewportSize({ width: 1280, height: 620 });
+  await expect(actor).toBeInViewport({ ratio: 1 });
+  await expect(actor).toHaveValue('user_self');
+  expect(await readActivity()).toEqual({ inventory: 1, upserts: 0, deletes: 0 });
+});
+
+test('Contracts retries its rule catalog without losing the draft or writing permissions', async ({ page }) => {
   await bootRuleRecovery(page);
   const rules = page.locator('[data-recued-contracts-rules]');
   const actor = rules.locator('[data-recued-permissions-create-actor]');

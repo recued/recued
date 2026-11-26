@@ -34,6 +34,8 @@
  *  callers instead of hand-building requests. */
 
 import {
+  parseMailFollowUpPreference, readMailFollowUpTaskContinuation, parsePreapprovalJson, mailFollowUpHref, mailFollowUpRecipientReason, parseMailFollowUpAddress, type MailFollowUpPreference, type MailFollowUpSendRequest, type MailFollowUpSendIntent, type MailFollowUpTaskContext,
+  mailFollowUpRecipients, mailFollowUpWaitingForMatches,
   MAIL_MESSAGE_SCHEMA,
   MAIL_COMPOSE_REWRITE_ACTIONS,
   REWRITE_COMPOSED_MAIL_RECIPE_ID,
@@ -60,6 +62,7 @@ import {
   setComposeSubmittingTransition,
   setComposeValuesTransition,
   parseMailDraftContent,
+  mailDraftRecipeConfig,
   type ComposeDispatchHooks, type MailComposeValues,
   type MailDraft, type MailDraftContent, type ServerRpcRegistry, type PreparePreapproval,
   type MailComposeAttachment,
@@ -122,6 +125,7 @@ export type MailSendReadiness = MailComposeReadiness;
 export type MailComposeExecuteCaller = (args: {
   recipe_id: string;
   config: Record<string, unknown>;
+  mail_follow_up?: MailFollowUpSendRequest;
 }) => Promise<unknown>;
 
 /** The owner's file inventory, already projected to picker options. Supplied
@@ -140,7 +144,14 @@ export type MailComposeFilePickCaller = (
   signal?: AbortSignal,
 ) => Promise<readonly string[]>;
 
+type ReplyWatchCapabilities = ServerRpcRegistry['mail.follow_up.send.capabilities']['response'];
+
 export interface MailComposeDeps {
+  replyWatch?: {
+    capabilities(): Promise<ReplyWatchCapabilities>;
+    taskContext?(args: { watch_id: string; draft_id: string }): Promise<MailFollowUpTaskContext>;
+    prepared?(intent: MailFollowUpSendIntent): void;
+  };
   /** Notify a host when a dialog opens, closes, or changes its busy state. */
   onStateChanged?: () => void;
   /** The kept copy may have a new ID after a server save retired its predecessor. */
@@ -455,9 +466,34 @@ export const mountMailCompose = (
   let saved: MailDraft | null = null;
   let savedValues = '';
   let savedBrief = '';
+  let followUp: MailFollowUpPreference | null = null, followUpAvailable = false, followUpSchedulingAvailable = false, followUpShown = false;
+  let scheduledReplacementTaskAvailable = false, scheduledFollowUpTaskAvailable = false;
+  let waitingForAvailable = false;
+  const watchRecipients = (): string[] => {
+    const values = composeDialog(state)?.values;
+    return values ? mailFollowUpRecipients(values.to, values.cc, sources.find(source => source.id === values.sender_source)?.account_email ?? '') : [];
+  };
+  const waitingForProblem = (): string | undefined => followUp?.waiting_for
+    ? !waitingForAvailable ? 'Waiting for a specific person is unavailable on this server. Choose Anyone on To/Cc to send with a reply watch.'
+      : !mailFollowUpWaitingForMatches(followUp.waiting_for, watchRecipients()) ? 'The To or Cc recipients changed. Review Waiting for before sending.' : undefined
+    : undefined;
+  let taskContext: MailFollowUpTaskContext | null = null, taskContextLoading = false, taskContextError = '';
+  const taskTrackingProblem = (): string | null => {
+    if (!followUp?.continue_task) return null;
+    if (taskContextLoading) return 'Checking current task tracking. Try again when the check finishes.';
+    const current = readMailFollowUpTaskContinuation(taskContext?.selection);
+    if (current && JSON.stringify(current) === JSON.stringify(followUp.continue_task)) return null;
+    return taskContextError || 'Task tracking changed or could not be checked. Turn off task tracking, or reopen the follow-up draft to review its current task.';
+  };
+  let pendingFollowUp: { signature: string; request: MailFollowUpSendRequest } | null = null;
+  let recoveredFollowUpId: string | undefined;
+  const valuesSignature = (values: MailComposeValues): string => JSON.stringify([values, followUp]);
   let draftStatus = '';
   let scheduleVisible = false;
   let scheduleTime = '';
+  let scheduledNoReplyAvailable = false, scheduleOnlyIfNoReply = false;
+  const canScheduleOnlyIfNoReply = (): boolean =>
+    scheduledNoReplyAvailable && Boolean(saved?.reply_watch_id) && saved?.delivery_replacement !== true;
   let draftBusyLabel: string | undefined;
   let pendingSave: { signature: string; key: string } | null = null;
   let pendingSchedule: { signature: string; request: PreparePreapproval } | null = null;
@@ -484,8 +520,8 @@ export const mountMailCompose = (
       ? { id: source.id, slug: source.mail_instance_slug, email: source.account_email.trim().toLowerCase() } : null;
     if (!recoveryMailbox) { recoveryFailed = true; return false; }
     const work = brief.trim() || dialog.values.subject.trim() || dialog.values.body.trim()
-      || [...dialog.values.to, ...dialog.values.cc, ...dialog.values.bcc].some(value => value.trim()) || dialog.values.attachments.length;
-    const unchanged = !force && saved && JSON.stringify(dialog.values) === savedValues && brief === savedBrief;
+      || [...dialog.values.to, ...dialog.values.cc, ...dialog.values.bcc].some(value => value.trim()) || dialog.values.attachments.length || followUp !== null;
+    const unchanged = !force && saved && valuesSignature(dialog.values) === savedValues && brief === savedBrief;
     if (!work || unchanged) {
       const removed = !recoveryId || deps.recovery.remove(recoveryId);
       if (removed) recoveryId = null;
@@ -502,7 +538,8 @@ export const mountMailCompose = (
       mailbox: recoveryMailbox,
       dialog: { mode: dialog.mode, values, ...(dialog.reply_all ? { reply_all: true } : {}),
         ...(dialog.original_attachments_omitted ? { original_attachments_omitted: true } : {}) },
-      brief, replyContext, ...(selectedMailContact ? { contactContext: selectedMailContact } : {}), copyRecipientsOpen, saved, ...(recoveryPrior ? { prior: recoveryPrior } : {}), status: 'editing' };
+      brief, replyContext, ...(selectedMailContact ? { contactContext: selectedMailContact } : {}), copyRecipientsOpen, saved, ...(recoveryPrior ? { prior: recoveryPrior } : {}), status: 'editing', followUp: followUp ? { ...followUp } : null,
+      ...(pendingFollowUp || recoveredFollowUpId ? { followUpRequestId: pendingFollowUp?.request.request_id ?? recoveredFollowUpId } : {}) };
     recoveryExpected = parseMailRecovery(entry, Date.now());
     recoveryFailed = !deps.recovery.save(entry);
     const status = host.querySelector('[data-mail-compose-recovery-status]'); if (status) status.textContent = recoveryMessage();
@@ -525,7 +562,9 @@ export const mountMailCompose = (
     messageSender = null;
     outcome = null;
     saved = null; savedValues = ''; savedBrief = ''; draftStatus = ''; scheduleVisible = false; scheduleTime = ''; mailboxStatus = '';
-    pendingSave = null; pendingSchedule = null;
+    scheduleOnlyIfNoReply = false;
+    pendingSave = null; pendingSchedule = null; followUp = null; followUpShown = false; pendingFollowUp = null; recoveredFollowUpId = undefined;
+    taskContext = null; taskContextLoading = false; taskContextError = '';
   };
 
   const sendCapable = (): MailSenderSourceOption[] =>
@@ -563,9 +602,14 @@ export const mountMailCompose = (
       deps.onStateChanged?.();
       return;
     }
+    if (followUp || followUpAvailable) followUpShown = true;
     const active = host.ownerDocument.activeElement;
     const ownerWindow = host.ownerDocument.defaultView;
-    const focusAttributes = ['data-mail-compose-ai-brief', 'data-form-field', 'data-form-array-item', 'data-action'];
+    const scrollTop = host.querySelector('.mail-compose-body')?.scrollTop ?? 0;
+    const revealError = dialog.submit_error !== null
+      && dialog.submit_error !== host.querySelector('.mail-compose-submit-error')?.textContent;
+    const focusAttributes = ['data-mail-compose-ai-brief', 'data-form-field', 'data-form-array-item',
+      'data-mail-draft-time', 'data-mail-follow-up-control', 'data-mail-schedule-condition', 'data-action'];
     const hadFocus = ownerWindow !== null && active instanceof ownerWindow.HTMLElement && host.contains(active);
     const focusAttribute = hadFocus
       ? focusAttributes.find(attribute => active.hasAttribute(attribute)) : undefined;
@@ -601,7 +645,14 @@ export const mountMailCompose = (
       attachmentBusy,
       ...(deps.recovery ? { recovery: { message: recoveryMessage(), locked: recoveryLocked !== null,
         approvalsHref: serializeShellRoute('approvals'), historyHref: serializeShellRoute('logs', 'recipe', SEND_COMPOSED_MAIL_RECIPE_ID) } } : {}),
+      ...(deps.replyWatch || followUp ? { replyWatch: { show: followUpShown, available: followUpAvailable, scheduled: followUpSchedulingAvailable, enabled: followUp !== null, afterMs: followUp?.after_ms ?? 172800000, notifyOnReply: followUp?.notify_on_reply === true,
+        ...(waitingForAvailable || followUp?.waiting_for ? { waitingFor: { selected: followUp?.waiting_for?.address ?? '', recipients: watchRecipients(), problem: waitingForProblem() } } : {}),
+        ...(taskContext?.selection || followUp?.continue_task ? { taskTracking: { checked: Boolean(followUp?.continue_task), title: !taskTrackingProblem() ? taskContext?.title : undefined,
+          available: Boolean(taskContext?.selection) && !taskContextLoading && !taskContextError, message: taskTrackingProblem() ?? undefined } }
+          : taskContextLoading || taskContextError ? { taskTrackingStatus: taskContextLoading ? 'Checking linked task…' : taskContextError } : {}),
+        ...((pendingFollowUp || recoveredFollowUpId) && recoveryLocked ? { pendingHref: mailFollowUpHref('mfw_' + (pendingFollowUp?.request.request_id ?? recoveredFollowUpId)) } : {}) } } : {}),
       ...(deps.drafts ? { savedDraft: { status: draftStatus, scheduling: scheduleVisible, runAt: scheduleTime,
+        ...(canScheduleOnlyIfNoReply() || scheduleOnlyIfNoReply ? { sendIfNoReply: scheduleOnlyIfNoReply } : {}),
         // D-269 — the same thunk the activation stamp already uses, so the line
         // the owner reads and the zone the row carries cannot disagree.
         ...((): { serverTimeZone?: string } => {
@@ -611,16 +662,19 @@ export const mountMailCompose = (
       ...(mailboxStatus ? { mailboxStatus } : {}),
         ...(draftBusyLabel ? { busyLabel: draftBusyLabel } : {}) } } : {}),
     });
+    const body = host.querySelector<HTMLElement>('.mail-compose-body');
+    if (body) body.scrollTop = scrollTop;
     if (focusAttribute) {
       const restored = [...host.querySelectorAll<HTMLElement>(`[${focusAttribute}]`)]
         .filter(element => element.getAttribute(focusAttribute) === focusValue)[focusIndex];
-      restored?.focus({ preventScroll: true });
+      restored?.focus({ preventScroll: !body?.contains(restored) });
       if (selection && ownerWindow !== null && (restored instanceof ownerWindow.HTMLTextAreaElement
         || (restored instanceof ownerWindow.HTMLInputElement && /^(text|search|tel|url|password)$/.test(restored.type)))
         && selection.start !== null && selection.end !== null) {
         restored.setSelectionRange(selection.start, selection.end);
       }
     }
+    if (revealError) host.querySelector('.mail-compose-submit-error')?.scrollIntoView?.({ block: 'nearest' });
     if (hadFocus && !host.contains(host.ownerDocument.activeElement)) {
       host.querySelector<HTMLElement>('.mail-compose-dialog')?.focus({ preventScroll: true });
     }
@@ -633,6 +687,11 @@ export const mountMailCompose = (
     render();
   };
 
+  const showFieldErrors = (errors: Readonly<Record<string, string>>): void => {
+    setState(setComposeErrorsTransition(state, errors));
+    host.querySelector('.form-renderer-error')?.scrollIntoView?.({ block: 'nearest' });
+  };
+
   /** Fold the live DOM values into state before any transition that depends on
    *  them. Without this, typing in Subject and pressing Send would dispatch the
    *  last patched value — which is empty on a fresh compose. */
@@ -641,6 +700,8 @@ export const mountMailCompose = (
     if (dialog === null) return;
     const time = host.querySelector<HTMLInputElement>('[data-mail-draft-time]');
     if (time) scheduleTime = time.value;
+    const condition = host.querySelector<HTMLInputElement>('[data-mail-schedule-condition]');
+    if (condition) scheduleOnlyIfNoReply = condition.checked;
     const briefInput = host.querySelector<HTMLTextAreaElement>('[data-mail-compose-ai-brief]');
     if (briefInput) brief = briefInput.value;
     const copies = host.querySelector<HTMLDetailsElement>('[data-mail-compose-copy-recipients]');
@@ -649,7 +710,7 @@ export const mountMailCompose = (
     const patch: Record<string, unknown> = {};
     for (const key of ['subject', 'body', 'to', 'cc', 'bcc'] as const) {
       if (read[key] !== undefined) patch[key] = read[key];
-      if (deps.recovery && ['to', 'cc', 'bcc'].includes(key) && read[key] !== undefined) {
+      if ((deps.recovery || followUp && waitingForAvailable) && ['to', 'cc', 'bcc'].includes(key) && read[key] !== undefined) {
         patch[key] = [...host.querySelectorAll<HTMLInputElement>(`[data-form-array-item="${key}"]`)].map(row => row.value);
       }
     }
@@ -663,12 +724,33 @@ export const mountMailCompose = (
     }
   };
 
+  const loadTaskContext = (draft: MailDraft | null, generation: number, isCurrent: () => boolean): void => {
+    const selected = followUp?.continue_task;
+    const args = draft?.reply_watch_id ? { watch_id: draft.reply_watch_id, draft_id: draft.draft_id }
+      : selected ? { watch_id: selected.watch_id, draft_id: selected.draft_id } : null;
+    if (!args || !deps.replyWatch?.taskContext) return;
+    taskContextLoading = true; render();
+    void deps.replyWatch.taskContext(args).then(context => {
+      if (destroyed || generation !== draftGeneration || !isCurrent() || !composeDialog(state)) return;
+      syncFromDom();
+      taskContext = { ...context, selection: readMailFollowUpTaskContinuation(context.selection) };
+      taskContextLoading = false; taskContextError = ''; render();
+    }).catch(() => {
+      if (destroyed || generation !== draftGeneration || !isCurrent() || !composeDialog(state)) return;
+      syncFromDom(); taskContextLoading = false;
+      taskContextError = 'The linked task could not be checked. Reopen this draft to try again. You can send with task tracking turned off.';
+      render();
+    });
+  };
+
   const draftContent = (): MailDraftContent | null => {
     const dialog = composeDialog(state); if (!dialog) return null;
     const result = mailDraftContentFromCompose(withoutBlankRecipients(dialog.values), {
       resolveContactEmail, findSenderSource: id => sources.find(source => source.id === id) ?? null,
     }, saved?.content ?? recoveryPrior);
-    if (!result.ok) { setState(setComposeErrorsTransition(state, result.errors)); return null; }
+    if (!result.ok) { showFieldErrors(result.errors); return null; }
+    delete result.content.follow_up;
+    if (followUp) result.content.follow_up = parsePreapprovalJson(followUp);
     return result.content;
   };
   /** D-264 — save the draft, then copy it into the mail account's Drafts folder.
@@ -702,7 +784,7 @@ export const mountMailCompose = (
       }
       if (destroyed || generation !== draftGeneration) return;
       draftStatus = 'Draft saved.';
-      savedValues = JSON.stringify(composeDialog(state)!.values);
+      savedValues = valuesSignature(composeDialog(state)!.values);
       savedBrief = brief;
       deps.drafts.changed?.();
       if (!await checkFreshMessageSender(generation, 'draft')) return;
@@ -729,7 +811,31 @@ export const mountMailCompose = (
   const saveDraft = async (schedule: boolean): Promise<void> => {
     syncFromDom(); const dialog = composeDialog(state);
     if (!deps.drafts || !dialog || dialog.submitting || attachmentBusy || assistState.busyAction) return;
-    if (schedule && !scheduleVisible) { scheduleVisible = true; render(); return; }
+    if (schedule && followUp?.waiting_for) { setState(setComposeSubmitErrorTransition(state, 'Waiting for a specific person is available with Send. Choose Anyone on To/Cc before scheduling.')); return; }
+    if (schedule && followUp?.continue_task) {
+      const supported = followUp.continue_task.replacement_hash ? scheduledReplacementTaskAvailable : scheduledFollowUpTaskAvailable;
+      if (!supported) {
+        setState(setComposeSubmitErrorTransition(state, 'Keeping this task linked is available with Send. Turn off task tracking before scheduling.'));
+        return;
+      }
+      const problem = taskTrackingProblem();
+      if (problem) {
+        setState(setComposeSubmitErrorTransition(state, problem));
+        return;
+      }
+    }
+    if (schedule && followUp && !followUpSchedulingAvailable) { setState(setComposeSubmitErrorTransition(state, 'Reply watches from the composer currently support Send on this server. Turn off the reply watch before scheduling this email.')); return; }
+    if (schedule && !scheduleVisible) {
+      scheduleVisible = true;
+      setState(setComposeSubmitErrorTransition(state, null));
+      host.querySelector<HTMLElement>('[data-mail-draft-time]')?.focus();
+      return;
+    }
+    const sendIfNoReply = schedule && scheduleOnlyIfNoReply;
+    if (sendIfNoReply && !canScheduleOnlyIfNoReply()) {
+      setState(setComposeSubmitErrorTransition(state, 'Recued could not verify the conditional schedule. Reopen the saved follow-up or clear Skip if they’ve replied.'));
+      return;
+    }
     const runAt = new Date(scheduleTime).getTime();
     if (schedule && (!Number.isFinite(runAt) || runAt <= Date.now())) {
       setState(setComposeSubmitErrorTransition(state, 'Choose a future send time.')); return;
@@ -737,6 +843,10 @@ export const mountMailCompose = (
     let content: MailDraftContent | null;
     try { content = draftContent(); } catch (error) { setState(setComposeSubmitErrorTransition(state, humanizeRpcError(error))); return; }
     if (!content) return;
+    if (schedule && followUp) {
+      const reason = mailFollowUpRecipientReason(content.to, content.cc as string[] ?? [], sources.find(source => source.id === dialog.values.sender_source)?.account_email ?? '');
+      if (reason) { setState(setComposeSubmitErrorTransition(state, reason)); return; }
+    }
     const signature = JSON.stringify(content); const generation = draftGeneration;
     draftBusyLabel = schedule ? 'Preparing review…' : 'Saving…';
     setState(setComposeErrorsTransition(state, {})); setState(setComposeSubmittingTransition(state, true));
@@ -759,7 +869,7 @@ export const mountMailCompose = (
       syncFromDom();
       const current = draftContent();
       const unchanged = current !== null && JSON.stringify(current) === signature;
-      savedValues = unchanged ? JSON.stringify(composeDialog(state)!.values) : '';
+      savedValues = unchanged ? valuesSignature(composeDialog(state)!.values) : '';
       if (unchanged) savedBrief = brief;
       if (unchanged && recoveryId && deps.recovery?.remove(recoveryId)) recoveryId = null;
       draftStatus = unchanged ? 'Draft saved.' : 'Earlier version saved. Save again to keep your latest edits.';
@@ -767,9 +877,11 @@ export const mountMailCompose = (
       if (schedule) {
         if (!unchanged) throw new Error('The message changed while saving. Review your latest edits before scheduling.');
         if (!await checkFreshMessageSender(generation, 'send')) return;
-        const requestSignature = JSON.stringify([saved.draft_id, saved.revision, runAt]);
+        if (sendIfNoReply && !canScheduleOnlyIfNoReply()) throw new Error('The conditional schedule is unavailable. Reopen the saved follow-up before scheduling.');
+        const requestSignature = JSON.stringify([saved.draft_id, saved.revision, runAt, sendIfNoReply]);
         if (!pendingSchedule || pendingSchedule.signature !== requestSignature) pendingSchedule = { signature: requestSignature, request: {
-          idempotency_key: crypto.randomUUID(), subject: { kind: 'mail_draft', draft_id: saved.draft_id, draft_revision: saved.revision },
+          idempotency_key: crypto.randomUUID(), subject: { kind: 'mail_draft', draft_id: saved.draft_id, draft_revision: saved.revision,
+            ...(sendIfNoReply ? { send_if_no_reply: true } : {}) },
           // D-269 — the SERVER's zone: the send is dispatched server-side, and
           // this stamp was RE-WRITTEN from the composing browser on every
           // schedule, so a send arranged from a laptop abroad carried the
@@ -816,7 +928,7 @@ export const mountMailCompose = (
       findSenderSource: (id) => sources.find((s) => s.id === id) ?? null,
     });
     if (!result.ok) {
-      setState(setComposeErrorsTransition(state, result.errors));
+      showFieldErrors(result.errors);
       return;
     }
 
@@ -836,15 +948,35 @@ export const mountMailCompose = (
       });
       if (!checked.ok) {
         state = setComposeSubmittingTransition(state, false);
-        setState(setComposeErrorsTransition(state, checked.errors));
+        showFieldErrors(checked.errors);
         return;
+      }
+      if (followUp && !followUpAvailable) throw new Error('Reply watches from the composer are unavailable on this server. Turn the option off to send normally.');
+      const taskProblem = taskTrackingProblem();
+      if (taskProblem) throw new Error(taskProblem);
+      const responderProblem = waitingForProblem();
+      if (responderProblem) throw new Error(responderProblem);
+      if (followUp) {
+        const reason = mailFollowUpRecipientReason(checked.payload.to, checked.payload.cc ?? [], sources.find(source => source.id === current.values.sender_source)?.account_email ?? '');
+        if (reason) throw new Error(reason);
+      }
+      const keptContent = saved || recoveryPrior ? draftContent() : null;
+      const config = keptContent ? mailDraftRecipeConfig(keptContent) : composePayloadToSendRecipeConfig(checked.payload);
+      if (followUp) {
+        const signature = JSON.stringify([config, followUp]);
+        if (!pendingFollowUp || pendingFollowUp.signature !== signature) pendingFollowUp = { signature, request: { request_id: crypto.randomUUID(), ...followUp } };
       }
       attempt = startAttempt();
       const response = await deps.runExecute({
         recipe_id: SEND_COMPOSED_MAIL_RECIPE_ID,
-        config: saved || recoveryPrior ? draftContent() ?? composePayloadToSendRecipeConfig(checked.payload) : composePayloadToSendRecipeConfig(checked.payload),
+        config, ...(followUp && pendingFollowUp ? { mail_follow_up: pendingFollowUp.request } : {}),
       });
       const nextOutcome = mailComposeSubmitOutcomeFromExecuteResponse(response);
+      if (!destroyed && generation === draftGeneration && followUp) {
+        const intent = (response as { mail_follow_up?: MailFollowUpSendIntent } | null)?.mail_follow_up;
+        if (!intent || !parseMailFollowUpAddress(['reply-watch', intent.id])) throw new Error('The reply watch request could not be confirmed. Check Reply watches before trying to send again.');
+        deps.replyWatch?.prepared?.(intent);
+      }
       if (attempt) deps.recovery?.settle(attempt.id, attempt.token, nextOutcome === 'sent' ? 'sent' : nextOutcome === 'held' ? 'held' : 'unknown');
       if (destroyed || generation !== draftGeneration) return;
       if (nextOutcome === null) {
@@ -951,10 +1083,10 @@ export const mountMailCompose = (
     if (recoveryLocked) return false;
     const dialog = composeDialog(state);
     if (!dialog) return false;
-    if (saved && JSON.stringify(dialog.values) === savedValues && brief === savedBrief) return false;
+    if (saved && valuesSignature(dialog.values) === savedValues && brief === savedBrief) return false;
     return brief.trim().length > 0 || dialog.values.subject.trim().length > 0
       || dialog.values.body.trim().length > 0 || dialog.values.to.length > 0
-      || dialog.values.cc.length > 0 || dialog.values.bcc.length > 0 || dialog.values.attachments.length > 0;
+      || dialog.values.cc.length > 0 || dialog.values.bcc.length > 0 || dialog.values.attachments.length > 0 || followUp !== null;
   };
 
   const close = (discard = false): void => {
@@ -1206,6 +1338,12 @@ export const mountMailCompose = (
       void submit();
       return;
     }
+    if (action === 'back-from-mail-schedule') {
+      scheduleVisible = false;
+      setState(setComposeSubmitErrorTransition(state, null));
+      host.querySelector<HTMLElement>('[data-action="schedule-mail-draft"]')?.focus();
+      return;
+    }
     if (action === 'save-mail-draft-to-mailbox') { void saveToMailbox(); return; }
     if (action === 'save-mail-draft' || action === 'schedule-mail-draft') {
       void saveDraft(action === 'schedule-mail-draft'); return;
@@ -1239,6 +1377,26 @@ export const mountMailCompose = (
 
   const onChange = (event: Event): void => {
     const target = event.target;
+    if ((target instanceof HTMLInputElement || target instanceof HTMLSelectElement) && target.hasAttribute('data-mail-follow-up-control')) {
+      if (destroyed || recoveryLocked || composeDialog(state)?.submitting || assistState.busyAction || attachmentBusy) return;
+      syncFromDom();
+      const control = target.getAttribute('data-mail-follow-up-control');
+      if (control === 'enabled' && target instanceof HTMLInputElement) {
+        if (!target.checked) followUp = null;
+        else if (followUpAvailable) followUp = { after_ms: 172800000 };
+      } else if (followUp && control === 'after') followUp = parseMailFollowUpPreference({ ...followUp, after_ms: Number(target.value) });
+      else if (followUp && control === 'notify' && target instanceof HTMLInputElement) followUp = parseMailFollowUpPreference({ ...followUp, notify_on_reply: target.checked });
+      else if (followUp && control === 'waiting-for' && target instanceof HTMLSelectElement) {
+        const { waiting_for: _old, ...preference } = followUp;
+        if (!target.value) followUp = preference;
+        else if (waitingForAvailable && watchRecipients().includes(target.value)) followUp = parseMailFollowUpPreference({ ...preference, waiting_for: { address: target.value, recipients: watchRecipients() } });
+      }
+      else if (followUp && control === 'task' && target instanceof HTMLInputElement) {
+        if (!target.checked) { const { continue_task: _task, ...preference } = followUp; followUp = preference; }
+        else if (taskContext?.selection && !taskContextLoading && !taskContextError) followUp = parseMailFollowUpPreference({ ...followUp, continue_task: taskContext.selection });
+      }
+      pendingFollowUp = null; recoveredFollowUpId = undefined; render(); return;
+    }
     if (!(target instanceof HTMLSelectElement)) return;
     if (target.getAttribute('data-action') !== 'select-mail-compose-sender') return;
     // Same reason as the click path — changing the From account re-renders.
@@ -1256,9 +1414,12 @@ export const mountMailCompose = (
 
   host.addEventListener('click', onClick);
   host.addEventListener('change', onChange);
-  const onInput = (): void => {
-    if (recoveryLocked || destroyed || !deps.recovery && !selectedMailContact) return;
+  const onInput = (event: Event): void => {
+    const recipientEdit = followUp && waitingForAvailable && event.target instanceof HTMLInputElement
+      && ['to', 'cc'].includes(event.target.getAttribute('data-form-array-item') ?? '');
+    if (recoveryLocked || destroyed || !deps.recovery && !selectedMailContact && !recipientEdit) return;
     syncFromDom();
+    if (recipientEdit) render();
     if (deps.recovery) { clearTimeout(recoveryTimer); recoveryTimer = setTimeout(checkpoint, 180); }
   };
   host.addEventListener('input', onInput);
@@ -1301,6 +1462,32 @@ export const mountMailCompose = (
   const refresh = async (): Promise<MailComposeReadiness> => {
     const generation = ++refreshGeneration;
     readinessState = { status: 'loading' };
+    // Optional capabilities must not delay ordinary drafting on an older or
+    // slow server. Apply a late answer only to this host's current refresh.
+    const updateReplyWatch = (capability?: ReplyWatchCapabilities): void => {
+      if (destroyed || generation !== refreshGeneration) return;
+      const available = capability?.available === true;
+      const scheduled = available && capability.scheduled === true;
+      const waitingFor = available && capability.waiting_for === true;
+      const scheduledReplacementTask = scheduled && capability.scheduled_replacement_task === true;
+      const scheduledFollowUpTask = scheduled && capability.scheduled_follow_up_task === true;
+      const scheduledNoReply = scheduled && capability.scheduled_no_reply === true;
+      if (followUpAvailable === available && followUpSchedulingAvailable === scheduled && waitingForAvailable === waitingFor
+        && scheduledReplacementTaskAvailable === scheduledReplacementTask && scheduledFollowUpTaskAvailable === scheduledFollowUpTask
+        && scheduledNoReplyAvailable === scheduledNoReply) return;
+      syncFromDom();
+      followUpAvailable = available;
+      followUpSchedulingAvailable = scheduled;
+      waitingForAvailable = waitingFor;
+      scheduledReplacementTaskAvailable = scheduledReplacementTask;
+      scheduledFollowUpTaskAvailable = scheduledFollowUpTask;
+      scheduledNoReplyAvailable = scheduledNoReply;
+      render();
+    };
+    const replyWatch = deps.replyWatch;
+    if (replyWatch) void Promise.resolve().then(() => replyWatch.capabilities()).then(
+      updateReplyWatch, () => updateReplyWatch(),
+    );
     try {
       const listed = await deps.listMailInstances();
       if (destroyed || generation !== refreshGeneration) return readinessState;
@@ -1399,6 +1586,7 @@ export const mountMailCompose = (
         const draft = await deps.drafts.get({ draft_id: draftId });
         if (destroyed || generation !== draftGeneration || !isCurrent() || composeDialog(state)) return false;
         beginRecovery(); resetSaved(); resetAssist(); brief = ''; replyContext = null; discardConfirm = false; saved = draft;
+        followUp = draft.content.follow_up === undefined ? null : parseMailFollowUpPreference(draft.content.follow_up);
         copyRecipientsOpen = (Array.isArray(draft.content.cc) && draft.content.cc.length > 0)
           || (Array.isArray(draft.content.bcc) && draft.content.bcc.length > 0);
         opener = host.ownerDocument.activeElement as HTMLElement | null;
@@ -1409,8 +1597,10 @@ export const mountMailCompose = (
           in_reply_to: draft.content.in_reply_to as string ?? null,
           ...(Array.isArray(draft.content.references) ? { references: draft.content.references as string[] } : {}) });
         if (draft.content.in_reply_to && state.dialog) state = { ...state, dialog: { ...state.dialog, mode: 'reply' } };
-        savedValues = JSON.stringify(composeDialog(state)!.values); draftStatus = 'Draft saved.'; render();
+        savedValues = valuesSignature(composeDialog(state)!.values); draftStatus = draft.delivery_replacement
+          ? 'Replacement draft for the failed recipient only, copied as plain text. Review the recipient and attachments before sending. The original email and failure report are kept.' : 'Draft saved.'; render();
         focusCompose(true);
+        loadTaskContext(draft, generation, isCurrent);
         return true;
       } catch (error) { if (!destroyed) throw error; return false; }
     },
@@ -1438,12 +1628,15 @@ export const mountMailCompose = (
       recoveryId = entry.id; recoveryLocked = entry.status === 'editing' ? null : entry.status;
       recoveryPrior = entry.saved?.content ?? entry.prior; recoveryMailbox = entry.mailbox;
       recoveryNotice = entry.saved && !original ? 'Recovered edits opened as a new draft because the saved version could not be verified.' : 'Recovered unfinished message. Changes are kept in this tab.';
+      followUp = entry.followUp !== undefined ? entry.followUp : entry.saved?.content.follow_up ? parseMailFollowUpPreference(entry.saved.content.follow_up) : null;
+      recoveredFollowUpId = entry.followUpRequestId;
       saved = original; brief = entry.brief; replyContext = entry.replyContext; copyRecipientsOpen = entry.copyRecipientsOpen; discardConfirm = false;
       selectedMailContact = entry.contactContext ?? null;
       messageSender = { id: source.id, email: entry.mailbox.email };
       opener = host.ownerDocument.activeElement as HTMLElement | null;
       state = { dialog: { ...entry.dialog, errors: {}, submitting: false, submit_error: null } };
       files = []; render(); focusCompose(true);
+      loadTaskContext(original, generation, isCurrent);
       if (deps.listFiles) void deps.listFiles().then(listed => {
         if (!destroyed && generation === draftGeneration) { syncFromDom(); files = [...listed]; render(); }
       }).catch(() => {});

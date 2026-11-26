@@ -192,17 +192,17 @@ const fixture = (steps: unknown[], variables: Record<string, unknown> = { browse
 const IN_TWO = [ADD, TABS('read_work', 'browser_1', 'a.example'), TABS('read_home', 'browser_2', 'b.example')];
 
 describe('D-402 slice H3 — every browser checked before step 1', () => {
-  it('uses the configured observation deadline before admitting a batch as read-only', async () => {
+  // Until 2026-11-23 the gate listed the tabs, within the configured observation deadline, before it let a batch of reads
+  // through, and a listing too slow made it ask. Opening a page is a read since then (the owner: "make all reads & open as
+  // normal read permission"), so a batch of reads is let through without a listing, however slow the tabs answer.
+  it('admits a batch of reads without listing the tabs first, however slow they answer', async () => {
     const f = fixture([{ id: 'read_home', op: 'core.dom.act', args: { target: 'https://b.example/*',
       bridge_id: '{{config.browser}}', steps: [{ url: 'https://b.example/orders', do: 'read' }] } }],
     { browser: 'inst-home' }, { tabsDelayMs: 100, heldBrowserDescribeTimeoutMs: 20, uninstalled: true });
     f.connect('tok-home');
-    const held = await f.run(CHAT);
-    expect(held.awaiting_approval, JSON.stringify(held.errors)).toBe(true);
-    expect(f.sent.some(command => command.action === 'list_tabs')).toBe(true);
-    expect(f.sent.every(command => command.action === 'list_tabs')).toBe(true);
-    expect(await f.open()).toHaveLength(1);
-    expect((await f.open())[0]!.handler_kind).not.toBe(RUN_QUESTION_ASK_KIND);
+    const ran = await f.run(CHAT);
+    expect(ran.awaiting_approval ?? false, JSON.stringify(ran.errors)).toBe(false);
+    expect(await f.open()).toHaveLength(0);
     // Finish the delayed transport replies before the fixture is discarded.
     await new Promise(resolve => setTimeout(resolve, 100));
   });
@@ -438,12 +438,14 @@ describe('D-402 slice H3 — what the run checks, read from the recipe', () => {
     const steps = [
       { id: 'read_a', op: 'core.dom.act', args: { target: 'https://a.example/*', bridge_id: '{{config.work}}', steps: [{ do: 'read' }] } },
       { id: 'tabs_c', op: 'core.dom.tabs', args: { target: 'https://c.example/*', bridge_id: '{{config.work}}' } },
+      // Opening a page is a read since 2026-11-23: its site is read, not acted on.
+      { id: 'open_d', op: 'core.dom.open', args: { target: 'https://d.example/*', bridge_id: '{{config.work}}', address: 'https://d.example/x' } },
       { id: 'read_b', op: 'core.dom.act', args: { target: 'https://b.example/*', bridge_id: '{{config.home}}', steps: [{ do: 'read' }] } },
       { id: 'type_b', op: 'core.dom.act', args: { target: 'https://b.example/*', bridge_id: '{{config.home}}', steps: [{ do: 'type', ref: 'e1', value: 'x' }] } },
     ];
     const names: Record<string, string> = { 'inst-work': 'Work', 'inst-home': 'Home' };
     expect(runBrowserWork(recipe({ work: 'inst-work', home: 'inst-home' }, steps), {}, (id) => names[id])).toEqual([
-      { name: 'Work', reads: ['a.example', 'c.example'], acts: [] },
+      { name: 'Work', reads: ['a.example', 'c.example', 'd.example'], acts: [] },
       { name: 'Home', reads: [], acts: ['b.example'] },
     ]);
   });

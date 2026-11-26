@@ -70,6 +70,7 @@ import {
   type TriggerPreapprovalSupport,
 } from '../contracts/trigger-preapproval-panel.js';
 import type { BroadcastSubscriber } from '../realtime/subscriber.js';
+import { focusListTarget, readListScroll, restoreListScroll, type ListScrollPosition } from '../shell/list-preview-continuity.js';
 // D-201 Slice 10AX — the owner's closing in the words Kitchen uses too.
 import { ownerClosedDoorClause } from './webhook-door-words.js';
 
@@ -117,6 +118,12 @@ export const WEBHOOKS_PANEL_RETIRE_DEAD_LETTERS_ATTR = 'data-recued-webhooks-ret
 export const WEBHOOKS_PANEL_EVENTS_EDITOR_ATTR = 'data-recued-webhooks-events-editor';
 export const WEBHOOKS_PANEL_EVENTS_NOTICE_ATTR = 'data-recued-webhooks-events-notice';
 
+const WEBHOOK_WORKSPACE_MEDIA = '(min-width: 1280px) and (hover: hover) and (pointer: fine)';
+const WEBHOOK_ROSTER_ROWS_ATTR = 'data-webhook-roster-rows';
+const WEBHOOK_ROSTER_ROW_ATTR = 'data-webhook-roster-row';
+const WEBHOOK_DETAIL_ATTR = 'data-webhook-detail';
+const WEBHOOK_BACK_ATTR = 'data-webhook-back';
+
 export const WEBHOOKS_PANEL_STYLES = `
 [${WEBHOOKS_PANEL_ATTR}] { display: grid; gap: 14px; }
 [${WEBHOOKS_PANEL_ATTR}] .wh-head { display:flex; gap:12px; align-items:center; justify-content:space-between; }
@@ -163,6 +170,57 @@ export const WEBHOOKS_PANEL_STYLES = `
 [${WEBHOOKS_PANEL_DELIVERY_ATTR}], [${WEBHOOKS_PANEL_EVENT_ATTR}], [${WEBHOOKS_PANEL_REJECTION_ATTR}], [${WEBHOOKS_PANEL_DEAD_LETTER_ATTR}], [${WEBHOOKS_PANEL_CLOSED_DEAD_LETTER_ATTR}] { border:1px solid var(--border); border-radius:7px; padding:9px; display:grid; gap:7px; background:var(--surface-sunk); }
 [${WEBHOOKS_PANEL_PAYLOAD_ATTR}] { margin:0; padding:9px; border-radius:7px; overflow:auto; max-height:320px; white-space:pre-wrap; overflow-wrap:anywhere; background:var(--surface); font-size:11px; }
 [${WEBHOOKS_PANEL_ATTR}] .wh-empty { padding:20px; border:1px dashed var(--border-strong); border-radius:9px; text-align:center; color:var(--muted); font-size:13px; }
+[${WEBHOOKS_PANEL_ATTR}] .wh-detail-back { justify-self:start; }
+[${WEBHOOKS_PANEL_ATTR}] .wh-workspace {
+  display:grid; grid-template-columns:minmax(290px, 36%) minmax(0, 1fr); gap:16px;
+  block-size:clamp(340px, calc(100dvh - 368px), 800px);
+}
+[${WEBHOOKS_PANEL_ATTR}] .wh-roster,
+[${WEBHOOKS_PANEL_ATTR}] .wh-workspace [${WEBHOOK_DETAIL_ATTR}] {
+  min-width:0; min-height:0; border:1px solid var(--border); border-radius:var(--wc-radius, 9px);
+  background:var(--surface);
+}
+[${WEBHOOKS_PANEL_ATTR}] .wh-roster { display:grid; grid-template-rows:auto minmax(0, 1fr); }
+[${WEBHOOKS_PANEL_ATTR}] .wh-roster-filters {
+  display:grid; grid-template-columns:minmax(0, 1fr) minmax(120px, 44%); align-items:end; gap:10px;
+  padding:14px; border-bottom:1px solid var(--border);
+}
+[${WEBHOOKS_PANEL_ATTR}] [${WEBHOOK_ROSTER_ROWS_ATTR}] {
+  min-height:0; overflow:auto; overscroll-behavior:contain; scrollbar-gutter:stable; padding:6px;
+}
+[${WEBHOOKS_PANEL_ATTR}] button[${WEBHOOK_ROSTER_ROW_ATTR}] {
+  display:grid; grid-template-columns:minmax(0, 1fr) auto; align-items:center; gap:8px;
+  width:100%; min-height:52px; border-color:transparent; text-align:start; margin-block:2px;
+}
+[${WEBHOOKS_PANEL_ATTR}] button[${WEBHOOK_ROSTER_ROW_ATTR}]:hover { background:var(--surface-sunk); }
+[${WEBHOOKS_PANEL_ATTR}] button[${WEBHOOK_ROSTER_ROW_ATTR}][aria-current="true"] {
+  border-color:var(--accent); background:var(--accent-soft);
+}
+[${WEBHOOKS_PANEL_ATTR}] [${WEBHOOK_ROSTER_ROW_ATTR}]:focus-visible {
+  outline:2px solid var(--accent); outline-offset:-2px;
+}
+[${WEBHOOKS_PANEL_ATTR}] .wh-roster-label { display:grid; gap:2px; min-width:0; }
+[${WEBHOOKS_PANEL_ATTR}] .wh-roster-name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+[${WEBHOOKS_PANEL_ATTR}] .wh-roster-environment { color:var(--muted); font-size:12px; text-transform:capitalize; }
+[${WEBHOOKS_PANEL_ATTR}] .wh-roster-attention { color:var(--warning, #b87b00); }
+[${WEBHOOKS_PANEL_ATTR}] .wh-roster-empty { margin:0; padding:16px; }
+[${WEBHOOKS_PANEL_ATTR}] .wh-workspace [${WEBHOOK_DETAIL_ATTR}] {
+  display:grid; grid-template-rows:minmax(0, 1fr); overflow:hidden;
+}
+[${WEBHOOKS_PANEL_ATTR}] .wh-detail-body {
+  overflow:auto; overscroll-behavior:contain; scrollbar-gutter:stable; scroll-padding-block-start:64px;
+}
+[${WEBHOOKS_PANEL_ATTR}] .wh-detail-body > [${WEBHOOKS_PANEL_CARD_ATTR}] { border:0; border-radius:0; }
+[${WEBHOOKS_PANEL_ATTR}] .wh-detail-body > [${WEBHOOKS_PANEL_CARD_ATTR}] > .wh-card-head {
+  position:sticky; top:0; z-index:1; align-items:center;
+  margin:-16px -16px 0; padding:8px 16px;
+  background:var(--surface); border-bottom:1px solid var(--border);
+}
+[${WEBHOOKS_PANEL_ATTR}] .wh-detail-options { display:flex; align-items:center; flex-wrap:wrap; justify-content:flex-end; gap:8px; }
+[${WEBHOOKS_PANEL_ATTR}] .wh-detail-options .wh-pill { white-space:nowrap; }
+[${WEBHOOKS_PANEL_ATTR}] .wh-detail-body > .wh-detail-back { margin:12px 16px 0; }
+[${WEBHOOKS_PANEL_ATTR}] .wh-detail-empty { grid-row:1 / -1; place-self:center; padding:20px; text-align:center; }
+[${WEBHOOKS_PANEL_ATTR}] .wh-detail-body :is(h3, button, a, dd) { min-width:0; max-width:100%; overflow-wrap:anywhere; }
 `;
 
 export type WebhooksListCaller = () => Promise<{
@@ -272,6 +330,12 @@ export interface WebhooksPanelOptions {
   triggerPreapprovals?: TriggerPreapprovalPanelCallers;
   /** D-402 — each card's pre-approvals read again when one changes anywhere. */
   subscribe?: BroadcastSubscriber['on'];
+  workspace?: {
+    readonly scrollRoot: HTMLElement;
+    readonly initialSelection?: string;
+    onSelect(ingressId: string | null): void;
+    backToRoster(): boolean;
+  };
 }
 
 export interface WebhooksPanelMount {
@@ -279,11 +343,11 @@ export interface WebhooksPanelMount {
   whenLoaded(): Promise<void>;
   getLoadError(): string | null;
   hasInFlightWork(): boolean;
+  selectWebhook(ingressId: string | null): boolean;
   dispose(): void;
 }
 
 interface DeliveryInspectorState {
-  ingress_id: string;
   deliveries: Array<WebhookDeliveryListResponse['deliveries'][number]>;
   next_cursor: WebhookDeliveryListCursor | null;
   detail: WebhookDeliveryDetailView | null;
@@ -1137,9 +1201,18 @@ export const mountWebhooksPanel = (
   root.setAttribute(WEBHOOKS_PANEL_ATTR, '');
   options.host.appendChild(root);
 
+  const { workspace } = options;
+  const desktopWorkspace = workspace ? doc.defaultView?.matchMedia?.(WEBHOOK_WORKSPACE_MEDIA) : undefined;
+  let selectedWebhook = workspace?.initialSelection ?? null;
+  let rosterScroll: ListScrollPosition | undefined;
+  const showsWebhookDetails = () => desktopWorkspace?.matches === true || selectedWebhook !== null;
+  const rosterRows = () => workspace ? root.querySelector<HTMLElement>(`[${WEBHOOK_ROSTER_ROWS_ATTR}]`) : null;
+  const detailBody = () => workspace ? root.querySelector<HTMLElement>('.wh-detail-body') : null;
+
   let disposed = false;
   let busy = false;
   let mutationInFlight = false;
+  let inspectingIngress: string | null = null;
   let refreshInFlight: Promise<void> | null = null;
   let showCreate = false;
   let credentialIngressId: string | null = null;
@@ -1183,14 +1256,15 @@ export const mountWebhooksPanel = (
     ingress_id: string;
     result: WebhookDeliveryRetentionPruneResponse['result'];
   } | null = null;
-  let testDeliveryNotice: {
-    ingress_id: string;
-    delivery_id: string;
-    observed_at: number;
-  } | null = null;
+  const testDeliveryNotices = new Map<string, { delivery_id: string; observed_at: number }>();
+  const webhookErrors = new Map<string, string>();
   let retirementConfirmIngressId: string | null = null;
   let connectionRebindIngressId: string | null = null;
-  let deliveryInspector: DeliveryInspectorState | null = null;
+  const deliveryInspectors = new Map<string, DeliveryInspectorState>();
+  const closeDeliveryView = (ingressId: string): void => {
+    if (showsWebhookDetails()) deliveryInspectors.delete(ingressId);
+    else deliveryInspectors.clear();
+  };
   let rejectionInspector: RejectionInspectorState | null = null;
   let deadLetterInspector: DeadLetterInspectorState | null = null;
   /** D-201 Slice 10C — the webhook whose events are being changed. */
@@ -1213,6 +1287,11 @@ export const mountWebhooksPanel = (
   } | {
     kind: 'panel-title';
   } | null = null;
+  const clearActionFocus = (): void => {
+    pendingActionFocus = null;
+    pendingActionFocusElement = null;
+    pendingCompletionFocus = null;
+  };
 
   /** The panel repaints every card around an authority-bearing read/write. Keep
    *  the initiating control as a logical focus owner across both the busy and
@@ -1415,7 +1494,10 @@ export const mountWebhooksPanel = (
 
   const focusCardAction = (ingressId: string, action: string): void => {
     const card = renderedCard(ingressId);
-    if (card === null) return;
+    if (card === null) {
+      if (selectedWebhook === null && desktopWorkspace?.matches) focusListTarget(rosterRow(ingressId));
+      return;
+    }
     focusRendered(card, (element) =>
       element.getAttribute?.(WEBHOOKS_PANEL_ACTION_ATTR) === action);
   };
@@ -1437,9 +1519,14 @@ export const mountWebhooksPanel = (
 
   const applyListResult = (result: Awaited<ReturnType<WebhooksListCaller>>): void => {
     ingresses = [...result.ingresses];
+    const liveIds = new Set(ingresses.map((ingress) => ingress.ingress_id));
+    for (const entries of [deliveryInspectors, testDeliveryNotices, webhookErrors]) {
+      for (const ingressId of entries.keys()) {
+        if (!liveIds.has(ingressId)) entries.delete(ingressId);
+      }
+    }
     deadLetterReview = result.dead_letter_review ?? null;
-    if (eventsEditor !== null
-      && !ingresses.some((ingress) => ingress.ingress_id === eventsEditor?.ingress_id)) {
+    if (eventsEditor !== null && !liveIds.has(eventsEditor.ingress_id)) {
       eventsEditor = null;
     }
     const seen = new Set<string>();
@@ -1687,18 +1774,30 @@ export const mountWebhooksPanel = (
     .map((capability) => descriptorFor(capability.profile_id))
     .filter((profile): profile is WebhookProfileDescriptor => profile !== null);
 
-  const mutate = async (operation: () => Promise<unknown>, owner?: HTMLElement): Promise<void> => {
+  const clearOperationError = (ingressId: string | undefined): void => {
+    error = null;
+    if (ingressId !== undefined) webhookErrors.delete(ingressId);
+  };
+
+  const reportOperationError = (cause: unknown, ingressId: string | undefined): void => {
+    if (disposed) return;
+    if (ingressId === undefined) error = errorText(cause);
+    else webhookErrors.set(ingressId, errorText(cause));
+  };
+
+  const mutate = async (operation: () => Promise<unknown>, owner?: HTMLElement, ingressId?: string): Promise<void> => {
     if (busy || disposed || (owner !== undefined && !root.contains(owner))) return;
+    const errorOwner = showsWebhookDetails() ? ingressId : undefined;
     rememberActionFocus();
     pendingCompletionFocus = null;
     busy = true;
     mutationInFlight = true;
-    error = null;
+    clearOperationError(errorOwner);
     render();
     try {
       await operation();
     } catch (cause) {
-      if (!disposed) error = errorText(cause);
+      reportOperationError(cause, errorOwner);
     }
     // A multi-step mutation can partially commit (for example, ingress create
     // succeeds but the encrypted credential write fails). Always refresh so
@@ -1722,17 +1821,20 @@ export const mountWebhooksPanel = (
     if (!disposed) render();
   };
 
-  const inspect = async (operation: () => Promise<unknown>): Promise<void> => {
+  const inspect = async (ingressId: string, operation: () => Promise<unknown>): Promise<void> => {
     if (busy || disposed) return;
+    const errorOwner = showsWebhookDetails() ? ingressId : undefined;
     rememberActionFocus();
     busy = true;
-    error = null;
+    inspectingIngress = ingressId;
+    clearOperationError(errorOwner);
     render();
     try {
       await operation();
     } catch (cause) {
-      if (!disposed) error = errorText(cause);
+      reportOperationError(cause, errorOwner);
     } finally {
+      inspectingIngress = null;
       busy = false;
       if (!disposed) render();
     }
@@ -1748,40 +1850,48 @@ export const mountWebhooksPanel = (
     cursor?: WebhookDeliveryListCursor,
   ): void => {
     if (!canInspectDeliveries) return;
-    void inspect(async () => {
+    void inspect(ingressId, async () => {
       const response = await options.runDeliveryList!({
         ingress_id: ingressId,
         limit: 10,
         ...(cursor !== undefined ? { cursor } : {}),
       });
-      if (deliveryInspector?.ingress_id !== ingressId) return;
+      const state = deliveryInspectors.get(ingressId);
+      if (disposed || state === undefined) return;
+      if (response.deliveries.some((delivery) => delivery.ingress_id !== ingressId)) {
+        throw new Error('These messages came back from the wrong webhook');
+      }
       const deliveries = cursor === undefined
         ? [...response.deliveries]
-        : [...deliveryInspector.deliveries, ...response.deliveries];
-      deliveryInspector = {
-        ...deliveryInspector,
+        : [...state.deliveries, ...response.deliveries];
+      deliveryInspectors.set(ingressId, {
+        ...state,
         deliveries: [...new Map(deliveries.map((item) => [
           item.delivery_id,
           item,
         ])).values()],
         next_cursor: response.next_cursor,
-      };
+      });
     });
   };
 
   const loadDeliveryDetail = (ingressId: string, deliveryId: string): void => {
     if (!canInspectDeliveries) return;
-    void inspect(async () => {
+    void inspect(ingressId, async () => {
       const response = await options.runDeliveryGet!({
         ingress_id: ingressId,
         delivery_id: deliveryId,
       });
-      if (deliveryInspector?.ingress_id !== ingressId) return;
-      deliveryInspector = {
-        ...deliveryInspector,
+      const state = deliveryInspectors.get(ingressId);
+      if (disposed || state === undefined) return;
+      if (response.detail.delivery.ingress_id !== ingressId || response.detail.delivery.delivery_id !== deliveryId) {
+        throw new Error('This message came back from the wrong webhook or delivery');
+      }
+      deliveryInspectors.set(ingressId, {
+        ...state,
         detail: response.detail,
         payloads: new Map(),
-      };
+      });
     });
   };
 
@@ -1791,17 +1901,21 @@ export const mountWebhooksPanel = (
     eventId: string,
   ): void => {
     if (!canInspectDeliveries) return;
-    void inspect(async () => {
+    void inspect(ingressId, async () => {
       const response = await options.runDeliveryEventGet!({
         ingress_id: ingressId,
         delivery_id: deliveryId,
         event_id: eventId,
       });
-      if (deliveryInspector?.ingress_id !== ingressId
-        || deliveryInspector.detail?.delivery.delivery_id !== deliveryId) return;
-      const payloads = new Map(deliveryInspector.payloads);
+      const state = deliveryInspectors.get(ingressId);
+      if (disposed || state?.detail?.delivery.delivery_id !== deliveryId) return;
+      if (response.event.event.ingress_id !== ingressId || response.event.event.delivery_id !== deliveryId
+        || response.event.event.event_id !== eventId) {
+        throw new Error('This event came back from the wrong message');
+      }
+      const payloads = new Map(state.payloads);
       payloads.set(eventId, response.event);
-      deliveryInspector = { ...deliveryInspector, payloads };
+      deliveryInspectors.set(ingressId, { ...state, payloads });
     });
   };
 
@@ -1810,7 +1924,7 @@ export const mountWebhooksPanel = (
     cursor?: WebhookRejectedDeliveryListCursor,
   ): void => {
     if (!canInspectRejections) return;
-    void inspect(async () => {
+    void inspect(ingressId, async () => {
       const response = await options.runRejectedDeliveryList!({
         ingress_id: ingressId,
         limit: 10,
@@ -1879,7 +1993,7 @@ export const mountWebhooksPanel = (
     cursor?: WebhookDeadLetterListCursor,
   ): void => {
     if (!canReviewDeadLetters) return;
-    void inspect(async () => {
+    void inspect(ingressId, async () => {
       if (cursor === undefined) {
         await reloadDeadLetters(ingressId);
         return;
@@ -1916,7 +2030,7 @@ export const mountWebhooksPanel = (
         closed: { dead_letters: [], next_cursor: null, loaded: false },
       };
     }
-    void inspect(async () => {
+    void inspect(ingressId, async () => {
       const response = await options.runDeadLetterList!({
         ingress_id: ingressId,
         limit: 10,
@@ -2008,9 +2122,7 @@ export const mountWebhooksPanel = (
   const inspectorView = (ingress: WebhookIngressView): HTMLElement => {
     const inspector = doc.createElement('section');
     inspector.setAttribute(WEBHOOKS_PANEL_DELIVERIES_ATTR, ingress.ingress_id);
-    const state = deliveryInspector?.ingress_id === ingress.ingress_id
-      ? deliveryInspector
-      : null;
+    const state = deliveryInspectors.get(ingress.ingress_id);
 
     const head = doc.createElement('div');
     head.className = 'wh-card-head';
@@ -2022,7 +2134,7 @@ export const mountWebhooksPanel = (
     const close = button(doc, 'Close', 'deliveries-close');
     close.disabled = busy;
     close.addEventListener('click', () => {
-      deliveryInspector = null;
+      deliveryInspectors.delete(ingress.ingress_id);
       render();
       focusCardAction(ingress.ingress_id, 'deliveries');
     });
@@ -2034,7 +2146,7 @@ export const mountWebhooksPanel = (
     boundary.textContent = 'Only messages that got through. Ones that failed the check, or were turned away, are not here.';
     inspector.appendChild(boundary);
 
-    if (state === null || (busy && state.deliveries.length === 0)) {
+    if (state === undefined || (inspectingIngress === ingress.ingress_id && state.deliveries.length === 0)) {
       const loading = doc.createElement('p');
       loading.className = 'wh-copy';
       loading.textContent = 'Loading the messages that got through…';
@@ -2059,12 +2171,13 @@ export const mountWebhooksPanel = (
       const back = button(doc, 'Back to the messages', 'deliveries-back');
       back.disabled = busy;
       back.addEventListener('click', () => {
-        if (deliveryInspector?.ingress_id !== ingress.ingress_id) return;
-        deliveryInspector = {
-          ...deliveryInspector,
+        const current = deliveryInspectors.get(ingress.ingress_id);
+        if (current === undefined) return;
+        deliveryInspectors.set(ingress.ingress_id, {
+          ...current,
           detail: null,
           payloads: new Map(),
-        };
+        });
         render();
         focusCardItemAction(
           ingress.ingress_id,
@@ -2966,6 +3079,10 @@ export const mountWebhooksPanel = (
         // point repair belongs to the persisted ingress card; keeping this form
         // open would invite a duplicate ingress after a partial failure.
         showCreate = false;
+        if (workspace && showsWebhookDetails()) {
+          selectedWebhook = created.ingress.ingress_id;
+          workspace.onSelect(selectedWebhook);
+        }
         pendingCompletionFocus = {
           kind: 'card-title',
           ingress_id: created.ingress.ingress_id,
@@ -3085,7 +3202,7 @@ export const mountWebhooksPanel = (
     return notice;
   };
 
-  const ingressCard = (ingress: WebhookIngressView): HTMLElement => {
+  const ingressCard = (ingress: WebhookIngressView, closeDetails?: HTMLButtonElement): HTMLElement => {
     const profile = descriptorFor(ingress.profile_id);
     const ownerSettings = profile === null ? null : ownerSettingsFor(profile);
     const profileCapability = capabilityFor(ingress.profile_id);
@@ -3109,7 +3226,14 @@ export const mountWebhooksPanel = (
     const pill = doc.createElement('span');
     pill.className = 'wh-pill';
     pill.textContent = `${ingress.registration_state.replaceAll('_', ' ')} · ${ingress.intake_state.replaceAll('_', ' ')}`;
-    head.appendChild(pill);
+    if (closeDetails) {
+      const controls = doc.createElement('div');
+      controls.className = 'wh-detail-options';
+      controls.append(pill, closeDetails);
+      head.appendChild(controls);
+    } else {
+      head.appendChild(pill);
+    }
     card.appendChild(head);
 
     const status = doc.createElement('p'); status.className = 'wh-copy';
@@ -3312,7 +3436,17 @@ export const mountWebhooksPanel = (
       card.appendChild(notice);
     }
 
-    if (testDeliveryNotice?.ingress_id === ingress.ingress_id) {
+    const webhookError = webhookErrors.get(ingress.ingress_id);
+    if (webhookError !== undefined) {
+      const notice = doc.createElement('p');
+      notice.setAttribute(WEBHOOKS_PANEL_ERROR_ATTR, '');
+      notice.setAttribute('role', 'alert');
+      notice.textContent = webhookError;
+      if (closeDetails) card.insertBefore(notice, configuration);
+      else card.appendChild(notice);
+    }
+    const testDeliveryNotice = testDeliveryNotices.get(ingress.ingress_id);
+    if (testDeliveryNotice !== undefined) {
       const notice = doc.createElement('div');
       notice.setAttribute(WEBHOOKS_PANEL_TEST_ATTR, ingress.ingress_id);
       notice.className = 'wh-note';
@@ -3517,7 +3651,8 @@ export const mountWebhooksPanel = (
           && ingress.intake_state !== 'degraded');
       sendTest.title = 'Sends a signed message to your public address. Recipes tied to this may run.';
       sendTest.addEventListener('click', () => {
-        testDeliveryNotice = null;
+        if (busy || disposed || !root.contains(sendTest)) return;
+        testDeliveryNotices.delete(ingress.ingress_id);
         void mutate(async () => {
           const response = await options.runTestDelivery!({
             ingress_id: ingress.ingress_id,
@@ -3525,17 +3660,19 @@ export const mountWebhooksPanel = (
           if (response.ingress.ingress_id !== ingress.ingress_id) {
             throw new Error('The test message came back from the wrong way in');
           }
-          testDeliveryNotice = {
-            ingress_id: ingress.ingress_id,
+          if (disposed) return;
+          testDeliveryNotices.set(ingress.ingress_id, {
             delivery_id: response.delivery_id,
             observed_at: response.observed_at,
-          };
-        });
+          });
+        }, sendTest, ingress.ingress_id);
       });
       actions.appendChild(sendTest);
     }
+    const messageActions = closeDetails ? doc.createElement('div') : actions;
+    messageActions.className = 'wh-actions';
     if (canInspectDeliveries) {
-      const inspecting = deliveryInspector?.ingress_id === ingress.ingress_id;
+      const inspecting = deliveryInspectors.has(ingress.ingress_id);
       const deliveries = button(
         doc,
         inspecting ? 'Hide the messages that got through' : 'See the messages that got through',
@@ -3544,23 +3681,23 @@ export const mountWebhooksPanel = (
       deliveries.disabled = busy;
       deliveries.addEventListener('click', () => {
         if (inspecting) {
-          deliveryInspector = null;
+          deliveryInspectors.delete(ingress.ingress_id);
           render();
           focusCardAction(ingress.ingress_id, 'deliveries');
           return;
         }
-        deliveryInspector = {
-          ingress_id: ingress.ingress_id,
+        if (!showsWebhookDetails()) deliveryInspectors.clear();
+        deliveryInspectors.set(ingress.ingress_id, {
           deliveries: [],
           next_cursor: null,
           detail: null,
           payloads: new Map(),
-        };
+        });
         rejectionInspector = null;
         deadLetterInspector = null;
         loadDeliveries(ingress.ingress_id);
       });
-      actions.appendChild(deliveries);
+      messageActions.appendChild(deliveries);
     }
     if (canInspectRejections) {
       const inspecting = rejectionInspector?.ingress_id === ingress.ingress_id;
@@ -3583,11 +3720,11 @@ export const mountWebhooksPanel = (
           next_cursor: null,
           loaded: false,
         };
-        deliveryInspector = null;
+        closeDeliveryView(ingress.ingress_id);
         deadLetterInspector = null;
         loadRejectedDeliveries(ingress.ingress_id);
       });
-      actions.appendChild(rejections);
+      messageActions.appendChild(rejections);
     }
     if (canReviewDeadLetters) {
       const waiting = ingress.dead_letters_unresolved ?? 0;
@@ -3620,12 +3757,13 @@ export const mountWebhooksPanel = (
           notice: null,
           closed: null,
         };
-        deliveryInspector = null;
+        closeDeliveryView(ingress.ingress_id);
         rejectionInspector = null;
         loadDeadLetters(ingress.ingress_id);
       });
-      actions.appendChild(deadLetters);
+      messageActions.appendChild(deadLetters);
     }
+    if (closeDetails && messageActions.childElementCount > 0) card.insertBefore(messageActions, configuration);
     if (canEditEvents(ingress)) {
       const editing = eventsEditor?.ingress_id === ingress.ingress_id;
       const editEvents = button(
@@ -3739,8 +3877,9 @@ export const mountWebhooksPanel = (
             if (oneTime?.ingress_id === ingress.ingress_id) oneTime = null;
             retirementConfirmIngressId = null;
             retentionNotice = null;
-            testDeliveryNotice = null;
-            deliveryInspector = null;
+            testDeliveryNotices.delete(ingress.ingress_id);
+            webhookErrors.delete(ingress.ingress_id);
+            deliveryInspectors.delete(ingress.ingress_id);
             rejectionInspector = null;
           });
         });
@@ -3866,14 +4005,16 @@ export const mountWebhooksPanel = (
       }
       card.appendChild(rotation);
     }
-    if (deliveryInspector?.ingress_id === ingress.ingress_id) {
-      card.appendChild(inspectorView(ingress));
-    }
+    const showMessages = (inspector: HTMLElement) => {
+      if (closeDetails) card.insertBefore(inspector, configuration);
+      else card.appendChild(inspector);
+    };
+    if (deliveryInspectors.has(ingress.ingress_id)) showMessages(inspectorView(ingress));
     if (rejectionInspector?.ingress_id === ingress.ingress_id) {
-      card.appendChild(rejectionInspectorView(ingress));
+      showMessages(rejectionInspectorView(ingress));
     }
     if (deadLetterInspector?.ingress_id === ingress.ingress_id) {
-      card.appendChild(deadLetterInspectorView(ingress));
+      showMessages(deadLetterInspectorView(ingress));
     }
     if (eventsEditor?.ingress_id === ingress.ingress_id && canEditEvents(ingress)) {
       card.appendChild(eventsEditorView(ingress));
@@ -3896,11 +4037,186 @@ export const mountWebhooksPanel = (
     return card;
   };
 
+  const needsAttention = (ingress: WebhookIngressView): boolean =>
+    ingress.health.status !== 'healthy' || ingress.readiness.blockers.length > 0
+    || (ingress.stray_endpoints_given_up ?? 0) > 0;
+
+  const typingEditor = (scope: HTMLElement) => scope.querySelector?.<HTMLElement>(
+    `[${WEBHOOKS_PANEL_FORM_ATTR}="credentials"], form:has([${WEBHOOKS_PANEL_REBIND_ATTR}])`,
+  );
+  const webhookTitle = (ingressId: string) => {
+    const card = renderedCard(ingressId);
+    return card && findDescendant(card, (node) => node.tagName === 'H3');
+  };
+  const searchField = () => root.querySelector?.<HTMLInputElement>('[data-webhook-filter="query"]');
+  const rosterRow = (ingressId: string) => findDescendant(root, (node) =>
+    node.getAttribute?.(WEBHOOK_ROSTER_ROW_ATTR) === ingressId);
+
+  const selectWebhook = (ingressId: string | null): boolean => {
+    if (!workspace || disposed || showCreate || typingEditor(root)) return false;
+    const previous = selectedWebhook;
+    if (previous === ingressId) return true;
+    selectedWebhook = ingressId;
+    clearActionFocus();
+    render();
+    if (ingressId !== null) {
+      const title = webhookTitle(ingressId) ?? root.querySelector<HTMLElement>(`[${WEBHOOK_BACK_ATTR}]`);
+      focusListTarget(title);
+      if (!rosterRows()) title?.scrollIntoView?.({ block: 'nearest' });
+    } else if (previous !== null) {
+      const target = rosterRow(previous) ?? webhookTitle(previous) ?? searchField()
+        ?? findDescendant(root, (node) => node.tagName === 'H2');
+      focusListTarget(target);
+      if (!rosterRows()) target?.scrollIntoView?.({ block: 'nearest' });
+    }
+    return true;
+  };
+
+  const webhookFilters = (desktop: boolean): HTMLElement => {
+    const filters = doc.createElement('div');
+    filters.className = desktop ? 'wh-roster-filters' : 'wh-filters';
+    const searchLabel = doc.createElement('label');
+    searchLabel.textContent = 'Search webhooks';
+    const search = doc.createElement('input');
+    search.type = 'search';
+    search.value = filterQuery;
+    search.setAttribute('data-webhook-filter', 'query');
+    search.addEventListener('input', () => { filterQuery = search.value; render(); });
+    searchLabel.appendChild(search);
+    filters.appendChild(searchLabel);
+    const statusLabel = doc.createElement('label');
+    statusLabel.textContent = 'Status';
+    const status = doc.createElement('select');
+    status.setAttribute('data-webhook-filter', 'status');
+    for (const [value, label] of [['', 'All statuses'], ['enabled', 'Enabled'], ['attention', 'Needs attention'], ['disabled', 'Disabled']] as const) {
+      const option = doc.createElement('option');
+      option.value = value;
+      option.textContent = label;
+      option.selected = value === filterStatus;
+      status.appendChild(option);
+    }
+    status.addEventListener('change', () => { filterStatus = status.value; render(); });
+    statusLabel.appendChild(status);
+    filters.appendChild(statusLabel);
+    return filters;
+  };
+
+  const closeWebhookDetails = (desktop: boolean): HTMLButtonElement => {
+    const back = doc.createElement('button');
+    back.type = 'button';
+    back.className = 'wh-detail-back';
+    back.setAttribute(WEBHOOK_BACK_ATTR, '');
+    back.textContent = desktop ? 'Close details' : 'Back to webhooks';
+    back.addEventListener('click', () => {
+      if (back.disabled || workspace?.backToRoster()) return;
+      if (selectWebhook(null)) workspace?.onSelect(null);
+    });
+    return back;
+  };
+
+  const selectedContent = (back?: HTMLButtonElement): HTMLElement => {
+    const selected = ingresses.find((ingress) => ingress.ingress_id === selectedWebhook);
+    if (selected) return ingressCard(selected, back);
+    const empty = doc.createElement('p');
+    empty.className = 'wh-copy wh-roster-empty';
+    empty.setAttribute('role', 'status');
+    empty.textContent = busy && ingresses.length === 0
+      ? 'Loading webhooks…'
+      : error !== null ? 'The selected webhook could not be loaded.' : 'This webhook is no longer available.';
+    return empty;
+  };
+
+  const splitView = (visible: readonly WebhookIngressView[], filters: HTMLElement): HTMLElement => {
+    const split = doc.createElement('div');
+    split.className = 'wh-workspace';
+    const roster = doc.createElement('section');
+    roster.setAttribute('aria-label', 'Webhook list');
+    roster.className = 'wh-roster';
+    roster.appendChild(filters);
+    const rows = doc.createElement('div');
+    rows.setAttribute(WEBHOOK_ROSTER_ROWS_ATTR, '');
+    roster.appendChild(rows);
+    split.appendChild(roster);
+
+    const details = doc.createElement('section');
+    details.setAttribute('aria-label', 'Webhook details');
+    details.setAttribute(WEBHOOK_DETAIL_ATTR, selectedWebhook ?? '');
+    let editing = false;
+    if (selectedWebhook !== null) {
+      const back = closeWebhookDetails(true);
+      const content = selectedContent(back);
+      editing = Boolean(typingEditor(content));
+      back.disabled = editing;
+      const body = doc.createElement('div');
+      body.className = 'wh-detail-body';
+      if (!content.contains(back)) body.appendChild(back);
+      body.appendChild(content);
+      details.appendChild(body);
+    } else {
+      const empty = doc.createElement('p');
+      empty.className = 'wh-copy wh-detail-empty';
+      empty.textContent = 'Select a webhook to see its health, recipes, and messages.';
+      details.appendChild(empty);
+    }
+    split.appendChild(details);
+
+    if (editing) {
+      for (const field of filters.querySelectorAll<HTMLInputElement | HTMLSelectElement>('input, select')) field.disabled = true;
+    }
+    for (const ingress of visible) {
+      const row = doc.createElement('button');
+      row.type = 'button';
+      row.setAttribute(WEBHOOK_ROSTER_ROW_ATTR, ingress.ingress_id);
+      row.disabled = editing;
+      if (selectedWebhook === ingress.ingress_id) row.setAttribute('aria-current', 'true');
+      const label = doc.createElement('span');
+      label.className = 'wh-roster-label';
+      const name = doc.createElement('strong');
+      name.className = 'wh-roster-name';
+      name.textContent = ingress.display_name;
+      name.title = ingress.display_name;
+      label.appendChild(name);
+      const environment = doc.createElement('span');
+      environment.className = 'wh-roster-environment';
+      environment.textContent = ingress.environment;
+      label.appendChild(environment);
+      row.appendChild(label);
+      const status = doc.createElement('span');
+      status.className = 'wh-pill';
+      const attention = ingress.intake_state !== 'disabled' && ingress.intake_state !== 'retired' && needsAttention(ingress);
+      if (attention) status.classList.add('wh-roster-attention');
+      const intake = ingress.intake_state.replaceAll('_', ' ');
+      status.textContent = attention ? 'Needs attention' : intake.charAt(0).toUpperCase() + intake.slice(1);
+      row.appendChild(status);
+      row.addEventListener('click', () => {
+        if (selectedWebhook !== ingress.ingress_id && selectWebhook(ingress.ingress_id)) workspace?.onSelect(ingress.ingress_id);
+      });
+      rows.appendChild(row);
+    }
+    if (visible.length === 0) {
+      const empty = doc.createElement('p');
+      empty.className = 'wh-copy wh-roster-empty';
+      empty.textContent = 'No webhooks match these filters.';
+      empty.setAttribute('role', 'status');
+      rows.appendChild(empty);
+    }
+    return split;
+  };
+
   const render = (): void => {
     if (disposed) return;
     const active = doc.activeElement as HTMLInputElement | null;
     const focusedFilter = active?.dataset?.webhookFilter;
     const caret = active?.selectionStart;
+    const focusedRow = active?.getAttribute?.(WEBHOOK_ROSTER_ROW_ATTR);
+    const focusedBack = active?.hasAttribute?.(WEBHOOK_BACK_ATTR);
+    const focusedTitle = active?.tagName === 'H3' ? active.closest?.(`[${WEBHOOKS_PANEL_CARD_ATTR}]`)?.getAttribute(WEBHOOKS_PANEL_CARD_ATTR) : null;
+    const previousRows = rosterRows();
+    if (previousRows) rosterScroll = readListScroll(previousRows);
+    const previousDetail = detailBody();
+    const detailScroll = previousDetail?.parentElement?.getAttribute(WEBHOOK_DETAIL_ATTR) === selectedWebhook
+      && previousDetail ? readListScroll(previousDetail) : undefined;
+    const pageScroll = workspace ? readListScroll(workspace.scrollRoot) : undefined;
     const focusedPreapproval = active !== null && [...preapprovalPanels.values()].some((item) => item.host.contains(active))
       ? active : null;
     // A delayed action owns focus only while the owner stays on its control.
@@ -3908,9 +4224,7 @@ export const mountWebhooksPanel = (
     // runs; settling the request must respect that later choice.
     if (pendingActionFocus !== null && pendingActionFocusElement !== null
       && active !== null && active !== doc.body && active !== pendingActionFocusElement) {
-      pendingActionFocus = null;
-      pendingActionFocusElement = null;
-      pendingCompletionFocus = null;
+      clearActionFocus();
     }
     clear(root);
     const head = doc.createElement('div');
@@ -3939,17 +4253,7 @@ export const mountWebhooksPanel = (
     });
     head.appendChild(newButton);
     root.appendChild(head);
-    if (ingresses.length) {
-      const filters = doc.createElement('div'); filters.className = 'wh-filters';
-      const searchLabel = doc.createElement('label'); searchLabel.textContent = 'Search webhooks';
-      const search = doc.createElement('input'); search.type = 'search'; search.value = filterQuery; search.setAttribute('data-webhook-filter', 'query');
-      search.addEventListener('input', () => { filterQuery = search.value; render(); }); searchLabel.appendChild(search); filters.appendChild(searchLabel);
-      const statusLabel = doc.createElement('label'); statusLabel.textContent = 'Status'; const status = doc.createElement('select'); status.setAttribute('data-webhook-filter', 'status');
-      for (const [value, label] of [['', 'All statuses'], ['enabled', 'Enabled'], ['attention', 'Needs attention'], ['disabled', 'Disabled']]) {
-        const option = doc.createElement('option'); option.value = value!; option.textContent = label!; option.selected = value === filterStatus; status.appendChild(option);
-      }
-      status.addEventListener('change', () => { filterStatus = status.value; render(); }); statusLabel.appendChild(status); filters.appendChild(statusLabel); root.appendChild(filters);
-    }
+    if (ingresses.length && !showsWebhookDetails()) root.appendChild(webhookFilters(false));
     if (error) {
       const errorNode = doc.createElement('div');
       errorNode.setAttribute(WEBHOOKS_PANEL_ERROR_ATTR, '');
@@ -3983,15 +4287,31 @@ export const mountWebhooksPanel = (
       root.appendChild(full);
     }
     if (showCreate) root.appendChild(createForm());
-    if (ingresses.length === 0 && !showCreate && !error) {
+    if (ingresses.length === 0 && selectedWebhook === null && !showCreate && !error) {
       const empty = doc.createElement('div');
       empty.className = 'wh-empty';
       empty.textContent = busy ? 'Loading webhooks…' : 'No webhooks coming in yet.';
       root.appendChild(empty);
     }
     const visible = ingresses.filter(ingress => (!filterQuery || [ingress.display_name, ingress.profile_id, ingress.environment].join(' ').toLowerCase().includes(filterQuery.toLowerCase()))
-      && (!filterStatus || (filterStatus === 'attention' ? ingress.health.status !== 'healthy' || ingress.readiness.blockers.length > 0 || (ingress.stray_endpoints_given_up ?? 0) > 0 : ingress.intake_state === filterStatus)));
-    for (const ingress of visible) root.appendChild(ingressCard(ingress));
+      && (!filterStatus || (filterStatus === 'attention' ? needsAttention(ingress) : ingress.intake_state === filterStatus)));
+    if (!showCreate && desktopWorkspace?.matches && ingresses.length > 0) {
+      root.appendChild(splitView(visible, webhookFilters(true)));
+    } else if (!showCreate && selectedWebhook !== null) {
+      const content = selectedContent();
+      const back = closeWebhookDetails(false);
+      back.disabled = Boolean(typingEditor(content));
+      root.appendChild(back);
+      root.appendChild(content);
+    } else if (!showsWebhookDetails()) {
+      for (const ingress of visible) root.appendChild(ingressCard(ingress));
+      if (ingresses.length && !visible.length) {
+        const empty = doc.createElement('p');
+        empty.textContent = 'No webhooks match these filters.';
+        empty.setAttribute('role', 'status');
+        root.appendChild(empty);
+      }
+    }
     // A webhook gone or retired takes its pre-approvals' panel with it.
     for (const [ingressId, item] of preapprovalPanels) {
       if (ingresses.some((ingress) => ingress.ingress_id === ingressId && ingress.intake_state !== 'retired')) continue;
@@ -3999,7 +4319,6 @@ export const mountWebhooksPanel = (
       item.host.remove();
       preapprovalPanels.delete(ingressId);
     }
-    if (ingresses.length && !visible.length) { const empty = doc.createElement('p'); empty.textContent = 'No webhooks match these filters.'; empty.setAttribute('role', 'status'); root.appendChild(empty); }
     restoreActionFocus();
     // Moving its panel into the new card drops focus to <body>: put it back where it was.
     if (focusedPreapproval !== null && focusedPreapproval.isConnected
@@ -4010,6 +4329,16 @@ export const mountWebhooksPanel = (
       const field = root.querySelector<HTMLInputElement>(`[data-webhook-filter="${focusedFilter}"]`); field?.focus({ preventScroll: true });
       if (focusedFilter === 'query' && typeof caret === 'number') field?.setSelectionRange(caret, caret);
     }
+    if (doc.activeElement === null || doc.activeElement === doc.body) {
+      if (focusedRow) focusListTarget(rosterRow(focusedRow) ?? webhookTitle(focusedRow) ?? searchField());
+      else if (focusedBack) focusListTarget(root.querySelector<HTMLElement>(`[${WEBHOOK_BACK_ATTR}]`));
+      else if (focusedTitle) focusListTarget(webhookTitle(focusedTitle) ?? rosterRow(focusedTitle));
+    }
+    const nextRows = rosterRows();
+    const nextDetail = detailBody();
+    if (nextRows) restoreListScroll(nextRows, rosterScroll);
+    if (nextDetail) restoreListScroll(nextDetail, detailScroll);
+    if (workspace && (nextRows || previousRows)) restoreListScroll(workspace.scrollRoot, pageScroll);
   };
 
   const refresh = (): Promise<void> => {
@@ -4046,6 +4375,22 @@ export const mountWebhooksPanel = (
     return pending;
   };
 
+  const onWorkspaceMediaChange = (): void => {
+    if (disposed || showCreate) return;
+    const editor = typingEditor(root);
+    // Finish an inline edit opened on the narrow list before adopting the desktop roster.
+    if (editor && desktopWorkspace?.matches && selectedWebhook === null) return;
+    // The same inline form can move between the desktop pane and the narrow card.
+    const fields = Array.from(editor?.querySelectorAll<HTMLInputElement>('input') ?? []);
+    const focused = fields.findIndex((field) => field === doc.activeElement);
+    const values = fields.map((field) => field.value);
+    render();
+    typingEditor(root)?.querySelectorAll<HTMLInputElement>('input').forEach((field, index) => {
+      if (values[index] !== undefined) field.value = values[index];
+      if (index === focused) focusListTarget(field);
+    });
+  };
+  desktopWorkspace?.addEventListener?.('change', onWorkspaceMediaChange);
   render();
   void refresh();
   return {
@@ -4054,10 +4399,12 @@ export const mountWebhooksPanel = (
     getLoadError: () => error,
     hasInFlightWork: () => mutationInFlight
       || [...preapprovalPanels.values()].some((item) => item.panel?.pending() === true),
+    selectWebhook,
     dispose() {
       if (disposed) return;
       disposed = true;
       oneTime = null;
+      desktopWorkspace?.removeEventListener?.('change', onWorkspaceMediaChange);
       for (const item of preapprovalPanels.values()) item.panel?.dispose();
       preapprovalPanels.clear();
       root.remove();

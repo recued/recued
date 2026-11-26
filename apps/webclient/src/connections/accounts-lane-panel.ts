@@ -77,6 +77,9 @@ import {
   type FoundationalOAuthTerminalState,
 } from './foundational-oauth-continuity.js';
 import { classifyRpcError, humanizeRpcError } from '../shell/rpc-error-copy.js';
+import { focusListTarget, readListScroll, restoreListScroll, type ListScrollPosition } from '../shell/list-preview-continuity.js';
+
+const ACCOUNT_WORKSPACE_MEDIA = '(min-width: 1280px) and (hover: hover) and (pointer: fine)';
 
 // ════════════════════════════════════════════════════════════════
 // Caller seams (per lane)
@@ -207,6 +210,14 @@ export interface AccountsChatHandoff {
   readonly slug: string;
 }
 
+export interface FileWorkspacePosition {
+  readonly filters: AccountsPanelState['filters'];
+  readonly rosterScroll: ListScrollPosition | undefined;
+  readonly pageScroll: ListScrollPosition;
+  readonly inspectorScroll: ListScrollPosition;
+  readonly action: 'browse' | 'authentication';
+}
+
 export interface MountAccountsLanePanelOptions {
   host: HTMLElement;
   document?: Document;
@@ -218,7 +229,13 @@ export interface MountAccountsLanePanelOptions {
   /** Fired on lane / detail navigation so the route can sync the hash
    *  (`#connections/<lane>[/<slug>]`). Optional — navigation works
    *  internally without it. */
-  onNavigate?: (lane: AccountLaneId, detailSlug: string | null) => void;
+  onNavigate?: (lane: AccountLaneId, detailSlug: string | null, fromAccountWorkspace?: boolean) => void;
+  accountWorkspace?: {
+    scrollRoot: HTMLElement;
+    backToRoster(): boolean;
+    returnPosition?: FileWorkspacePosition;
+    rememberFileReturn?(position: FileWorkspacePosition): void;
+  };
   /** Post-connect next actions. The route supplies hash-aware callbacks so
    *  these also work with injected/manual hash sources. */
   onGoToChat?: (source: AccountsChatHandoff) => void;
@@ -279,6 +296,8 @@ export interface AccountsLanePanelMount {
   refresh(): Promise<void>;
   /** Initial / most-recent load promise. */
   whenLoaded(): Promise<void>;
+  /** Restore an entry belonging to the mounted desktop roster. */
+  navigateAccountWorkspace(slug: string | null): boolean;
   /** Enrollment, OAuth, resync, reauth, or removal is awaiting authority. */
   hasInFlightWork(): boolean;
   hasUnsavedChanges(): boolean;
@@ -343,16 +362,25 @@ export const mountAccountsLanePanel = (
     );
   }
 
-  const { host } = opts;
+  const { host, accountWorkspace } = opts;
   const state: AccountsPanelState = initialAccountsPanelState(
     opts.initialLane ?? 'mail',
   );
+  const desktop = accountWorkspace ? doc.defaultView?.matchMedia?.(ACCOUNT_WORKSPACE_MEDIA) : undefined;
+  const workspaceRoster = () => desktop && host.querySelector<HTMLElement>('[data-accounts-workspace] .accounts-rows');
+  const workspaceInspector = () => desktop && host.querySelector<HTMLElement>('[data-accounts-workspace-inspector]');
+  let pendingFileReturn = accountWorkspace?.returnPosition;
+  let rosterScroll = pendingFileReturn?.rosterScroll;
+  const focusBeforeReturn = pendingFileReturn ? doc.activeElement : null;
+  if (pendingFileReturn) state.filters = pendingFileReturn.filters;
   const draftValues = new Map<string, string>();
   let handingOffSetup = false;
   const changedSetup = () => state.stage === 'form' && [...draftValues].some(([key, value]) =>
     (key.startsWith('credential.') ? state.oauthCredValues[key.slice(11) as keyof typeof state.oauthCredValues] : state.values[key]) !== value);
   const rememberEdit = (key: string, value: string) => { if (!draftValues.has(key)) draftValues.set(key, value); };
   const confirmDiscardSetup = () => !changedSetup() || (doc.defaultView?.confirm?.('Discard this account setup? Credentials entered here cannot be restored.') ?? true);
+  const confirmDiscardPassword = () => !passwordPanel.hasDraft()
+    || (doc.defaultView?.confirm?.('Discard the replacement password?') ?? true);
   // Seed the app origin so the OAuth forms can surface the exact redirect URI
   // to register — the SAME origin the flow uses for the redirect_uri (the
   // injected env in tests, the browser's location in production). A direct
@@ -489,6 +517,7 @@ export const mountAccountsLanePanel = (
     } | null;
     /** The active element lived inside the post-connect card. */
     inConnectionSuccess: boolean;
+    inDetailHeading: boolean;
   }
 
   const copyDataset = (
@@ -508,11 +537,12 @@ export const mountAccountsLanePanel = (
       || typeof active.closest !== 'function'
       || !host.contains(active)
     ) return null;
-    const action = active.closest('[data-action]') as HTMLElement | null;
+    const action = (active.closest('[data-action]') ?? active.closest('[data-accounts-file-link]')) as HTMLElement | null;
     const field = (
       active.closest('[data-acct-field]')
       ?? active.closest('[data-oauth-cred-field]')
       ?? active.closest('[data-acct-filter]')
+      ?? active.closest('[data-account-password-field]')
     ) as (HTMLElement & {
       selectionStart?: number | null;
       selectionEnd?: number | null;
@@ -534,6 +564,7 @@ export const mountAccountsLanePanel = (
         : { dataset: copyDataset(field), selection },
       inConnectionSuccess:
         active.closest('[data-accounts-connection-success]') !== null,
+      inDetailHeading: active.hasAttribute?.('data-accounts-detail-heading') === true,
     };
   };
 
@@ -557,15 +588,18 @@ export const mountAccountsLanePanel = (
     );
   };
 
-  const focusAccountRow = (slug: string): boolean => {
+  const focusAccountRow = (slug: string, reveal = false): boolean => {
     // Slugs are server-owned identities, so match datasets instead of
     // interpolating one into a CSS selector.
     if (typeof host.querySelectorAll !== 'function') return false;
-    const rows = host.querySelectorAll('[data-action="accounts-open-detail"]');
+    const rows = host.querySelectorAll(state.lane === 'file'
+      ? '[data-action="accounts-open-detail"], [data-accounts-file-link="browse"]'
+      : '[data-action="accounts-open-detail"]');
     for (const candidate of Array.from(rows)) {
       const element = candidate as HTMLElement;
       if (element.dataset.slug !== slug) continue;
       element.focus?.({ preventScroll: true });
+      if (reveal) element.scrollIntoView?.({ block: 'nearest' });
       return true;
     }
     return false;
@@ -602,7 +636,7 @@ export const mountAccountsLanePanel = (
   const restorePanelFocus = (snapshot: PanelFocusSnapshot | null): void => {
     if (snapshot === null) return;
     if (snapshot.actionDataset !== null) {
-      const actions = host.querySelectorAll('[data-action]');
+      const actions = host.querySelectorAll(snapshot.actionDataset.accountsFileLink ? '[data-accounts-file-link]' : '[data-action]');
       for (const candidate of Array.from(actions)) {
         const element = candidate as HTMLElement;
         const matches = Object.entries(snapshot.actionDataset).every(
@@ -616,7 +650,7 @@ export const mountAccountsLanePanel = (
     }
     if (snapshot.field !== null) {
       const fields = host.querySelectorAll(
-        '[data-acct-field],[data-oauth-cred-field],[data-acct-filter]',
+        '[data-acct-field],[data-oauth-cred-field],[data-acct-filter],[data-account-password-field]',
       );
       for (const candidate of Array.from(fields)) {
         const element = candidate as HTMLElement & {
@@ -644,10 +678,20 @@ export const mountAccountsLanePanel = (
     // A status transition can legitimately remove an action (for example the
     // unknown-state Retry button). Keep focus at the card, not on <body>.
     if (snapshot.inConnectionSuccess) focusConnectionSuccess(true);
+    if (snapshot.inDetailHeading) {
+      focusListTarget(host.querySelector<HTMLElement>('[data-accounts-detail-heading]')
+        ?? host.querySelector<HTMLElement>('[data-action="accounts-back-to-list"]'));
+    }
   };
 
   const render = (preserveFocus = false): void => {
     if (disposed) return;
+    const roster = workspaceRoster();
+    if (roster) rosterScroll = readListScroll(roster);
+    const pageScroll = accountWorkspace && roster ? readListScroll(accountWorkspace.scrollRoot) : undefined;
+    const priorInspector = workspaceInspector();
+    const inspectorScroll = priorInspector && priorInspector.dataset.accountsWorkspaceInspector === state.detailSlug
+      ? readListScroll(priorInspector) : undefined;
     const focus = preserveFocus ? capturePanelFocus() : null;
     const active = doc.activeElement as HTMLElement | null | undefined;
     const keepDeleteDialogFocus = deleteFocusTrap !== null
@@ -661,7 +705,7 @@ export const mountAccountsLanePanel = (
     // Re-rendering detaches the footer, which drops its focus; put it back.
     const footer = opts.listFooter?.() ?? null;
     const footerFocus = footer !== null && active && footer.contains(active) ? active : null;
-    host.innerHTML = renderAccountsPanel({ state });
+    host.innerHTML = renderAccountsPanel({ state, desktopAccountWorkspace: desktop?.matches === true });
     const footerHost = footer !== null
       ? host.querySelector?.<HTMLElement>('[data-accounts-list-footer-host]') ?? null
       : null;
@@ -704,6 +748,38 @@ export const mountAccountsLanePanel = (
         deleteFocusTrap?.focusInitial();
       }
     }
+    const returning = !state.loading && state.detailSlug === opts.initialDetailSlug ? pendingFileReturn : undefined;
+    if (!state.loading) pendingFileReturn = undefined;
+    const nextRoster = workspaceRoster();
+    if (nextRoster) {
+      restoreListScroll(nextRoster, rosterScroll);
+    }
+    if (accountWorkspace && (nextRoster || returning)) restoreListScroll(accountWorkspace.scrollRoot, pageScroll ?? returning?.pageScroll);
+    const nextInspector = workspaceInspector();
+    if (nextInspector) restoreListScroll(nextInspector, inspectorScroll ?? returning?.inspectorScroll);
+    if (returning && (doc.activeElement === doc.body || doc.activeElement === focusBeforeReturn)) {
+      const target = host.querySelector<HTMLElement>(`[data-accounts-file-link="${returning.action}"]`)
+        ?? host.querySelector<HTMLElement>('[data-accounts-detail-heading], [data-action="accounts-back-to-list"]');
+      focusListTarget(target);
+      if (!nextInspector) target?.scrollIntoView?.({ block: 'nearest' });
+    }
+  };
+
+  const rememberFileReturn = (event: MouseEvent): void => {
+    if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return;
+    const link = (event.target as HTMLElement | null)?.closest?.<HTMLAnchorElement>('[data-accounts-file-link]');
+    const action = link?.dataset.accountsFileLink;
+    const inspector = workspaceInspector();
+    if (!accountWorkspace?.rememberFileReturn || !link || !inspector?.contains(link)
+      || (action !== 'browse' && action !== 'authentication')) return;
+    const roster = workspaceRoster();
+    accountWorkspace.rememberFileReturn({
+      action,
+      filters: state.filters,
+      rosterScroll: roster ? readListScroll(roster) : rosterScroll,
+      pageScroll: readListScroll(accountWorkspace.scrollRoot),
+      inspectorScroll: readListScroll(inspector),
+    });
   };
 
   const laneCallers = (
@@ -827,8 +903,9 @@ export const mountAccountsLanePanel = (
   // ── List load (generation-guarded) ────────────────────────────
   const shouldPollFirstSync = (): boolean => {
     const success = state.connectionSuccess;
+    const reviewingMailbox = state.lane === 'mail' && state.stage === 'detail' && desktop?.matches === true;
     if (
-      state.stage !== 'list'
+      (state.stage !== 'list' && !reviewingMailbox)
       || state.loading
       || firstSyncPoll === null
       || firstSyncPollAttempts >= firstSyncPollMaxAttempts
@@ -1000,7 +1077,7 @@ export const mountAccountsLanePanel = (
     else focusPanelElement('[data-accounts-picker-heading]');
   };
 
-  const backToList = (): void => {
+  const backToList = (notify = true): void => {
     const returnToAddTrigger = state.stage === 'provider-picker' || state.stage === 'form';
     const returnDetailSlug = state.stage === 'detail' ? state.detailSlug : null;
     state.stage = 'list';
@@ -1015,9 +1092,12 @@ export const mountAccountsLanePanel = (
     if (returnToAddTrigger) {
       focusPanelElement('[data-action="accounts-open-add"]');
     } else if (returnDetailSlug !== null) {
-      focusAccountRow(returnDetailSlug);
+      if (!focusAccountRow(returnDetailSlug, !workspaceRoster()) && desktop?.matches) {
+        focusListTarget(host.querySelector<HTMLElement>('[data-acct-filter="query"], [data-action="accounts-open-add"]'));
+      }
     }
-    opts.onNavigate?.(state.lane, null);
+    if (notify) opts.onNavigate?.(state.lane, null);
+    if (desktop) scheduleFirstSyncPoll();
   };
 
   // ── Submit (enroll) ───────────────────────────────────────────
@@ -1736,13 +1816,38 @@ export const mountAccountsLanePanel = (
   };
 
   // ── Detail ────────────────────────────────────────────────────
-  const openDetail = (slug: string): void => {
+  const openDetail = (slug: string, notify = true): void => {
+    const fromAccountWorkspace = !!workspaceRoster();
     clearConnectionSuccess();
     state.stage = 'detail';
     state.detailSlug = slug;
     render();
-    focusPanelElement('[data-accounts-detail-heading]');
-    opts.onNavigate?.(state.lane, slug);
+    if (workspaceInspector()) focusListTarget(host.querySelector<HTMLElement>('[data-accounts-detail-heading]'));
+    else focusPanelElement('[data-accounts-detail-heading]');
+    if (notify) {
+      if (fromAccountWorkspace) opts.onNavigate?.(state.lane, slug, true);
+      else opts.onNavigate?.(state.lane, slug);
+    }
+    if (desktop) scheduleFirstSyncPoll();
+  };
+
+  // Re-sync belongs to its row and can finish with a different account open.
+  // Credential editors and confirmations use the ordinary leave guards.
+  const canSwitchWorkspaceAccounts = (): boolean => !disposed && !state.saving && !state.oauthFinishing
+    && state.deleteConfirm === null && !passwordPanel.busy() && !authenticationPanel?.busy()
+    && !oauthAppSwitchPanel?.busy() && !bulkAppSwitchPanel?.busy();
+
+  const navigateAccountWorkspace = (slug: string | null): boolean => {
+    if (!accountWorkspace || !canSwitchWorkspaceAccounts() || passwordPanel.hasDraft()) return false;
+    if (slug === null && state.stage === 'detail') {
+      backToList(false);
+      return true;
+    }
+    if (slug !== null && state.stage === 'list' && state.rows.some(row => row.slug === slug)) {
+      openDetail(slug, false);
+      return true;
+    }
+    return false;
   };
 
   const rowBusyKey = (op: string, slug: string): string => `${op}:${slug}`;
@@ -1775,20 +1880,20 @@ export const mountAccountsLanePanel = (
     try {
       await call();
       if (disposed) return;
-      setRowBusy(op, slug, false);
       if (afterSuccess === 'reload-list') {
         state.stage = 'list';
         state.detailSlug = null;
-        await doRefresh(false, preserveActionFocus);
-        opts.onNavigate?.(state.lane, null);
-      } else {
-        await doRefresh(false, preserveActionFocus);
       }
+      await doRefresh(false, preserveActionFocus);
+      if (!disposed && afterSuccess === 'reload-list') opts.onNavigate?.(state.lane, null);
     } catch (err) {
       if (disposed) return;
-      setRowBusy(op, slug, false);
       setRowError(slug, errMessage(err));
-      render(preserveActionFocus);
+    } finally {
+      if (!disposed) {
+        setRowBusy(op, slug, false);
+        render(preserveActionFocus);
+      }
     }
   };
 
@@ -1799,6 +1904,7 @@ export const mountAccountsLanePanel = (
     if (laneCallers(state.lane) === undefined) return;
     const lane = findAccountLane(state.lane);
     const row = state.rows.find((r) => r.slug === slug);
+    if (row?.cloudSource) return;
     // Resolve the label NOW: the row can leave `rows` while the delete is in
     // flight, and the prompt must not go blank mid-removal.
     const providerLabel = (lane !== undefined && row !== undefined
@@ -1856,6 +1962,7 @@ export const mountAccountsLanePanel = (
   };
 
   const resyncAccount = (slug: string): void => {
+    if (state.rows.some(row => row.slug === slug && row.cloudSource)) return;
     const callers = laneCallers(state.lane);
     if (
       callers === undefined
@@ -1929,6 +2036,11 @@ export const mountAccountsLanePanel = (
   };
 
   // ── Action handlers ───────────────────────────────────────────
+  const resetRosterScroll = (): void => {
+    rosterScroll = undefined;
+    const roster = workspaceRoster();
+    if (roster) roster.scrollTop = 0;
+  };
   const handoffSetup = (destination: 'apps' | 'connection'): void => {
     if (state.stage !== 'form') { openSavedApps(); return; }
     const provider = state.providerId;
@@ -1944,12 +2056,13 @@ export const mountAccountsLanePanel = (
   };
   const handlers: ActionHandlers<AccountsAction> = {
     'accounts-retry-inventory': (_dataset, _event, element) => {
-      if (disposed || state.loading || state.stage !== 'list' || state.error === null) return;
+      if (disposed || state.loading || (state.stage !== 'list' && !workspaceInspector())
+        || (state.error === null && !state.localFilesError && !state.cloudFilesError)) return;
       const reclaim = doc.activeElement === element; const lane = state.lane;
       const pending = doRefresh(false, true); const gen = loadGeneration;
       void pending.then(() => {
         const active = doc.activeElement as HTMLElement | null;
-        if (disposed || gen !== loadGeneration || lane !== state.lane || state.stage !== 'list' || !reclaim
+        if (disposed || gen !== loadGeneration || lane !== state.lane || (state.stage !== 'list' && !workspaceInspector()) || !reclaim
           || active !== doc.body && active?.dataset.action !== 'accounts-retry-inventory') return;
         (host.querySelector<HTMLElement>('[data-action="accounts-retry-inventory"]')
           ?? host.querySelector<HTMLElement>('[data-action="accounts-open-detail"]')
@@ -1968,7 +2081,8 @@ export const mountAccountsLanePanel = (
       openProvider(provider);
     },
     'accounts-back-to-list': () => {
-      if (!confirmDiscardSetup() || passwordPanel.hasDraft() && !(doc.defaultView?.confirm?.('Discard the replacement password?') ?? true)) return;
+      if ((workspaceInspector() && !canSwitchWorkspaceAccounts()) || !confirmDiscardSetup() || !confirmDiscardPassword()) return;
+      if (canSwitchWorkspaceAccounts() && !passwordPanel.hasDraft() && accountWorkspace?.backToRoster()) return;
       backToList();
     },
     'accounts-submit-form': () => {
@@ -2022,7 +2136,12 @@ export const mountAccountsLanePanel = (
       const call = state.lane === 'mail' ? opts.mail?.updateCredentials : opts.calendar?.updateCredentials;
       if (row?.passwordRepairAvailable && call) passwordPanel.open(state.lane, row.slug, row.sendCapable === true && row.adapterType !== 'smtp', call, row.adapterType === 'smtp');
     },
-    'accounts-clear-filters': () => { state.filters = undefined; render(); host.querySelector<HTMLElement>('[data-acct-filter="query"]')?.focus(); },
+    'accounts-clear-filters': () => {
+      resetRosterScroll();
+      state.filters = undefined;
+      render();
+      host.querySelector<HTMLElement>('[data-acct-filter="query"]')?.focus();
+    },
     'accounts-copy-oauth-redirect': (dataset, _event, element) => {
       copyOAuthRedirect(dataset.copyValue, element);
     },
@@ -2108,6 +2227,8 @@ export const mountAccountsLanePanel = (
     },
     'accounts-open-detail': (dataset) => {
       if (dataset.slug === undefined) return;
+      if (workspaceRoster() && state.stage === 'detail' && dataset.slug !== state.detailSlug
+        && (!canSwitchWorkspaceAccounts() || !confirmDiscardPassword())) return;
       openDetail(dataset.slug);
     },
     'accounts-delete': (dataset) => {
@@ -2167,6 +2288,7 @@ export const mountAccountsLanePanel = (
     const filter = target.closest('[data-acct-filter]') as FieldElement | null;
     if (filter?.dataset.acctFilter && host.contains(filter)) {
       if ((filter.tagName === 'SELECT' ? 'change' : 'input') !== event.type) return;
+      resetRosterScroll();
       state.filters = { ...state.filters, [filter.dataset.acctFilter]: filter.value ?? '' }; render(true); return;
     }
     const el = target.closest('[data-acct-field]') as FieldElement | null;
@@ -2219,6 +2341,14 @@ export const mountAccountsLanePanel = (
     if (!state.deleteConfirm.deleting) cancelDeleteAccount();
   };
 
+  const onDesktopChange = (): void => {
+    if (disposed) return;
+    const rosterHadFocus = workspaceRoster()?.contains(doc.activeElement) === true;
+    render(true);
+    if (rosterHadFocus && state.stage === 'detail' && !desktop?.matches) focusPanelElement('[data-accounts-detail-heading]');
+    scheduleFirstSyncPoll();
+  };
+
   // ── Wire dispatchers + seed load ──────────────────────────────
   const detachActions = createActionDispatcher<AccountsAction>({
     root: host,
@@ -2227,6 +2357,8 @@ export const mountAccountsLanePanel = (
   host.addEventListener('input', onFieldEvent);
   host.addEventListener('change', onFieldEvent);
   host.addEventListener('keydown', onKeydown);
+  if (accountWorkspace?.rememberFileReturn) host.addEventListener('click', rememberFileReturn);
+  desktop?.addEventListener?.('change', onDesktopChange);
 
   render();
   const restoredSetup = opts.initialDetailSlug === undefined ? opts.setupContinuity?.take(state.lane) : undefined;
@@ -2258,6 +2390,7 @@ export const mountAccountsLanePanel = (
     getState: () => state,
     refresh: () => doRefresh(false, true),
     whenLoaded: () => pendingLoad,
+    navigateAccountWorkspace,
     hasUnsavedChanges: () => !handingOffSetup && (changedSetup() || passwordPanel.hasDraft()),
     hasInFlightWork: () => passwordPanel.busy() || authenticationPanel?.busy() === true || oauthAppSwitchPanel?.busy() === true || bulkAppSwitchPanel?.busy() === true || submitInFlight
       || state.saving
@@ -2280,6 +2413,8 @@ export const mountAccountsLanePanel = (
       host.removeEventListener('input', onFieldEvent);
       host.removeEventListener('change', onFieldEvent);
       host.removeEventListener('keydown', onKeydown);
+      if (accountWorkspace?.rememberFileReturn) host.removeEventListener('click', rememberFileReturn);
+      desktop?.removeEventListener?.('change', onDesktopChange);
       host.innerHTML = '';
     },
   };

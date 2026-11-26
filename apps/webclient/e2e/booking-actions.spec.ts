@@ -9,6 +9,7 @@ type Fixture = Awaited<ReturnType<typeof installTaskNoteSourceFixture>>;
 const title = 'Consultation <team>', previousId = 'previous/二?', previousTitle = 'Previous consultation <team>';
 const hash = (id = 'booking-one') => serializeShellRoute('data', 'booking', id);
 const reader = (page: Page) => page.locator('.work-entity-booking-detail[data-booking-id]');
+const bookingRow = (page: Page, id: string) => page.locator(`[data-action="open-work-entity-detail"][data-entity-id="${id}"]`);
 const customer = (page: Page) => reader(page).locator('[data-booking-customer-state]');
 const profile = (page: Page) => page.locator('[data-recued-data-contact-detail]');
 const historyRow = (page: Page, name = previousTitle) => reader(page).locator('.work-entity-booking-history li').filter({ has: page.getByText(name, { exact: true }) });
@@ -54,8 +55,8 @@ test('opens an opaque history address and restores the original booking, filters
     await page.getByRole('combobox', { name: 'Source', exact: true }).selectOption('recued.booking');
     await page.getByRole('combobox', { name: 'Filter bookings by status', exact: true }).selectOption('confirmed');
     await page.getByRole('searchbox', { name: 'Search bookings', exact: true }).fill('Consultation');
-    await expect(page.locator('[data-action="open-work-entity-detail"][data-entity-id="booking-two"]')).toHaveCount(0);
-    await page.locator('[data-action="open-work-entity-detail"][data-entity-id="booking-one"]').click();
+    await expect(bookingRow(page, 'booking-two')).toHaveCount(0);
+    await bookingRow(page, 'booking-one').click();
     await expect(reader(page)).toHaveAttribute('data-booking-id', 'booking-one'); await expect(customer(page)).toHaveAttribute('data-booking-customer-state', 'ready');
     await expect(reader(page)).toContainText('Showing 10 of 12 previous bookings.');
     const button = historyRow(page, 'Earlier consultation 8').getByRole('button'); await button.focus();
@@ -67,6 +68,131 @@ test('opens an opaque history address and restores the original booking, filters
     await expect(page.getByRole('searchbox', { name: 'Search bookings', exact: true })).toHaveValue('Consultation');
     await expect(page.getByRole('combobox', { name: 'Filter bookings by status', exact: true })).toHaveValue('confirmed');
     await expect(page.getByRole('combobox', { name: 'Source', exact: true })).toHaveValue('recued.booking'); expect(f.writes).toEqual([]);
+  } finally { f.dispose(); }
+});
+
+test('the desktop Bookings pane restores the filtered list, reading position and focus after customer and history visits', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 768 });
+  const f = await boot(page, { address: '#data/booking' });
+  try {
+    const source = page.getByRole('combobox', { name: 'Source', exact: true });
+    const status = page.getByRole('combobox', { name: 'Filter bookings by status', exact: true });
+    const search = page.getByRole('searchbox', { name: 'Search bookings', exact: true });
+    const selected = bookingRow(page, 'booking-one');
+    const pane = page.getByRole('region', { name: title, exact: true });
+    const contact = pane.getByRole('button', { name: 'Open contact', exact: true });
+    const edit = pane.getByRole('button', { name: 'Edit / reschedule', exact: true });
+    const draft = pane.getByRole('button', { name: 'Draft email', exact: true });
+    await source.selectOption('recued.booking');
+    await status.selectOption('confirmed');
+    await search.fill('Consultation');
+    await expect(bookingRow(page, 'booking-two')).toHaveCount(0);
+    await selected.click();
+    await expect(pane.getByRole('heading', { name: title, exact: true })).toBeFocused();
+    await expect(selected).toHaveAttribute('aria-current', 'true');
+    const listBox = (await selected.boundingBox())!, paneBox = (await pane.boundingBox())!;
+    expect(listBox.x + listBox.width).toBeLessThan(paneBox.x);
+    await expect(pane.locator('[data-booking-customer-state]')).toContainText(f.person.name!);
+    await expect(draft).toBeInViewport();
+    await expect(edit).toBeInViewport();
+
+    await contact.click();
+    await expect(profile(page)).toContainText(f.person.name!);
+    await page.goBack();
+    await expect(contact).toBeFocused();
+
+    const previous = historyRow(page, 'Earlier consultation 8').getByRole('button');
+    const scrollTop = () => pane.locator('[data-booking-scroll]').evaluate(node => node.scrollTop);
+    await previous.scrollIntoViewIfNeeded();
+    await previous.focus();
+    const savedTop = await scrollTop();
+    expect(savedTop).toBeGreaterThan(0);
+    await expect(edit).toBeInViewport();
+    await page.keyboard.press('Enter');
+    await expect(reader(page)).toHaveAttribute('data-booking-id', 'history-8');
+    await page.goBack();
+    await expect(previous).toBeFocused();
+    await expect.poll(async () => Math.abs(await scrollTop() - savedTop)).toBeLessThan(3);
+    await expect(selected).toHaveAttribute('aria-current', 'true');
+    await expect(source).toHaveValue('recued.booking');
+    await expect(status).toHaveValue('confirmed');
+    await expect(search).toHaveValue('Consultation');
+
+    await page.goBack();
+    await expect(pane).toHaveCount(0);
+    await expect(selected).toBeFocused();
+    await expect(search).toHaveValue('Consultation');
+    expect(f.writes).toEqual([]);
+  } finally { f.dispose(); }
+});
+
+test('desktop booking row switches keep the latest selection and direct links open the full reader', async ({ page }) => {
+  await page.setViewportSize({ width: 1536, height: 900 });
+  const f = await boot(page, { address: '#data/booking' });
+  try {
+    const first = bookingRow(page, 'booking-one'), second = bookingRow(page, 'booking-two');
+    const pane = page.getByRole('region', { name: 'Another booking', exact: true });
+    f.hold('work_entity.get', 'booking-one');
+    await first.click();
+    await expect.poll(f.waiting).toBe(true);
+    await second.click();
+    await expect(pane.getByRole('heading', { name: 'Another booking', exact: true })).toBeFocused();
+    f.release();
+    await page.waitForFunction(() => (window as unknown as { __taskReaderSettled: string[] })
+      .__taskReaderSettled.includes('work_entity.get:booking-one'));
+    await expect(second).toHaveAttribute('aria-current', 'true');
+    await expect(first).not.toHaveAttribute('aria-current');
+
+    const edit = pane.getByRole('button', { name: 'Edit / reschedule', exact: true });
+    await edit.click();
+    const editor = page.getByRole('dialog', { name: 'Edit Booking', exact: true });
+    await expect(editor).toHaveAttribute('aria-modal', 'true');
+    const updatedTitle = 'Another booking updated';
+    const titleField = editor.getByRole('textbox', { name: 'Title', exact: true });
+    await expect(titleField).toHaveValue('Another booking');
+    await titleField.fill(updatedTitle);
+    f.holdAll('contact.get', f.person.contact_id!);
+    await editor.getByRole('button', { name: 'Save', exact: true }).click();
+    const updated = page.getByRole('region', { name: updatedTitle, exact: true });
+    const editUpdated = updated.getByRole('button', { name: 'Edit / reschedule', exact: true });
+    await expect(editUpdated).toBeFocused();
+    await expect.poll(f.waiting).toBe(true);
+    f.release();
+    await expect(customer(page)).toHaveAttribute('data-booking-customer-state', 'ready');
+    await expect(editUpdated).toBeFocused();
+    await expect(second).toContainText(updatedTitle);
+
+    await updated.getByRole('button', { name: 'Close booking', exact: true }).click();
+    await expect(second).toBeFocused();
+    await visit(page, hash());
+    await expect(reader(page).getByRole('heading', { level: 1, name: title, exact: true })).toBeVisible();
+    await expect(first).toHaveCount(0);
+    expect(f.writes).toEqual([{ method: 'work_entity.upsert', args: expect.objectContaining({ kind: 'booking', id: 'booking-two', title: updatedTitle }) }]);
+  } finally { f.dispose(); }
+});
+
+test('a desktop Bookings return completes a list search interrupted by a customer visit', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 768 });
+  const f = await boot(page, { address: '#data/booking' });
+  try {
+    const first = bookingRow(page, 'booking-one'), second = bookingRow(page, 'booking-two');
+    await first.click();
+    const contact = reader(page).getByRole('button', { name: 'Open contact', exact: true });
+    await expect(contact).toBeEnabled();
+    f.hold('work_entity.list', '');
+    const search = page.getByRole('searchbox', { name: 'Search bookings', exact: true });
+    await search.fill('Another booking');
+    await expect.poll(f.waiting).toBe(true);
+    await contact.click();
+    await expect(profile(page)).toBeVisible();
+    await page.goBack();
+    await expect(contact).toBeFocused();
+    await expect(search).toHaveValue('Another booking');
+    await expect(first).toHaveCount(0);
+    await second.click();
+    await expect(reader(page)).toHaveAttribute('data-booking-id', 'booking-two');
+    f.release();
+    await expect(second).toHaveAttribute('aria-current', 'true');
   } finally { f.dispose(); }
 });
 

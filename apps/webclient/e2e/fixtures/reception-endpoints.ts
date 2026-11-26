@@ -1,7 +1,7 @@
-import type { AccessLogEntry, EndpointSummary, PacketDeclaration, ReceptionEndpointPreviewResult } from '@recued/contracts';
+import type { AccessLogEntry, EndpointSummary, PacketDeclaration, ReceptionEndpointPreviewResult, ViewAsVisitorPanel } from '@recued/contracts';
 
 /** Populated owner-side inventory in the shipped app, with controllable RPC latency. */
-export const installReceptionEndpointsFixture = () => {
+export const installReceptionEndpointsFixture = (visitorPanel?: ViewAsVisitorPanel) => {
   type Reply = { result?: unknown; error?: { code: string; message: string } };
   const view = window as Window & {
     __receptionFixture?: (method: string, args: unknown) => Promise<Reply | undefined>;
@@ -65,7 +65,8 @@ export const installReceptionEndpointsFixture = () => {
     else if (method === 'reception.abuse_inbox.list') result = { summary: { rows: [], total_signals: 0, window_start_at: now - 7 * day, window_end_at: now, cluster_threshold: 3 }, blocked: [] };
     else if (method === 'reception.endpoint.preview_draft') result = {
       html: '<!doctype html><html><body><h1>Customer consultation</h1><p>Choose a time to discuss your project.</p></body></html>',
-      visible_fields: [], preview_hash: 'endpoint-preview-hash', expires_at: now + 600_000,
+      visible_fields: visitorPanel?.visible_fields ?? [], preview_hash: 'endpoint-preview-hash', expires_at: now + 600_000,
+      ...(visitorPanel ? { view_as_visitor: visitorPanel } : {}),
     } satisfies ReceptionEndpointPreviewResult;
     else if (method === 'reception.endpoint.rotate_token') result = { bearer_secret_once: 'rotated-fixture-token', share_url_once: 'https://fixture.example.test/reception/book/consultation?t=rotated-fixture-token' };
     else if (method === 'reception.emergency_disable_all') {

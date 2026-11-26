@@ -9,6 +9,8 @@ import { parseTaskViewFilters, type TaskViewFilters } from './task-data-view.js'
 import { parseCommitmentViewFilters, type CommitmentViewFilters } from './commitment-data-view.js';
 import { isReminderState, type ReminderSearchStatus } from './reminder.js';
 import { parseReminderSearchDates, type ReminderSearchDates } from './reminder-search-dates.js';
+import { parseRunSearchFilters, type RunSearchFilters } from './run-search-filters.js';
+import { parseMailFollowUpFilters, type MailFollowUpFilters } from './mail-follow-up.js';
 
 export const SAVED_DATA_VIEW_LIMIT = 100;
 export const SAVED_DATA_VIEW_NAME_LIMIT = 100;
@@ -25,14 +27,14 @@ export const SAVED_DATA_VIEW_QUERY_LIMIT = 2000;
  *  and so the refusal can name the pack that overran. */
 export const PACK_SAVED_VIEWS_PER_PACK_LIMIT = 20;
 
-export const UNIVERSAL_SEARCH_RESULT_TYPES = ['all', 'chat', 'mail', 'draft', 'file', 'contact',
-  'task', 'note', 'project', 'commitment', 'booking', 'calendar', 'reminder', 'scheduled_prompt', 'decision', 'asset', 'capability'] as const;
+export const UNIVERSAL_SEARCH_RESULT_TYPES = ['all', 'chat', 'mail', 'draft', 'follow_up', 'file', 'contact',
+  'task', 'note', 'project', 'commitment', 'booking', 'calendar', 'reminder', 'scheduled_prompt', 'decision', 'run', 'connection', 'saved_view', 'setting', 'asset', 'capability'] as const;
 export type UniversalSearchResultType = typeof UNIVERSAL_SEARCH_RESULT_TYPES[number];
 export const isUniversalSearchResultType = (value: unknown): value is UniversalSearchResultType =>
   typeof value === 'string' && UNIVERSAL_SEARCH_RESULT_TYPES.some(type => type === value);
 
 export type SavedDataViewDefinition =
-  | { tab: 'search'; query: string; result_type?: UniversalSearchResultType; reminder_state?: ReminderSearchStatus; reminder_dates?: ReminderSearchDates }
+  | { tab: 'search'; query: string; result_type?: UniversalSearchResultType; reminder_state?: ReminderSearchStatus; reminder_dates?: ReminderSearchDates; run_filters?: RunSearchFilters; follow_up_filters?: MailFollowUpFilters }
   | { tab: 'contact'; query: string }
   | {
       tab: WorkEntityKind;
@@ -259,17 +261,23 @@ export const parseSavedDataViewDefinition = (value: unknown): SavedDataViewDefin
     const hasReminderState = tab === 'search' && Object.hasOwn(value, 'reminder_state');
     const hasReminderDates = tab === 'search' && Object.hasOwn(value, 'reminder_dates');
     const reminderDates = hasReminderDates ? parseReminderSearchDates(value.reminder_dates) : undefined;
-    if (!keysAre(value, ['tab', 'query', ...(hasType ? ['result_type'] : []), ...(hasReminderState ? ['reminder_state'] : []), ...(hasReminderDates ? ['reminder_dates'] : [])])
+    const hasRunFilters = tab === 'search' && Object.hasOwn(value, 'run_filters');
+    const runFilters = hasRunFilters ? parseRunSearchFilters(value.run_filters) : undefined;
+    const hasFollowUpFilters = tab === 'search' && Object.hasOwn(value, 'follow_up_filters');
+    const followUpFilters = hasFollowUpFilters ? parseMailFollowUpFilters(value.follow_up_filters) : undefined;
+    if (!keysAre(value, ['tab', 'query', ...(hasType ? ['result_type'] : []), ...(hasReminderState ? ['reminder_state'] : []), ...(hasReminderDates ? ['reminder_dates'] : []), ...(hasRunFilters ? ['run_filters'] : []), ...(hasFollowUpFilters ? ['follow_up_filters'] : [])])
       || !boundedString(value.query, SAVED_DATA_VIEW_QUERY_LIMIT)
       || hasType && !isUniversalSearchResultType(value.result_type)
       || hasReminderState && value.reminder_state !== 'all' && !isReminderState(value.reminder_state)
-      || hasReminderDates && !reminderDates) return null;
+      || hasReminderDates && !reminderDates || hasRunFilters && !runFilters || hasFollowUpFilters && !followUpFilters) return null;
     if (tab === 'contact') return { tab, query: value.query };
     // An absent filter and explicit All keep the same legacy stored shape.
     return { tab, query: value.query, ...(hasType && value.result_type !== 'all'
       ? { result_type: value.result_type as UniversalSearchResultType } : {}),
       ...(hasReminderState && value.reminder_state !== 'all' ? { reminder_state: value.reminder_state as ReminderSearchStatus } : {}),
-      ...(reminderDates ? { reminder_dates: reminderDates } : {}) };
+      ...(reminderDates ? { reminder_dates: reminderDates } : {}),
+      ...(followUpFilters && Object.keys(followUpFilters).length ? { follow_up_filters: followUpFilters } : {}),
+      ...(runFilters && Object.keys(runFilters).length ? { run_filters: runFilters } : {}) };
   }
   if (typeof tab === 'string' && WORK_ENTITY_KINDS.some((kind) => kind === tab)) {
     const keys = ['tab', 'query', 'source_id', 'booking_lifecycle'];

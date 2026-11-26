@@ -31,13 +31,18 @@ const runUpload = async (state: State, binding: Binding = 'field') => {
     get ownerDocument(): object { return doc; }
     getRootNode(): object { return state === 'inside-modal' ? { host: modal } : doc; }
     getAttribute(name: string) { return name === 'aria-disabled' && state === 'aria-disabled' ? 'true' : null; }
-    matches(selector: string) { return selector === ':disabled' && (this.disabled || state === 'matched-disabled'); }
+    matches(selector: string) {
+      return (selector.includes(':disabled') && (this.disabled || state === 'matched-disabled'))
+        || (selector.includes('[aria-disabled="true"]') && state === 'aria-disabled');
+    }
+    closest() { return null; }
     querySelector() { return null; }
     dispatchEvent(event: Event) { events.push(event.type); return true; }
   }
   class Label {
     isConnected = true; tagName = 'LABEL'; localName = 'label'; parentElement = null;
     constructor(readonly control: Input) {}
+    closest() { return null; }
     getRootNode(): object { return doc; }
   }
   class Transfer {
@@ -46,7 +51,8 @@ const runUpload = async (state: State, binding: Binding = 'field') => {
   }
   const field = new Input();
   const target = binding === 'label' ? new Label(field) : binding === 'wrapper'
-    ? { isConnected: true, tagName: 'DIV', localName: 'div', querySelector: () => field, querySelectorAll: () => [field] } : field;
+    ? { isConnected: true, tagName: 'DIV', localName: 'div', querySelector: () => field, querySelectorAll: () => [field],
+      closest: () => null } : field;
   const doc = { title: 'Apply', documentElement: { hasAttribute: (name: string) => name === 'data-recued-owner-surface' && state === 'owner-surface' },
     querySelector: () => target,
     querySelectorAll: (selector: string) => selector === '#file' ? [target] : selector === 'dialog:modal, [aria-modal="true"]'

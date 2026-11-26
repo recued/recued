@@ -20,6 +20,7 @@ import {
   parseChatPlanAddress,
   parseChatSessionAddress,
   parseDataEntityVerificationAddress,
+  parseFileSourceSlug,
   parseLogsRunAddress,
   parseRouteFromHash,
   parseShellRoute,
@@ -249,6 +250,14 @@ describe('§D.shell — serializeShellRoute', () => {
       const route = parseShellRoute(serializeShellRoute('recipes', id));
       expect(route).toEqual({ surface: 'recipes', segments: [id] });
     }
+  });
+});
+
+describe('Files source addresses', () => {
+  it('decodes a source slug and keeps record addresses distinct', () => {
+    expect(parseFileSourceSlug(parseShellRoute('#data/files/source/remote%3Aprojects%2F24'))).toBe('remote:projects/24');
+    expect(parseFileSourceSlug(parseShellRoute('#data/files/source'))).toBeNull();
+    expect(parseFileSourceSlug(parseShellRoute('#data/files/record/source/file-24'))).toBeNull();
   });
 });
 

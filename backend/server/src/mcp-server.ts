@@ -979,13 +979,12 @@ const TOOLS = [
   },
   {
     name: 'recued_runRecipe',
-    description: 'Execute a Recued recipe. Pass recipe_id for a stored recipe, or a full recipe object for inline execution. Optionally pass vault (API credentials), config (recipe variable overrides), and context (page/entity context).',
+    description: 'Execute a Recued recipe. Pass recipe_id for a stored recipe, or a full recipe object for inline execution. Optionally pass config (recipe variable overrides) and context (page/entity context). Credentials are never arguments: the owner\'s connections hold them.',
     inputSchema: {
       type: 'object',
       properties: {
         recipe_id: { type: 'string', description: 'Id of a stored recipe to run' },
         recipe: { type: 'object', description: 'Full inline recipe definition (alternative to recipe_id)' },
-        vault: { type: 'object', description: 'Vault entries (API keys, tokens) for this execution' },
         config: { type: 'object', description: 'Recipe variable overrides' },
         context: { type: 'object', description: 'Context namespace values (entity_id, page_url, etc.)' },
       },
@@ -3857,6 +3856,13 @@ const handleToolCall = async (
 
     // ── runRecipe ──────────────────────────────────────────
     case 'recued_runRecipe': {
+      // 2026-11-22 (the owner: "go ahead") — no vault from the caller: it was offered as "Vault entries (API keys,
+      //   tokens) for this execution", but the vault is server-owned (Tier 2 and `recipe.run` refuse one too) and
+      //   credentials are the owner's connections. An agent that took the offer sent the owner's keys for nothing.
+      if (Object.prototype.hasOwnProperty.call(args, 'vault')) {
+        return err('recued_runRecipe takes no vault: the vault is server-owned, and credentials are the owner\'s '
+          + 'connections, never arguments. Call it again without vault.');
+      }
       // D-153 P2.C — same mcp ExecutionSource + ContractSnapshot
       // construction as the per-ingredient dispatch above; the policy
       // gate evaluates this `recued_runRecipe` call against the
@@ -3867,7 +3873,6 @@ const handleToolCall = async (
       const req: ExecuteRequest = {
         recipe_id: args.recipe_id as string | undefined,
         recipe: args.recipe,
-        vault: args.vault as Record<string, unknown> | undefined,
         config: args.config as Record<string, unknown> | undefined,
         context: args.context as Record<string, unknown> | undefined,
         trigger_source: 'mcp',

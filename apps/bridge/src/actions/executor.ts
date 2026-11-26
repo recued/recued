@@ -23,12 +23,18 @@ import {
   BRIDGE_WATCH_MAX_MS,
   BRIDGE_WAIT_MAX_MS,
   BRIDGE_SCROLL_TO,
+  isHorizontalScrollDirection,
   BRIDGE_FILE_MAX_BYTES,
+  BRIDGE_TEXT_MAX_CHARS,
+  BRIDGE_UPLOAD_MAX_FILES,
+  BRIDGE_GENERATED_DOWNLOAD_KEY,
+  BRIDGE_GENERATED_DOWNLOADS_KEY,
   BRIDGE_ROW_CHANGED_DETAIL,
   bridgeElementChangedMessage,
   isPatternWithinGrantedOrigins,
   isBrowserClickRefusal,
   parseBridgeKey,
+  readBrowserDragTarget,
   type BridgeAction,
   type BridgeActedOn,
   type BridgeProtectedKind,
@@ -47,14 +53,17 @@ import {
   BLOCKED_SITES_UNREADABLE_MESSAGE,
   isOnBlockedSite,
 } from '../permissions/site-grants.js';
-import { capturePage, measured, measurePageArea, PAGE_SCREEN_STEP, type PageCaptureChrome } from './page-capture.js';
+import { capturePage, measured, measurePageArea, PAGE_SCREEN_STEP,
+  type ElementScrollPhase, type PageCaptureChrome } from './page-capture.js';
 import { PAGE_SCROLL_FIRST_MS, PAGE_SCROLL_QUIET_MS, PAGE_SCROLL_SETTLE_MS, scrollTarget, waitForQuiet } from './page-scroll.js';
 import { clickPageElement, fillPageField, readNavigationGuard, readPageField, submitPageForm } from './page-fields.js';
 import { pageChallenge } from './page-challenge.js';
 import { pressPageKey } from './page-keys.js';
+import { seekPageMedia } from './page-media.js';
 import { hoverPageElement } from './page-hover.js';
+import { dragPageElement } from './page-drag.js';
 import { attachPageFile, BLOCKED_DOWNLOAD_MESSAGE, fetchFile, fileTooLarge, NO_FILE_ADDRESS, NOT_FILE_FIELD, pageFileAddress, type AttachedFile,
-  type FetchedFile, type PageFileAddress } from './page-files.js';
+  type FetchedFile, type PageFileAddress, type UploadPart } from './page-files.js';
 import { pageIdentity, type PageMove, type PageReadiness } from './page-tabs.js';
 import { SELECTOR_RULES } from '../picker/selector-engine.js';
 import { PAGE_MESSAGE_RULES, pageProblem, type PageMessageRules } from './page-problems.js';
@@ -64,6 +73,7 @@ import {
   describeOutcome,
   describePageElement,
   formatPageHandle,
+  frameObservationId,
   inspectOutcome,
   inspectPage,
   PAGE_CHANGED,
@@ -73,10 +83,11 @@ import {
   readElementRequest,
   readInspectRequest,
   settleFrames,
+  verifyFrameObservation,
   type PageFrame,
 } from './page-inspect.js';
 import { BRIDGE_READ_SETTLE_POLL_MS, pageSettleProbe, readSettleMs, readWaitChangeMs, type PageSettleState } from './page-settle.js';
-import { PAGE_TABLE_LIMITS, readPageTable, tableOutcome } from './page-table.js';
+import { PAGE_TABLE_LIMITS, readPageTable, tableOutcome, type PageTableWalk } from './page-table.js';
 import { checkPageElement, PAGE_WAIT_POLL_MS, readFailCheck, readReadyCheck, readWaitRequest, waitCheckOutcome,
   type PageWaitCheck } from './page-wait.js';
 
@@ -226,29 +237,40 @@ const actedOn = (found: Record<string, unknown>): BridgeActedOn => ({
 const fieldOutcome = (
   answer: unknown,
   selector: string,
-  action: 'read_dom' | 'fill' | 'click' | 'submit' | 'press',
+  action: 'read_dom' | 'fill' | 'click' | 'submit' | 'press' | 'drag' | 'seek_media',
   blocked = errorOutcome('tab_navigation_blocked', 'The owner client cannot be automated.'),
+  capturesDownload = false,
+  pastes = false,
 ): ActionExecutorOutcome => {
   const write = action !== 'read_dom';
   const unproven = write ? uncertain() : errorOutcome('unknown', `bridge: no readable answer for ${selector}`, selector);
   if (!answer || typeof answer !== 'object' || Array.isArray(answer) || Object.keys(answer).length !== 1) return unproven;
   const reply = answer as { blocked?: unknown; missing?: unknown; stale?: unknown; protected?: unknown;
-    not_applied?: unknown; uncertain?: unknown; outputs?: unknown; several?: unknown; row_changed?: unknown };
+    not_applied?: unknown; uncertain?: unknown; outputs?: unknown; several?: unknown; row_changed?: unknown; partial_clicks?: unknown };
   if (reply.blocked === true) return blocked;
   if (reply.missing === true) return selectorMissing(selector);
   // D-402 slice G (§4 rule 4) — a selector that names several elements: which one is not said, so none
   // was written to.
   if (write && typeof reply.several === 'number') {
+    if (action === 'seek_media') return errorOutcome('selector_not_found',
+      `“${selector}” names ${reply.several} elements. Name one media element to seek within it.`, selector);
     return errorOutcome('selector_not_found', `“${selector}” names ${String(reply.several)} elements on the page, so nothing was `
-      + `${action === 'fill' ? 'typed' : action === 'press' ? 'pressed' : action === 'submit' ? 'sent' : 'clicked'}: name one of them`, selector);
+      + `${action === 'fill' ? (pastes ? 'pasted' : 'typed') : action === 'press' ? 'pressed' : action === 'submit' ? 'sent' : 'clicked'}: name one of them`, selector);
   }
   // D-402 slice G (§4.1) — the row the step named its element by no longer shows what it did: refused
   // before anything was typed or clicked, which the detail tells the server.
   if (write && typeof reply.row_changed === 'string') return errorOutcome('selector_not_found', reply.row_changed, BRIDGE_ROW_CHANGED_DETAIL);
   // A ref whose element has gone: nothing was typed or clicked.
   if (reply.stale === true) return errorOutcome('selector_not_found', PAGE_CHANGED, selector);
+  if (action === 'click' && (reply.partial_clicks === 1 || reply.partial_clicks === 2)) {
+    const clicked = reply.partial_clicks === 1 ? 'one click' : 'two clicks';
+    return errorOutcome('delivery_uncertain',
+      `The target changed after ${clicked} and the double-click gesture stopped. Inspect the page before retrying.`, selector);
+  }
   if (write && reply.uncertain === true) return errorOutcome('delivery_uncertain',
-    'The page or navigation link changed during pointer interaction. Inspect the page before repeating the action.', selector);
+    pastes ? 'The page may have received the paste. Inspect its state before repeating it.'
+      : action === 'seek_media' ? 'The browser did not confirm the seek. Inspect the media position before retrying.'
+      : 'The page or navigation link changed during pointer interaction. Inspect the page before repeating the action.', selector);
   if (!write && reply.protected === true) {
     return errorOutcome('field_protected',
       'The Browser Bridge does not read password, hidden, sign-in code or payment card fields.', selector);
@@ -267,27 +289,55 @@ const fieldOutcome = (
     return typeof only.pressed === 'string' && keys.every((key) => key === 'pressed' || (key === 'sent' && only.sent === true))
       ? { status: 'ok', outputs: only } : unproven;
   }
+  if (action === 'seek_media') {
+    return keys.length === 2 && typeof only.seeked_to === 'number' && Number.isFinite(only.seeked_to) && typeof only.paused === 'boolean'
+      ? { status: 'ok', outputs: only } : unproven;
+  }
+  if (action === 'click' && capturesDownload) {
+    return only.clicked === true && keys.every(key => key === 'clicked'
+      || key === BRIDGE_GENERATED_DOWNLOAD_KEY || key === BRIDGE_GENERATED_DOWNLOADS_KEY)
+      ? { status: 'ok', outputs: only } : unproven;
+  }
   if (keys.length !== 1) return unproven;
   const proven = action === 'read_dom' ? typeof only.text === 'string'
-    : action === 'fill' ? only.filled === true
-      : action === 'submit' ? only.submitted === true : only.clicked === true;
+    : action === 'fill' ? (pastes ? only.pasted : only.filled) === true
+      : action === 'submit' ? only.submitted === true : action === 'drag' ? only.dropped === true : only.clicked === true;
   return proven ? { status: 'ok', outputs: only } : unproven;
 };
 
 /** Only a complete upload answer proves success or that no write happened.
  *  Validate before reference recovery, which may retry a confirmed stale refusal. */
-const isUploadAnswer = (answer: unknown): answer is AttachedFile => {
+const isUploadAnswer = (answer: unknown, count?: number, delivery?: 'drop'): answer is AttachedFile => {
   if (!answer || typeof answer !== 'object' || Array.isArray(answer)) return false;
   const receipt = answer as Record<string, unknown>;
   const keys = Object.keys(receipt);
   if (keys.length === 1) {
     const key = keys[0]!;
-    return ['blocked', 'missing', 'stale'].includes(key) ? receipt[key] === true
+    return ['blocked', 'missing', 'stale', 'uncertain'].includes(key) ? receipt[key] === true
       : ['not_file_field', 'not_applied'].includes(key) && typeof receipt[key] === 'string';
   }
-  return keys.length === 3 && keys.every(key => ['attached', 'url', 'title'].includes(key))
-    && typeof receipt.attached === 'string' && receipt.attached !== ''
+  const delivered = delivery === 'drop' ? 'dropped' : 'attached';
+  const names = receipt[delivered];
+  return keys.length === 3 && keys.every(key => [delivered, 'url', 'title'].includes(key))
+    && (count === undefined ? typeof names === 'string' && names !== ''
+      : Array.isArray(names) && names.length === count && names.every(name => typeof name === 'string' && name !== ''))
     && typeof receipt.url === 'string' && typeof receipt.title === 'string';
+};
+
+const readUploadParts = (value: unknown): UploadPart[] | undefined => {
+  if (!Array.isArray(value) || value.length === 0 || value.length > BRIDGE_UPLOAD_MAX_FILES) return undefined;
+  const files: UploadPart[] = [];
+  let total = 0;
+  for (const item of value) {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) return undefined;
+    const { filename, mime_type, data } = item as Record<string, unknown>;
+    if (typeof filename !== 'string' || filename === '' || typeof mime_type !== 'string' || typeof data !== 'string'
+      || data.length > Math.ceil(BRIDGE_FILE_MAX_BYTES / 3) * 4 || data.length % 4 !== 0 || !/^[A-Za-z0-9+/]*={0,2}$/.test(data)) return undefined;
+    total += data.length / 4 * 3 - (data.endsWith('==') ? 2 : data.endsWith('=') ? 1 : 0);
+    if (total > BRIDGE_FILE_MAX_BYTES) return undefined;
+    files.push({ filename, mime_type, data });
+  }
+  return files;
 };
 
 /** Only a complete target can authorize a fetch or a cross-origin retry. */
@@ -359,7 +409,7 @@ const runInDocument = async (
     if (api.onScriptTiming) {
       const phase: BridgeScriptTiming['phase'] = func === rebindPageRef ? 'rebind'
         : func === describePageElement ? 'describe'
-          : [clickPageElement, fillPageField, submitPageForm, pressPageKey, attachPageFile, hoverPageElement].some(write => write === func) ? 'write'
+          : [clickPageElement, fillPageField, submitPageForm, pressPageKey, seekPageMedia, attachPageFile, hoverPageElement, dragPageElement].some(write => write === func) ? 'write'
             : [inspectPage, readPageField, readPageTable].some(read => read === func) ? 'read' : 'check';
       try {
         const pending = api.onScriptTiming({ phase, duration_ms: Math.max(0, performance.now() - begun), outcome });
@@ -525,10 +575,31 @@ export const buildActionExecutor = (api: BridgeBrowserApi): BridgeActionExecutor
     cancel: { signalled: boolean },
   ): Promise<ActionExecutorOutcome> => {
     if (cancel.signalled) return cancelled();
+    const started = Date.now();
     const navigationGuard = readNavigationGuard(command.args.navigation_guard);
     if (navigationGuard === null || navigationGuard && (action !== 'click'
       || !parsePageHandle(command.args.page) || typeof command.args.ref !== 'string')) {
       return errorOutcome('unknown', 'bridge: a navigation_guard needs a click by page and ref with before_url and after_url');
+    }
+    const clickCount = command.args.click_count;
+    if (clickCount !== undefined && (clickCount !== 2 || action !== 'click' || navigationGuard
+      || !command.reviewed_document && !parsePageHandle(command.args.page))) {
+      return errorOutcome('unknown', 'bridge: a double-click needs a document-bound click');
+    }
+    const pastes = action === 'fill' && command.args.delivery === 'paste';
+    if ((action === 'fill' || action === 'submit' || action === 'pick') && command.args.delivery !== undefined
+      && (!pastes || command.reviewed_document || !parsePageHandle(command.args.page)
+        || typeof command.args.value !== 'string' || command.args.value.length === 0 || command.args.value.length > BRIDGE_TEXT_MAX_CHARS
+        || !command.expects_output_keys.includes('pasted'))) {
+      return errorOutcome('unknown', 'bridge: paste needs nonempty text within the size limit and a document-bound target');
+    }
+    const downloadWait = command.args.download_wait_ms;
+    const capturesDownload = action === 'click' && command.expects_output_keys.includes(BRIDGE_GENERATED_DOWNLOAD_KEY);
+    const capturesDownloadSet = capturesDownload && command.expects_output_keys.includes(BRIDGE_GENERATED_DOWNLOADS_KEY);
+    if (downloadWait !== undefined && (!capturesDownload || !parsePageHandle(command.args.page)
+      || typeof downloadWait !== 'number' || !Number.isFinite(downloadWait) || downloadWait <= 0
+      || downloadWait > BRIDGE_WATCH_MAX_MS || navigationGuard || command.reviewed_document)) {
+      return errorOutcome('unknown', 'bridge: a download wait needs a document-bound click with download capture enabled');
     }
     // D-335 slice G — read once per command; a notification acts on no page.
     const blocked = action === 'os_notification' ? [] : await readBlocked();
@@ -643,6 +714,44 @@ export const buildActionExecutor = (api: BridgeBrowserApi): BridgeActionExecutor
       return { status: 'ok', outputs: { hovered: true, page: formatPageHandle(document), url, title: found.outputs!.title } };
     }
 
+    if (action === 'drag') {
+      const request = readElementRequest(command.args);
+      const destination = readBrowserDragTarget(command.args.drop);
+      if ('error' in request || !request.page || !destination) return errorOutcome('unknown', 'bridge: drag needs a page, source and drop target');
+      const start = readBrowserDragTarget(request.scope.ref !== undefined ? { ref: request.scope.ref } : { selector: request.scope.selector });
+      if (!start || !api.executeInDocument) return errorOutcome('unknown', 'bridge: drag needs a document-bound source');
+      const document = request.page;
+      const refused = await pageRefusal(document.tab_id, blocked);
+      if (refused) return refused;
+      const current = await runInDocument(api, document, pageIdentity, []);
+      if (!current || current.document_id !== document.document_id) return errorOutcome('selector_not_found', PAGE_GONE);
+      const identity = current.result as ReturnType<typeof pageIdentity> | null;
+      if (!identity || !('url' in identity) || !isPatternWithinGrantedOrigins(identity.url, [command.target_domain_pattern])) {
+        return errorOutcome('tab_navigation_blocked', 'The page is no longer on a site this step may use.');
+      }
+      const listedHere = siteRefusal(identity.url, blocked);
+      if (listedHere) return listedHere;
+      for (const endpoint of [start, destination]) {
+        const changed = await rebindRef(api, document, endpoint.ref, true);
+        if (changed) return changed;
+      }
+      if (cancel.signalled) return cancelled();
+      const begun = Date.now();
+      const ran = await runInDocument(api, document, dragPageElement, [start, destination, identity.url]);
+      if (!ran || ran.document_id !== document.document_id) return uncertain();
+      const done = fieldOutcome(ran.result, start.ref ?? start.selector, 'drag');
+      if (done.status !== 'ok') return done;
+      const before = { page: formatPageHandle(document), url: identity.url, title: identity.title };
+      if (!api.pageAfterClick || cancel.signalled) return { status: 'ok', outputs: { dropped: true, ...before } };
+      const budget = Math.max(0, command.timeout_ms - (Date.now() - begun) - 3_000);
+      const settleMs = Math.min(BRIDGE_CLICK_SETTLE_MS, budget);
+      const after = await api.pageAfterClick(document.tab_id, { ...before, ...frameOf(current) }, command.target_domain_pattern,
+        { settleMs, loadMs: Math.min(BRIDGE_CLICK_LOAD_MAX_MS, budget - settleMs) },
+        address => isOnBlockedSite(address, blocked ?? []));
+      const page = Object.fromEntries(Object.entries(after ?? before).filter(([key]) => command.expects_output_keys.includes(key)));
+      return { status: 'ok', outputs: { dropped: true, ...page } };
+    }
+
     // D-335 slice AP — a file the page links to (the link a ref or a selector names, or an address),
     // fetched as the page fetches it, its cookies with it; from another site the page may not fetch
     // from, as the Bridge fetches it. The page stays as it is.
@@ -673,6 +782,10 @@ export const buildActionExecutor = (api: BridgeBrowserApi): BridgeActionExecutor
       if ('stale' in where) return errorOutcome('selector_not_found', PAGE_CHANGED);
       if ('missing' in where) return selectorMissing(ref ?? selector!);
       if ('no_address' in where) return errorOutcome('selector_not_found', NO_FILE_ADDRESS);
+      const expectedUrl = typeof command.args.expected_url === 'string' ? command.args.expected_url : undefined;
+      if (expectedUrl !== undefined && where.url !== expectedUrl) {
+        return errorOutcome('selector_not_found', PAGE_CHANGED);
+      }
       if (!isPatternWithinGrantedOrigins(where.url, [command.target_domain_pattern])) {
         return errorOutcome('tab_navigation_blocked', 'The page is no longer on a site this step may read.');
       }
@@ -681,13 +794,16 @@ export const buildActionExecutor = (api: BridgeBrowserApi): BridgeActionExecutor
       if (listedHere) return listedHere;
       if (cancel.signalled) return cancelled();
       const sites = blocked ?? [];
-      const inPage = await runInDocument(api, handle, fetchFile, [where.address, most, sites]);
+      const inPage = await runInDocument(api, handle, fetchFile, [where.address, most, sites,
+        ...(expectedUrl !== undefined ? [null, expectedUrl] : [])]);
       if (inPage && inPage.document_id !== handle.document_id) return errorOutcome('selector_not_found', PAGE_GONE);
       const invalidFile = () => errorOutcome('unknown',
         'The browser returned an incomplete or inconsistent file result, so no file was accepted.');
       let got = inPage?.result as FetchedFile | null | undefined;
       if (got !== null && got !== undefined && !isFetchedFileAnswer(got, most)) return invalidFile();
-      if (got === null || got === undefined || ('failed' in got && where.cross_origin)) {
+      // A download intercepted during a click belongs to this live document.
+      if (expectedUrl !== undefined && got == null) return invalidFile();
+      if (got == null || ('failed' in got && where.cross_origin && expectedUrl === undefined)) {
         // A fallback starts a new request; a confirmed page result remains authoritative.
         if (cancel.signalled) return cancelled();
         const controller = new AbortController();
@@ -716,15 +832,18 @@ export const buildActionExecutor = (api: BridgeBrowserApi): BridgeActionExecutor
     // D-335 slice AQ — one of the owner's files into the file field a ref or a selector names, as choosing
     // it there would; read as a write by ref is (the element and its site first, then the file), and
     // never on a site the owner listed. The server asked the owner first, naming the file.
-    if (action === 'upload_file') {
+    if (action === 'upload_file' || action === 'upload_files') {
+      const delivery = command.args.delivery;
+      if (delivery !== undefined && delivery !== 'drop') return errorOutcome('unknown', 'bridge: unsupported file delivery');
       const request = readElementRequest(command.args);
       if ('error' in request) return errorOutcome('unknown', `bridge: ${request.error}`);
       if (!request.page) return errorOutcome('unknown', 'bridge: upload_file needs the page the field is on');
       if (!api.executeInDocument) return errorOutcome('unknown', 'bridge: this browser cannot act on a page by ref');
-      const { filename, mime_type, data } = command.args;
-      if (typeof filename !== 'string' || filename === '' || typeof mime_type !== 'string' || typeof data !== 'string'
-        || data.length > Math.ceil(BRIDGE_FILE_MAX_BYTES / 3) * 4 || !/^[A-Za-z0-9+/]*={0,2}$/.test(data)) {
-        return errorOutcome('unknown', 'bridge: upload_file takes a filename, a mime_type and the file in base64');
+      const multiple = action === 'upload_files';
+      const files = readUploadParts(multiple ? command.args.files : [command.args]);
+      if (!files) {
+        return errorOutcome('unknown', multiple ? 'bridge: upload_files needs a bounded list of filenames, MIME types and valid base64'
+          : 'bridge: upload_file takes a filename, a mime_type and the file in base64');
       }
       const document = request.page;
       const refused = await pageRefusal(document.tab_id, blocked);
@@ -741,10 +860,14 @@ export const buildActionExecutor = (api: BridgeBrowserApi): BridgeActionExecutor
       if (listedHere) return listedHere;
       if (cancel.signalled) return cancelled();
       const url = found.outputs!.url as string;
+      const first = files[0]!;
       const ran = await byRef(api, document, request.scope.ref, true, cancel, async () => {
         const reply = await runInDocument(api, document, attachPageFile,
-          [request.scope.selector ?? null, request.scope.ref ?? null, filename, mime_type, data, url]);
-        return reply?.document_id === document.document_id && isUploadAnswer(reply.result) ? reply : null;
+          [request.scope.selector ?? null, request.scope.ref ?? null,
+            ...(multiple ? [files, '', ''] : [first.filename, first.mime_type, first.data]), url,
+            ...(delivery === 'drop' ? [delivery] : [])]);
+        return reply?.document_id === document.document_id && isUploadAnswer(reply.result, multiple ? files.length : undefined, delivery)
+          ? reply : null;
       });
       if (!ran) return uncertain();
       const answer = ran.result as AttachedFile;
@@ -753,7 +876,9 @@ export const buildActionExecutor = (api: BridgeBrowserApi): BridgeActionExecutor
       if ('missing' in answer) return selectorMissing(request.scope.ref ?? request.scope.selector!);
       if ('not_file_field' in answer) return errorOutcome('selector_not_found', NOT_FILE_FIELD);
       if ('not_applied' in answer) return errorOutcome('value_not_applied', answer.not_applied);
-      return { status: 'ok', outputs: { attached: answer.attached, page: formatPageHandle(document), url: answer.url,
+      if ('uncertain' in answer) return uncertain();
+      return { status: 'ok', outputs: { ...('dropped' in answer ? { dropped: answer.dropped } : { attached: answer.attached }),
+        page: formatPageHandle(document), url: answer.url,
         title: answer.title } };
     }
 
@@ -845,13 +970,21 @@ export const buildActionExecutor = (api: BridgeBrowserApi): BridgeActionExecutor
         return errorOutcome('selector_not_found', PAGE_GONE);
       }
       if (!ran) return errorOutcome('unknown', 'bridge: the browser did not let the Bridge read the page');
-      // D-335 slice R — the frames from another site the read named: each the page it shows, read
-      // in the tab's top page, where its own frames are listed.
-      const answer = ran.result as { outputs?: { html?: unknown } } | null;
+      // Bind observed iframe elements to live Chrome documents in the inspected document's branch.
+      const answer = ran.result as { outputs?: { html?: unknown; url?: unknown } } | null;
       if (inspects && typeof answer?.outputs?.html === 'string' && answer.outputs.html.includes('data-recued-frame="')) {
-        const frames = ran.frame_id === 0 && api.listFrames ? await api.listFrames(tab_id).catch(() => null) : null;
+        const id = frameObservationId(answer.outputs.html);
+        const url = answer.outputs.url;
+        const frames = id && typeof url === 'string' && api.listFrames && blocked !== undefined && !cancel.signalled
+          ? await api.listFrames(tab_id).catch(() => null) : null;
+        const verified = frames && id && !cancel.signalled
+          ? await runInDocument(api, { tab_id, document_id: ran.document_id }, verifyFrameObservation, [id], { immediate: true })
+          : null;
+        const paths = verified?.document_id === ran.document_id && Array.isArray(verified.result)
+          && verified.result.every(path => typeof path === 'string') ? verified.result as string[] : [];
         answer.outputs.html = settleFrames(answer.outputs.html, tab_id, frames,
-          url => blocked === undefined || isOnBlockedSite(url, blocked));
+          address => blocked === undefined || isOnBlockedSite(address, blocked),
+          id && typeof url === 'string' ? { id, document_id: ran.document_id, url, paths } : undefined);
       }
       const outcome = (inspects ? inspectOutcome : describeOutcome)(ran.result,
         { tab_id, document_id: ran.document_id },
@@ -881,11 +1014,15 @@ export const buildActionExecutor = (api: BridgeBrowserApi): BridgeActionExecutor
     // D-335 slice J — `submit` sends the form an element is in, typing `value` into it first
     // when the command carries one; it is only ever named by page.
     // D-335 slice U — `press` presses a key in the element, likewise named only by page.
-    if ((action === 'fill' || action === 'click' || action === 'submit' || action === 'press')
-      && (action === 'submit' || action === 'press' || command.args.page !== undefined || command.args.ref !== undefined)) {
+    if (action === 'seek_media' || action === 'submit' || action === 'press' || (
+      (action === 'fill' || action === 'click') && (command.args.page !== undefined || command.args.ref !== undefined))) {
       const request = readElementRequest(command.args);
       if ('error' in request) return errorOutcome('unknown', `bridge: ${request.error}`);
       const value = stringArg(command.args, 'value');
+      const atSeconds = command.args.at_seconds;
+      if (action === 'seek_media' && (typeof atSeconds !== 'number' || !Number.isFinite(atSeconds) || atSeconds < 0)) {
+        return errorOutcome('value_not_applied', 'Seek needs a finite, nonnegative media timestamp.');
+      }
       const press = action === 'press' ? parseBridgeKey(command.args.key) : null;
       if (action === 'press' && press === null) {
         return errorOutcome('unknown', 'bridge: key is not one the Bridge presses: a named key such as Enter or Escape, a letter, a digit, '
@@ -948,6 +1085,13 @@ export const buildActionExecutor = (api: BridgeBrowserApi): BridgeActionExecutor
       // card it is (`within_card`, `card_rows`), which the row is found by.
       const rowCard = rowTexts !== null && typeof command.args.within_card === 'string' ? command.args.within_card : null;
       const selector = request.scope.selector ?? '';
+      if (action === 'seek_media') {
+        const ran = await byRef(api, document, request.scope.ref, true, cancel,
+          () => runInDocument(api, document, seekPageMedia, [selector, atSeconds, url, request.scope.ref ?? null]));
+        if (!ran || ran.document_id !== document.document_id) return uncertain();
+        const done = fieldOutcome(ran.result, named, action, errorOutcome('selector_not_found', PAGE_CHANGED));
+        return done.status === 'ok' ? { ...done, outputs: { ...done.outputs, ...stable } } : done;
+      }
       // Slice K — before a click or a send, what the page says now, so an error message it leads to
       // is told from one already there; and whether a click sends a form, so it is watched as a
       // sent form is. Asked only by a server that wants either.
@@ -981,22 +1125,51 @@ export const buildActionExecutor = (api: BridgeBrowserApi): BridgeActionExecutor
       const typesFirst = action === 'submit' && value !== null;
       // D-347 follow-up 18 — a click waits for what covers its element to go (`clickPageElement`), out of the
       // command's budget: what is left of it after the wait is the watch's below.
-      const begun = Date.now();
-      const clickWait = Math.max(0, Math.min(BRIDGE_CLICK_WAIT_MS, command.timeout_ms - 15_000));
+      const begun = typeof downloadWait === 'number' ? started : Date.now();
+      const clickBudget = command.timeout_ms - (Date.now() - begun) - (typeof downloadWait === 'number' ? downloadWait : 0);
+      if (typeof downloadWait === 'number' && clickBudget < 6_000) {
+        return errorOutcome('unknown', 'The command ran out of time for the requested download wait before clicking.');
+      }
+      const clickWait = Math.max(0, Math.min(BRIDGE_CLICK_WAIT_MS, clickBudget - 15_000));
       if (cancel.signalled) return cancelled();
       const ran = await byRef(api, document, navigationGuard ? undefined : request.scope.ref, true, cancel, () => action === 'click'
         ? runInDocument(api, document, clickPageElement, [selector, url, request.scope.ref ?? null, clickWait,
-          ...(navigationGuard ? [navigationGuard.after_url] : rowTexts !== null ? [null] : []), ...(rowTexts !== null ? [rowTexts, rowCard] : [])])
+          ...(clickCount === 2 ? [null, rowTexts, rowCard, capturesDownload ? BRIDGE_FILE_MAX_BYTES : null,
+            downloadWait ?? null, capturesDownloadSet ? BRIDGE_UPLOAD_MAX_FILES : null, clickCount]
+            : capturesDownload ? [navigationGuard?.after_url ?? null, rowTexts, rowCard, BRIDGE_FILE_MAX_BYTES,
+            ...(downloadWait !== undefined || capturesDownloadSet ? [downloadWait ?? null] : []),
+            ...(capturesDownloadSet ? [BRIDGE_UPLOAD_MAX_FILES] : [])]
+            : [...(navigationGuard ? [navigationGuard.after_url] : rowTexts !== null ? [null] : []),
+              ...(rowTexts !== null ? [rowTexts, rowCard] : [])])])
         : action === 'press'
           ? runInDocument(api, document, pressPageKey, [selector, url, request.scope.ref ?? null, press])
         : action === 'submit' && !typesFirst
           ? runInDocument(api, document, submitPageForm, [selector, url, request.scope.ref ?? null])
           // Typing, and typing then sending in the same script (slice J).
           : runInDocument(api, document, fillPageField,
-            typesFirst ? [selector, value, url, request.scope.ref ?? null, true, ...(rowTexts !== null ? [rowTexts, rowCard] : [])]
+            pastes ? [selector, value, url, request.scope.ref ?? null, null, rowTexts, rowCard, 'paste']
+              : typesFirst ? [selector, value, url, request.scope.ref ?? null, true, ...(rowTexts !== null ? [rowTexts, rowCard] : [])]
               : rowTexts !== null ? [selector, value, url, request.scope.ref ?? null, null, rowTexts, rowCard] : [selector, value, url, ...ref]));
       if (!ran || ran.document_id !== document.document_id) return uncertain();
-      const answered = fieldOutcome(ran.result, named, action, errorOutcome('selector_not_found', PAGE_CHANGED));
+      let answer = ran.result;
+      if (answer && typeof answer === 'object' && Object.hasOwn(answer, 'linked_download')) {
+        const linked = (answer as { linked_download?: unknown }).linked_download;
+        if (action !== 'click' || downloadWait === undefined || Object.keys(answer).length !== 1
+          || typeof linked !== 'string') return uncertain();
+        let address: URL;
+        try {
+          address = new URL(linked);
+          if (!/^https?:$/.test(address.protocol) || address.username || address.password
+            || address.origin !== new URL(url).origin) return uncertain();
+        } catch { return uncertain(); }
+        const saved = await executeOne('download_file', { ...command, action: 'download_file',
+          args: { page: formatPageHandle(document), address: address.href, expected_url: url, max_bytes: BRIDGE_FILE_MAX_BYTES } }, cancel);
+        const file = saved.outputs;
+        answer = { outputs: { clicked: true, generated_download: saved.status === 'ok' && file
+          ? { filename: file.filename, mime_type: file.mime_type, size: file.size, data: file.data }
+          : { failure: cancel.signalled ? 'interrupted' : 'unreadable' } } };
+      }
+      const answered = fieldOutcome(answer, named, action, errorOutcome('selector_not_found', PAGE_CHANGED), capturesDownload, pastes);
       const done = answered.status === 'ok'
         ? { ...answered, outputs: { ...(typesFirst ? { filled: true } : {}), ...answered.outputs, ...stable } } : answered;
       if (done.status !== 'ok' || cancel.signalled) return done;
@@ -1337,6 +1510,23 @@ export const buildActionExecutor = (api: BridgeBrowserApi): BridgeActionExecutor
       const request = readInspectRequest(command.args);
       if ('error' in request) return errorOutcome('unknown', `bridge: ${request.error}`);
       await rebindRef(api, handle, request.scope.ref);
+      let tableWalk: PageTableWalk | undefined;
+      if (command.args.table_walk !== undefined && (action === 'scroll' || action === 'read_table')) {
+        const plan = command.args.table_walk as Partial<PageTableWalk> | null;
+        const scope = plan?.scroll_scope;
+        const move = plan?.advance;
+        if (!scope || typeof scope !== 'object' || Array.isArray(scope)
+          || Object.keys(scope).some(key => key !== 'ref' && key !== 'selector')
+          || !Number.isInteger(plan?.enclosing) || plan!.enclosing! < 0 || plan!.enclosing! > 3
+          || (action === 'scroll'
+            ? !move || !Number.isSafeInteger(move.table_id) || !Number.isSafeInteger(move.scroll_id)
+              || !Number.isFinite(move.position) || move.position < 0
+            : move !== undefined)) return errorOutcome('unknown', 'bridge: invalid table continuation');
+        const scroll = readInspectRequest({ page: command.args.page, ...scope });
+        if ('error' in scroll) return errorOutcome('unknown', `bridge: ${scroll.error}`);
+        await rebindRef(api, handle, scroll.scope.ref);
+        tableWalk = { enclosing: plan!.enclosing!, scroll_scope: scroll.scope, ...(move ? { advance: move } : {}) };
+      }
       // D-335 slice U — a screen at a time, left there; then a moment for what that brought in.
       if (action === 'scroll') {
         const to = command.args.to;
@@ -1347,6 +1537,8 @@ export const buildActionExecutor = (api: BridgeBrowserApi): BridgeActionExecutor
         if (screen !== undefined && (!Number.isSafeInteger(screen) || (screen as number) < 1)) {
           return errorOutcome('unknown', 'bridge: screen is a whole number from 1, the top of the page');
         }
+        const direction = screen === undefined && isHorizontalScrollDirection(to) ? to : undefined;
+        if (direction !== undefined && tableWalk) return errorOutcome('unknown', 'bridge: table continuation scrolls vertically');
         // Even the first element measurement can scroll. Check this document's
         // own address first, including when its handle names a frame.
         if (cancel.signalled) return cancelled();
@@ -1369,13 +1561,33 @@ export const buildActionExecutor = (api: BridgeBrowserApi): BridgeActionExecutor
         }
         const listedBefore = siteRefusal(url, blocked);
         if (listedBefore) return listedBefore;
-        const measure = async (at: number | null) => {
-          // An element measurement can scroll into view even without a screen.
-          const mayScroll = at !== null || request.scope.ref !== undefined || request.scope.selector !== undefined;
+        if (tableWalk) {
+          if (cancel.signalled) return cancelled();
+          const windowOptions = { pattern: command.target_domain_pattern, window: true, sort: command.expects_output_keys.includes('sort') };
+          const movement = await runInDocument(api, handle, readPageTable, [request.scope, PAGE_TABLE_LIMITS, url, tableWalk]);
+          if (!movement || movement.document_id !== handle.document_id) return uncertain();
+          const movedWindow = tableOutcome(movement.result, handle, windowOptions);
+          if (movedWindow.status !== 'ok' || cancel.signalled) return movedWindow;
+          await runInDocument(api, handle, waitForQuiet, [PAGE_SCROLL_QUIET_MS, PAGE_SCROLL_SETTLE_MS, PAGE_SCROLL_FIRST_MS]);
+          if (cancel.signalled) return movedWindow;
+          const observed = await runInDocument(api, handle, readPageTable, [request.scope, PAGE_TABLE_LIMITS, url,
+            { scroll_scope: tableWalk.scroll_scope, enclosing: tableWalk.enclosing }]);
+          if (!observed || observed.document_id !== handle.document_id) return uncertain();
+          const captured = tableOutcome(observed.result, handle, windowOptions);
+          return captured.status === 'ok' ? siteRefusal(String(captured.outputs!.url), blocked) ?? captured : captured;
+        }
+        const scoped = request.scope.ref !== undefined || request.scope.selector !== undefined;
+        const measure = async (at: number | null, phase: ElementScrollPhase) => {
+          // Preparing a scoped scroll can reveal the anchor before any screen
+          // movement. Its final measurement is passive.
+          const mayScroll = phase === 'move' || (scoped && phase === 'focus');
           const unreadable = () => ({ error: mayScroll ? uncertain()
             : errorOutcome('unknown', 'bridge: no readable answer from the page') });
-          const ran = await byRef(api, handle, request.scope.ref, false, cancel,
-            () => runInDocument(api, handle, measurePageArea, [request.scope, url, at, null, PAGE_SCREEN_STEP, false]));
+          const args = [request.scope, url, at, null, PAGE_SCREEN_STEP, false,
+            ...(scoped || direction !== undefined ? [{ command_id: command.command_id, phase,
+              ...(direction === undefined ? {} : { direction }) }] : [])];
+          const run = () => runInDocument(api, handle, measurePageArea, args);
+          const ran = phase === 'focus' ? await byRef(api, handle, request.scope.ref, false, cancel, run) : await run();
           if (!ran || ran.document_id !== handle.document_id) {
             return { error: mayScroll ? uncertain() : errorOutcome('selector_not_found', PAGE_GONE) };
           }
@@ -1385,11 +1597,12 @@ export const buildActionExecutor = (api: BridgeBrowserApi): BridgeActionExecutor
           return 'error' in read && read.error.error?.code === 'tab_navigation_blocked'
             ? { error: errorOutcome('tab_navigation_blocked', 'The page moved or cannot be automated, so no further scrolling was attempted.') } : read;
         };
-        const now = await measure(null);
+        const now = await measure(null, 'focus');
         if ('error' in now) return now.error;
         if (cancel.signalled) return cancelled();
-        const moved = await measure(scrollTarget({ screen: now.screen ?? 1, screens: now.screens ?? 1 },
-          to as BridgeScrollTo | undefined, screen as number | undefined));
+        const target = direction === undefined ? scrollTarget({ screen: now.screen ?? 1, screens: now.screens ?? 1 },
+          to as BridgeScrollTo | undefined, screen as number | undefined) : null;
+        const moved = await measure(target, 'move');
         if ('error' in moved) return moved.error;
         // A confirmed scroll remains authoritative; cancellation stops new work.
         let read = moved;
@@ -1397,7 +1610,7 @@ export const buildActionExecutor = (api: BridgeBrowserApi): BridgeActionExecutor
           await runInDocument(api, handle, waitForQuiet, [PAGE_SCROLL_QUIET_MS, PAGE_SCROLL_SETTLE_MS, PAGE_SCROLL_FIRST_MS]);
           if (!cancel.signalled) {
             // As it is now: a feed that loaded more has more screens.
-            const after = await measure(null);
+            const after = await measure(null, 'observe');
             if (!('error' in after)) read = after;
           }
         }
@@ -1410,10 +1623,12 @@ export const buildActionExecutor = (api: BridgeBrowserApi): BridgeActionExecutor
           screen: read.screen ?? 1, screens: read.screens ?? 1 } };
       }
       if (action === 'read_table') {
+        const args = tableWalk ? [request.scope, PAGE_TABLE_LIMITS, null, tableWalk] : [request.scope, PAGE_TABLE_LIMITS];
         const ran = await byRef(api, handle, request.scope.ref, false, cancel,
-          () => runInDocument(api, handle, readPageTable, [request.scope, PAGE_TABLE_LIMITS]));
+          () => runInDocument(api, handle, readPageTable, args));
         if (!ran || ran.document_id !== handle.document_id) return errorOutcome('selector_not_found', PAGE_GONE);
-        const table = tableOutcome(ran.result, handle, { pattern: command.target_domain_pattern });
+        const table = tableOutcome(ran.result, handle, { pattern: command.target_domain_pattern, window: tableWalk !== undefined,
+          sort: command.expects_output_keys.includes('sort') });
         // Slice R — a frame's handle: its own site decides, and nothing read on a listed one is answered.
         return table.status === 'ok' ? siteRefusal(String(table.outputs!.url), blocked) ?? table : table;
       }

@@ -238,7 +238,11 @@ test('Packs keeps the Installed only source toggle keyboard-owned', async ({ pag
   expect(catalogSearchCalls).toBe(1);
 });
 
-test('Packs previews a row in place and restores it before full detail', async ({ page }) => {
+test('Packs preserves the catalogue through preview and both ways back from detail on desktop', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 420 });
+  await page.route('https://recued.com/catalog/versions**', route => route.fulfill({
+    json: { versions: { 'installed-mail': 1 } },
+  }));
   await page.goto(`${HARNESS_URL}?packs=installed#packs`);
   await page.waitForFunction(() => window.__app?.ready === true);
 
@@ -246,6 +250,27 @@ test('Packs previews a row in place and restores it before full detail', async (
     '[data-recued-discover-card][data-id="installed-mail"]',
   );
   await expect(card).toBeVisible();
+  const search = page.locator('[data-recued-discover-search]');
+  const filter = page.locator('[data-facet="service_kind"][data-value="workflow"]');
+  const toggle = page.locator(`[${PACKS_INSTALLED_ONLY}]`);
+  const content = page.locator('[data-recued-webclient-content]');
+  await search.fill('Installed Mail');
+  await filter.click();
+  await expect(filter).toHaveAttribute('aria-pressed', 'true');
+  await expect(toggle).toHaveAttribute('aria-pressed', 'true');
+  await card.scrollIntoViewIfNeeded();
+  const scroll = await content.evaluate(node => node.scrollTop);
+  expect(scroll).toBeGreaterThan(0);
+
+  const expectRestoredCatalogue = async () => {
+    await expect(page).toHaveURL(/#packs$/);
+    await expect(search).toHaveValue('Installed Mail');
+    await expect(filter).toHaveAttribute('aria-pressed', 'true');
+    await expect(toggle).toHaveAttribute('aria-pressed', 'true');
+    await expect(card).toBeFocused();
+    await expect.poll(() => content.evaluate(node => node.scrollTop)).toBe(scroll);
+  };
+
   await card.click();
 
   const preview = page.locator(`[${LIST_PREVIEW}]`);
@@ -257,14 +282,20 @@ test('Packs previews a row in place and restores it before full detail', async (
 
   await page.keyboard.press('Escape');
   await expect(preview).toBeHidden();
-  await expect(card).toBeFocused();
+  await expectRestoredCatalogue();
 
   await page.keyboard.press('Space');
   await expect(preview).toBeVisible();
   await preview.locator(`[${LIST_PREVIEW_OPEN}]`).click();
   await expect(page).toHaveURL(/#packs\/installed-mail$/);
-  await expect(page.locator('[data-recued-packs-detail-back]'))
-    .toBeVisible();
+  const back = page.locator('[data-recued-packs-detail-back]');
+  await back.press('Enter');
+  await expectRestoredCatalogue();
+
+  await card.press('Enter');
+  await expect(page).toHaveURL(/#packs\/installed-mail$/);
+  await page.goBack();
+  await expectRestoredCatalogue();
 });
 
 test('Packs keeps a failed detail Retry focused and single-flight', async ({ page }) => {

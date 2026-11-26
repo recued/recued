@@ -19,7 +19,7 @@ const picked = '2030-01-04T12:00';
 const pickedAt = Date.UTC(2030, 0, 4, 20); // Browser keeps Los Angeles time; server keeps Hong Kong time.
 test.use({ timezoneId: 'America/Los_Angeles' });
 
-const open = async (page: Page, options: { paused?: boolean; supported?: boolean; reviewed?: boolean; recurring?: boolean } = {}) => {
+const open = async (page: Page, options: { paused?: boolean; supported?: boolean; reviewed?: boolean; recurring?: boolean; desktopList?: boolean } = {}) => {
   await page.addInitScript(opts => {
     const runAt = Date.UTC(2030, 0, 1, 1);
     const schedule: ServerSchedule = {
@@ -30,6 +30,8 @@ const open = async (page: Page, options: { paused?: boolean; supported?: boolean
       ...(opts.supported === false || opts.recurring ? {} : { reschedule_revision: 'saved-incarnation:1', reschedule_identity: 'saved-incarnation' }),
       ...(opts.reviewed ? { preapproval: { proposal_id: 'reviewed-old-time', future_execution_ref: 'future-old-time', execution_status: 'active' as const } } : {}),
     };
+    const other = { ...schedule, schedule_id: 'another-one-off-report', reschedule_identity: 'other-incarnation',
+      reschedule_revision: 'other-incarnation:1' };
     const state: Window['__oneOffFixture'] = window.__oneOffFixture = { schedule, calls: [], outcome: 'ok', failReads: 0, cursor: 10_000, holdNextRead: false };
     window.__connectionsFixture = async (method, raw) => {
       state.calls.push({ method, args: raw });
@@ -41,7 +43,7 @@ const open = async (page: Page, options: { paused?: boolean; supported?: boolean
           state.holdNextRead = false;
           await new Promise<void>(resolve => { state.releaseRead = resolve; });
         }
-        return { result: { schedules: [snapshot] } };
+        return { result: { schedules: opts.desktopList ? [snapshot, other] : [snapshot] } };
       }
       if (method !== 'schedules.reschedule') return undefined;
       const args = raw as { schedule_id: string; run_at: number; expected_revision: string };
@@ -58,8 +60,12 @@ const open = async (page: Page, options: { paused?: boolean; supported?: boolean
       return { result: { schedule: reply } };
     };
   }, options);
-  await page.goto(HARNESS_ORIGIN + '/full-app-harness.html?automation=dishes#automation/schedules/one-off-report');
+  const listAddress = '/full-app-harness.html?automation=dishes#automation/schedules';
+  await page.goto(HARNESS_ORIGIN + (options.desktopList ? listAddress : listAddress + '/one-off-report'));
   await page.waitForFunction(() => window.__app?.ready === true);
+  if (options.desktopList) {
+    await page.locator('[data-recued-schedule-workspace] [data-rule-id="one-off-report"]').click();
+  }
   await expect(page.locator('[data-recued-automation-detail="one-off-report"]')).toBeVisible();
   if (options.supported !== false && !options.recurring) {
     await page.getByRole('button', { name: 'Reschedule', exact: true }).click();
@@ -108,6 +114,37 @@ test('moving a paused run keeps it paused and does not re-arm old reviewed autho
   await expect(editor(page).getByRole('status')).toContainText('This run is paused.');
   expect(await page.evaluate(() => window.__oneOffFixture.schedule.preapproval?.execution_status)).toBe('invalidated');
   expect(await calls(page, 'schedules.update')).toHaveLength(0);
+});
+
+test('desktop schedule review keeps a pending time change and its confirmation on the exact schedule', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await open(page, { desktopList: true });
+  const workspace = page.locator('[data-recued-schedule-workspace]');
+  const original = workspace.locator('[data-recued-automation-row="schedule:one-off-report"]');
+  const other = workspace.locator('[data-recued-automation-row="schedule:another-one-off-report"]');
+  const inspector = workspace.getByRole('region', { name: 'Schedule details', exact: true });
+  const otherTiming = inspector.getByRole('region', { name: 'Timing', exact: true });
+  await input(page).fill(picked);
+  await page.evaluate(() => { window.__oneOffFixture.outcome = 'hold_reply'; });
+  await editor(page).getByRole('button', { name: 'Save time', exact: true }).click();
+  await expect.poll(async () => (await calls(page)).length).toBe(1);
+  await expect(original).toContainText('Updating time…');
+  await other.getByRole('button').click();
+  await expect(inspector).toHaveAttribute('data-recued-automation-detail', 'another-one-off-report');
+  await expect(editor(page)).toHaveCount(0);
+  await expect(inspector.getByRole('button', { name: 'Reschedule', exact: true })).toBeDisabled();
+  const otherTime = await otherTiming.innerText();
+  await page.evaluate(() => window.__oneOffFixture.releaseReply!());
+  await expect(original).not.toContainText('Updating time…');
+  await expect(inspector.getByRole('button', { name: 'Reschedule', exact: true })).toBeEnabled();
+  await expect(otherTiming).toHaveText(otherTime, { useInnerText: true });
+  await expect(inspector.getByRole('heading', { name: 'daily-brief' })).toBeFocused();
+
+  await original.getByRole('button').click();
+  await expect(editor(page).getByRole('status')).toContainText('Scheduled for');
+  expect((await calls(page)).map(call => call.args)).toEqual([
+    { schedule_id: 'one-off-report', run_at: pickedAt, expected_revision: 'saved-incarnation:1' },
+  ]);
 });
 
 test('invalid dates, past dates and a daylight-saving gap issue no mutation; Cancel keeps the saved time', async ({ page }) => {

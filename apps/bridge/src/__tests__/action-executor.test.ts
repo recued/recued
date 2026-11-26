@@ -1223,77 +1223,82 @@ describe('the owner\'s list of blocked sites', () => {
   });
 });
 
-// D-335 slice R — a frame from another site, which no script in the page can read, named as a page
-// of its own: the frame of the tab's top page at its address, else on its site, each taken once.
+// Cross-origin frame handles belong to the observed slots in the live document tree.
 describe('frames from another site, named as pages of their own', () => {
-  const frame = (document_id: string, url: string, in_top = true): PageFrame =>
-    ({ frame_id: Number(document_id.replace(/\D/g, '')) || 1, document_id, url, in_top });
-  const NAMED = (n: number, src?: string) => `<iframe${src ? ` src="${src}"` : ''} title="T${String(n)}" data-recued-frame="${String(n)}"></iframe>`;
+  const top: PageFrame = { frame_id: 0, document_id: 'DOC7', url: 'https://app.hubspot.com/deals/7', path: '0' };
+  const parent: PageFrame = { frame_id: 8, document_id: 'DOC8', url: 'https://console.example/editor', path: '0.1' };
+  const child: PageFrame = { frame_id: 9, document_id: 'DOC9', url: 'https://forms.example/settings', path: '0.1.0' };
+  const ticket = 'af07c02839e16542';
+  const named = (path: string) => '<iframe src="' + child.url + '" data-recued-frame="' + ticket + ':' + path + '"></iframe>';
+  const observation = (paths: string[]) => ({ id: ticket, document_id: parent.document_id, url: parent.url, paths });
 
-  it('gives each the handle of the frame at its address, then on its site, in the page\'s order', () => {
-    const html = `<p>x</p>${NAMED(1, 'https://ads.example/a')}${NAMED(2, 'https://forms.example/f?id=1')}${NAMED(3, 'https://ads.example/b')}`;
-    const frames = [frame('DOC3', 'https://ads.example/b'), frame('DOC2', 'https://forms.example/f?id=1&loaded=1'),
-      frame('DOC1', 'https://ads.example/a')];
-    expect(settleFrames(html, 7, frames, () => false)).toBe('<p>x</p>'
-      + '<iframe src="https://ads.example/a" title="T1" page="7:DOC1"></iframe>'
-      // Not at its address any more, but on its site.
-      + '<iframe src="https://forms.example/f?id=1" title="T2" page="7:DOC2"></iframe>'
-      + '<iframe src="https://ads.example/b" title="T3" page="7:DOC3"></iframe>');
+  it('binds identical requested URLs by slot, allowing a same-origin redirect in the confirmed slot', () => {
+    const second = { ...child, frame_id: 10, document_id: 'DOC10', url: child.url + '?loaded=1', path: '0.1.1' };
+    const html = named(child.path) + named(second.path);
+    expect(settleFrames(html, 7, [second, child, parent, top], () => false, observation([child.path, second.path])))
+      .toBe('<iframe src="https://forms.example/settings" page="7:DOC9"></iframe>'
+        + '<iframe src="https://forms.example/settings" page="7:DOC10"></iframe>');
   });
 
-  it('one it cannot match, on a listed site, in a frame of a frame, or where frames are not looked for, is unread', () => {
-    const html = `${NAMED(1, 'https://pay.example/card')}${NAMED(2, 'https://blocked.example/x')}${NAMED(3, 'https://deep.example/y')}${NAMED(4)}`;
-    const frames = [frame('DOC2', 'https://blocked.example/x'), frame('DOC3', 'https://deep.example/y', false)];
-    const settled = settleFrames(html, 7, frames, url => url.includes('blocked.example'));
-    expect(settled.match(/ unread=""/g)).toHaveLength(4);
-    expect(settled).not.toContain(' page="');
-    expect(settleFrames(NAMED(1, 'https://ads.example/a'), 7, null, () => false))
-      .toBe('<iframe src="https://ads.example/a" title="T1" unread=""></iframe>');
-    expect(settleFrames('<p>no frames</p>', 7, [], () => false)).toBe('<p>no frames</p>');
+  it('leaves unverified slots and frames under a blocked, missing or ambiguous ancestor unread', () => {
+    const html = named(child.path);
+    const seen = observation([child.path]);
+    const unread = '<iframe src="https://forms.example/settings" unread=""></iframe>';
+    expect(settleFrames(html, 7, [top, parent, child], url => url === parent.url, seen)).toBe(unread);
+    expect(settleFrames(html, 7, [parent, child], () => false, seen)).toBe(unread);
+    expect(settleFrames(html, 7, [top, parent, child, { ...parent, document_id: 'OTHER' }], () => false, seen)).toBe(unread);
+    expect(settleFrames(html, 7, [top, parent, child], () => false, observation([]))).toBe(unread);
+    expect(settleFrames(html, 7, null, () => false)).toBe(unread);
   });
 
-  it('an inspection of a tab\'s top page names its frames; one of a frame leaves its own unread', async () => {
-    const read = { url: 'https://app.hubspot.com/deals/7', title: 'Deals', truncated: false,
-      html: `<p>x</p>${NAMED(1, 'https://forms.example/f')}` };
-    const listFrames = vi.fn(async () => [frame('DOC9', 'https://forms.example/f')]);
-    const top = buildActionExecutor(buildBrowser({ listFrames,
-      async executeInDocument() { return { document_id: 'DOC7', frame_id: 0, result: { outputs: { ...read } } }; } }));
+  it('discovers a nested document and rechecks the exact read before naming it', async () => {
+    const read = { url: parent.url, title: 'Console', truncated: false, html: '<p>x</p>' + named(child.path) };
+    const listFrames = vi.fn(async () => [top, parent, child]);
+    const executeInDocument = vi.fn<NonNullable<BridgeBrowserApi['executeInDocument']>>(async (_target, func) => ({
+      document_id: parent.document_id, frame_id: parent.frame_id,
+      result: func.name === 'verifyFrameObservation' ? [child.path] : { outputs: { ...read } },
+    }));
+    const executor = buildActionExecutor(buildBrowser({ listFrames, executeInDocument }));
     const keys = ['page', 'url', 'title', 'html', 'truncated'];
-    expect(await top.execute({ action: 'inspect', cancel: { signalled: false }, command: buildCommand('inspect', { page: '7:DOC7' }, keys) }))
-      .toMatchObject({ status: 'ok', outputs: { html: '<p>x</p><iframe src="https://forms.example/f" title="T1" page="7:DOC9"></iframe>' } });
-    const inFrame = buildActionExecutor(buildBrowser({ listFrames,
-      async executeInDocument() { return { document_id: 'DOC8', frame_id: 3, result: { outputs: { ...read } } }; } }));
-    expect(await inFrame.execute({ action: 'inspect', cancel: { signalled: false }, command: buildCommand('inspect', { page: '7:DOC8' }, keys) }))
-      .toMatchObject({ status: 'ok', outputs: { html: '<p>x</p><iframe src="https://forms.example/f" title="T1" unread=""></iframe>' } });
-    expect(listFrames).toHaveBeenCalledTimes(1);
-    // Frames that did not answer in time: the read is answered, its frames unread.
-    const late = buildActionExecutor(buildBrowser({ async listFrames() { throw new Error('the frames did not answer in time'); },
-      async executeInDocument() { return { document_id: 'DOC7', frame_id: 0, result: { outputs: { ...read } } }; } }));
-    expect(await late.execute({ action: 'inspect', cancel: { signalled: false }, command: buildCommand('inspect', { page: '7:DOC7' }, keys) }))
-      .toMatchObject({ status: 'ok', outputs: { html: '<p>x</p><iframe src="https://forms.example/f" title="T1" unread=""></iframe>' } });
+    const inspect = { action: 'inspect' as const, cancel: { signalled: false }, command: {
+      ...buildCommand('inspect', { page: '7:DOC8' }, keys), target_domain_pattern: '*://*/*',
+    }};
+    expect(await executor.execute(inspect)).toMatchObject({ status: 'ok', outputs: {
+      html: '<p>x</p><iframe src="https://forms.example/settings" page="7:DOC9"></iframe>',
+    } });
+    expect(listFrames).toHaveBeenCalledOnce();
+    expect(executeInDocument.mock.calls.at(-1)).toMatchObject([{ tab_id: 7, document_id: 'DOC8' },
+      expect.any(Function), [ticket], { immediate: true }]);
+    listFrames.mockRejectedValueOnce(new Error('the frames did not answer in time'));
+    expect(await executor.execute(inspect)).toMatchObject({ status: 'ok', outputs: {
+      html: '<p>x</p><iframe src="https://forms.example/settings" unread=""></iframe>',
+    } });
   });
 
-  it('asks each frame only where it is, as soon as it can answer, and waits at most PAGE_FRAMES_WAIT_MS', async () => {
-    const asked: Array<Parameters<DocumentScripting['executeScript']>[0]> = [];
+  it('lists live paths and document IDs from permitted frames, with a bounded wait', async () => {
     const scripting: DocumentScripting = {
-      async executeScript(options) {
-        asked.push(options);
-        return [{ frameId: 0, documentId: 'TOP', result: { url: 'https://app.example/', in_top: false, owner: false } },
-          { frameId: 4, documentId: 'DOC4', result: { url: 'https://forms.example/f', in_top: true, owner: false } },
-          // The owner's client, and a frame that could not answer.
-          { frameId: 5, documentId: 'DOC5', result: { url: 'https://app.recued.com/', in_top: true, owner: true } },
-          { frameId: 6, documentId: 'DOC6', result: undefined }];
-      },
+      executeScript: vi.fn(async () => [
+        { frameId: top.frame_id, documentId: top.document_id, result: { url: top.url, path: top.path, owner: false } },
+        { frameId: child.frame_id, documentId: child.document_id, result: { url: child.url, path: child.path, owner: false } },
+        { frameId: 5, documentId: 'DOC5', result: { url: 'https://app.recued.com/', path: '0.0', owner: true } },
+        { frameId: 6, documentId: 'DOC6', result: undefined },
+      ]),
     };
-    expect(await listChromeFrames(scripting)(7)).toEqual([{ frame_id: 4, document_id: 'DOC4', url: 'https://forms.example/f', in_top: true }]);
-    expect(asked).toMatchObject([{ target: { tabId: 7, allFrames: true }, func: describePageFrame, injectImmediately: true }]);
-    // A frame on a site the owner listed answers too, so it answers nothing it holds: not its title.
-    const top = {};
+    expect(await listChromeFrames(scripting)(7)).toEqual([top, child]);
+    expect(scripting.executeScript).toHaveBeenCalledWith(expect.objectContaining({
+      target: { tabId: 7, allFrames: true }, func: describePageFrame, injectImmediately: true,
+    }));
+
+    const outer = { length: 2, frames: [] as object[] };
+    const middle = { parent: outer, length: 1, frames: [] as object[] };
+    const inner = { parent: middle, top: outer };
+    outer.frames[1] = middle;
+    middle.frames[0] = inner;
     vi.stubGlobal('location', { href: 'https://blocked.example/inbox' });
-    vi.stubGlobal('window', { parent: top, top });
+    vi.stubGlobal('window', inner);
     vi.stubGlobal('document', { title: 'Inbox (3) — private', documentElement: { hasAttribute: () => false } });
     try {
-      expect(describePageFrame()).toEqual({ url: 'https://blocked.example/inbox', in_top: true, owner: false });
+      expect(describePageFrame()).toEqual({ url: 'https://blocked.example/inbox', path: '0.1.0', owner: false });
     } finally {
       vi.unstubAllGlobals();
     }

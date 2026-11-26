@@ -135,6 +135,7 @@ test('Saved view updates require review after each competing revision and preser
 });
 
 test('Saved view updates do not silently adopt a newer revision after list refresh or rename', async ({ page }) => {
+  await page.setViewportSize({ width: 1100, height: 900 });
   await boot(page);
   await query(page).fill('My settings');
   await peerUpdate(page, 'Their settings');

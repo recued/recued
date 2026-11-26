@@ -169,6 +169,40 @@ test('a notification opens its exact email and returns to the same reminder with
   } finally { f.dispose(); }
 });
 
+test('a desktop reminder switch retires an email lookup even when the original row is selected again', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 768 });
+  const f = await installMailTaskFixture(page, { reminders: true });
+  try {
+    const id = f.seedReminder(f.mailReference('work', 'mail-2'), 'Review Quote 2');
+    f.seedReminder(f.mailReference(), 'Send the delivery date');
+    await page.goto(`${HARNESS_URL}?journey=verification&server_profiles=multiple#data/reminder`);
+    await page.waitForFunction(() => window.__app?.ready === true);
+    const selected = page.getByRole('button', { name: 'Open reminder: Review Quote 2', exact: true });
+    const pane = page.getByRole('region', { name: 'Review Quote 2', exact: true });
+    const linkedEmail = pane.getByRole('button', { name: 'Open email', exact: true });
+    await selected.click();
+    f.hold('collection.get', 'mail-2');
+    await linkedEmail.click();
+    await expect.poll(f.waitingRead).toBe(true);
+    await page.getByRole('button', { name: 'Open reminder: Send the delivery date', exact: true }).click();
+    await expect(page.getByRole('region', { name: 'Send the delivery date', exact: true })).toBeVisible();
+    await selected.click();
+    await expect(linkedEmail).toBeEnabled();
+    f.releaseReads();
+    await page.waitForFunction(() => (window as unknown as { __mailTaskSettled: string[] })
+      .__mailTaskSettled.includes('collection.get:mail-2'));
+    await expect(page).toHaveURL(new RegExp(reminderDetailLink(id) + '$'));
+    await expect(email(page)).toHaveCount(0);
+
+    await linkedEmail.click();
+    await expect(email(page)).toContainText('second email needs');
+    await page.goBack();
+    await expect(linkedEmail).toBeFocused();
+    await expect(selected).toHaveAttribute('aria-current', 'true');
+    expect(f.calls).not.toContain('collection.mail.message.updateState');
+  } finally { f.dispose(); }
+});
+
 test('uses the chosen repeated-hour instant and refuses an unsupported email filter without creating an unbound reminder', async ({ page }) => {
   const now = Date.parse('2026-11-01T08:50:12.345Z');
   const f = await boot(page, f => f.filterSupported(false), now);

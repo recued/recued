@@ -14,8 +14,10 @@ import { COLLECTION_DETAIL_HEADING_ATTR } from './collection-explorer.js';
 import type { SelectedContactContext } from '../contacts/contact-context.js';
 import { checkDraftOrigin, mailDraftOrigin } from './draft-origin.js';
 import { sameReminderMailReference } from '@recued/contracts';
+import { createMailFollowUpSurface, type MailFollowUpCallers } from '../mail/mail-follow-up-surface.js';
 
 export interface MailMessageCallers {
+  followUps?: MailFollowUpCallers;
   attachments?: MailAttachmentsCaller;
   get?: (ref: MailMessageRef) => Promise<MailMessageSnapshot>;
   conversation?: (ref: MailConversationRequest) => Promise<MailConversationSnapshot>;
@@ -91,9 +93,12 @@ export const createMailMessageSurface = (opts: {
   reminderLifecycle?: { beforeLeave(): boolean; hasDraft(): boolean; pending(): boolean; reset(): void };
   /** D-406 (Q5) — "Chat about this": a new chat with this email added to it, as "Add records" adds one. */
   onChat?(ref: MailMessageRef, message: MailMessageSnapshot, isCurrent: () => boolean): Promise<void>;
+  openReceivedReply?(ref: import('@recued/contracts').ReminderMailReference): void;
   onExistingEvent?(): boolean;
   files?: FilePreviewCallers;
   compose?: MailComposeDeps;
+  now?: () => number;
+  timeZone?: () => string | undefined;
   actionAttr: string;
   onSelectedRecord?(slug: string, record: CollectionRecord): void;
   onStateChanged?(slug: string, record: CollectionRecord): void;
@@ -134,7 +139,7 @@ export const createMailMessageSurface = (opts: {
       ?? opts.document.querySelector<HTMLButtonElement>(`[${opts.actionAttr}="mail-message-refresh"]`))?.focus();
   };
   const beforeLeave = (): boolean => {
-    if (mutating) return false;
+    if (mutating || followUps?.beforeLeave() === false) return false;
     if (opts.reminderLifecycle?.beforeLeave() === false) return false;
     if (compose?.state().dialog) { portal?.querySelector<HTMLElement>('[data-mail-compose-ai-brief]')?.focus(); return false; }
     return true;
@@ -170,6 +175,37 @@ export const createMailMessageSurface = (opts: {
     } });
     return compose;
   };
+  const openSaved = async (request: { draftId: string; isCurrent(): boolean; onClosed(): void }): Promise<{ opened: boolean; error?: string }> => {
+      if (disposed || !request.isCurrent()) return { opened: false };
+      if (createOpening) return { opened: false, error: 'An email is already opening.' };
+      const host = ensureCompose();
+      if (!host) return { opened: false, error: 'Email composition is unavailable here.' };
+      if (host.state().dialog) {
+        beforeLeave();
+        return { opened: false, error: 'Finish or close your open email before opening another draft.' };
+      }
+      const seq = ++createGeneration, owner = generation;
+      const current = (): boolean => !disposed && seq === createGeneration && owner === generation && request.isCurrent();
+      createOpening = true;
+      try {
+        await host.refresh();
+        if (!current()) return { opened: false };
+        composeTarget = 'create'; createClosed = request.onClosed;
+        const opened = await host.openSaved(request.draftId, current);
+        if (!opened && current()) createClosed = null;
+        return opened ? { opened: true } : { opened: false, error: current() ? 'The saved draft could not be opened. Try again.' : undefined };
+      } catch (error) {
+        if (current()) createClosed = null;
+        return { opened: false, error: current() ? humanizeRpcError(error) : undefined };
+      } finally { if (seq === createGeneration) createOpening = false; }
+    };
+  const followUps = opts.callers.followUps ? createMailFollowUpSurface({
+    document: opts.document, callers: opts.callers.followUps, now: opts.now, timeZone: opts.timeZone,
+    openDraft: openSaved,
+    openReceivedReply: opts.openReceivedReply,
+    focusReturn: () => (opts.document.querySelector<HTMLElement>(`[${opts.actionAttr}="mail-message-follow-up"]`)
+      ?? opts.document.querySelector<HTMLElement>(`[${opts.actionAttr}="mail-message-watches"]`))?.focus(),
+  }) : null;
   const scoped = (id: string): MailMessageRef => ({ slug: anchor!.slug, record_id: id,
     ...(expectedRead?.record_id === id && expectedRead.reminder_ref ? { expected_reminder_ref: expectedRead.reminder_ref } : {}),
     ...(conversation?.incarnation ? { conversation: { thread_id: conversation.thread_id, incarnation: conversation.incarnation } } : {}),
@@ -232,12 +268,16 @@ export const createMailMessageSurface = (opts: {
     paint();
     try {
       const result = await opts.callers.conversation({ ...current,
+        ...(!prior && anchor.expected_reminder_ref ? { expected_incarnation: anchor.expected_reminder_ref.incarnation } : {}),
         ...(prior ? { expected_thread_id: prior.thread_id, ...(prior.incarnation ? { expected_incarnation: prior.incarnation } : {}) } : {}),
         ...(older && prior?.next_before ? { before: prior.next_before } : {}),
       });
       if (disposed || root !== generation) return;
       if (result.slug !== current.slug || result.anchor.record_id !== current.record_id
-        || prior && (result.thread_id !== prior.thread_id || result.incarnation !== prior.incarnation)) {
+        || prior && (result.thread_id !== prior.thread_id || result.incarnation !== prior.incarnation)
+        || anchor.expected_reminder_ref && (result.incarnation !== anchor.expected_reminder_ref.incarnation
+          || result.anchor.record_id !== anchor.expected_reminder_ref.record_id || result.anchor.source_id !== anchor.expected_reminder_ref.source_id
+          || result.anchor.received_at !== anchor.expected_reminder_ref.received_at)) {
         throw new Error('The conversation changed. Open it again from Mail.');
       }
       // A selection made while metadata was refreshing wins over the older
@@ -385,6 +425,8 @@ export const createMailMessageSurface = (opts: {
         ${deriveReplyAllValues(snapshot.reply) ? `<button type="button" class="data-button" data-mail-focus="reply-all" ${action('reply-all')}${busy(pending)}>${renderActionIcon('reply-all')}<span>${opening && composeTarget === 'reply-all' ? 'Checking reply…' : 'Reply all'}</span></button>` : ''}` : ''}
       ${snapshot?.forward && opts.compose && deriveForwardValues(snapshot.forward) ? `<button type="button" class="data-button" data-mail-focus="forward" ${action('forward')}${busy(pending)}>${renderActionIcon('forward')}<span>${opening && composeTarget === 'forward' ? 'Checking email…' : 'Forward'}</span></button>` : ''}
       ${snapshot && ref && opts.onChat ? `<button type="button" class="data-button" data-mail-focus="chat" ${action('chat')}${busy(pending)}>${workOpening === 'chat' ? 'Opening chat…' : 'Chat about this'}</button>` : ''}
+      ${snapshot?.reminder_ref && followUps && messages.find(item => item.record_id === snapshot!.record_id)?.direction === 'outbound'
+        ? `<button type="button" class="data-button" data-mail-focus="follow-up" ${action('follow-up')}${busy(pending)}>Follow up if no reply</button>` : ''}
       ${snapshot?.reminder_ref && opts.onRemind ? `<button type="button" class="data-button" data-mail-focus="remind" ${action('remind')}${busy(pending)}>${workOpening === 'reminder' ? 'Checking reminders…' : 'Remind me'}</button>` : ''}
       ${snapshot && opts.onCreateTask ? `<button type="button" class="data-button" data-mail-focus="create-task" ${action('create-task')}${busy(pending)}>${workOpening === 'task' ? 'Opening task…' : 'Create task'}</button>` : ''}
       ${snapshot && opts.onCreateNote ? `<button type="button" class="data-button" data-mail-focus="create-note" ${action('create-note')}${busy(pending)}>${workOpening === 'note' ? 'Opening note…' : 'Add note'}</button>` : ''}
@@ -408,7 +450,7 @@ ${find.renderBody()}</pre>`}` : ''}
     </article>`;
   };
   const reset = (): void => {
-    opts.reminderLifecycle?.reset();
+    opts.reminderLifecycle?.reset(); followUps?.reset();
     attachments.reset(); find.reset(); generation++; readGeneration++; anchor = null; ref = null; conversation = null; messages = []; snapshot = null; expectedRead = null;
     cancelCreateOpen();
     loading = false; opening = false; refreshing = false; olderLoading = false; olderLoaded = false; error = null; conversationError = null; notice = '';
@@ -439,30 +481,7 @@ ${find.renderBody()}</pre>`}` : ''}
     snapshotReading, resumeReading,
     /** Resume the canonical saved draft in the same composer used for replies
      * and contact email. The search owns cancellation and return focus. */
-    async openSaved(request: { draftId: string; isCurrent(): boolean; onClosed(): void }): Promise<{ opened: boolean; error?: string }> {
-      if (disposed || !request.isCurrent()) return { opened: false };
-      if (createOpening) return { opened: false, error: 'An email is already opening.' };
-      const host = ensureCompose();
-      if (!host) return { opened: false, error: 'Email composition is unavailable here.' };
-      if (host.state().dialog) {
-        beforeLeave();
-        return { opened: false, error: 'Finish or close your open email before opening another draft.' };
-      }
-      const seq = ++createGeneration, owner = generation;
-      const current = (): boolean => !disposed && seq === createGeneration && owner === generation && request.isCurrent();
-      createOpening = true;
-      try {
-        await host.refresh();
-        if (!current()) return { opened: false };
-        composeTarget = 'create'; createClosed = request.onClosed;
-        const opened = await host.openSaved(request.draftId, current);
-        if (!opened && current()) createClosed = null;
-        return opened ? { opened: true } : { opened: false, error: current() ? 'The saved draft could not be opened. Try again.' : undefined };
-      } catch (error) {
-        if (current()) createClosed = null;
-        return { opened: false, error: current() ? humanizeRpcError(error) : undefined };
-      } finally { if (seq === createGeneration) createOpening = false; }
-    },
+    openSaved,
     async openRecovery(request: { entry: MailRecoveryEntry; isCurrent(): boolean; onClosed(keptId?: string): void }): Promise<{ opened: boolean; error?: string }> {
       if (disposed || !request.isCurrent()) return { opened: false };
       if (createOpening) return { opened: false, error: 'An email is already opening.' };
@@ -570,6 +589,8 @@ ${find.renderBody()}</pre>`}` : ''}
       if (find.handleAction(name, target)) return;
       if (opts.reminderLifecycle?.beforeLeave() === false) return;
       if (mutating) return;
+      if (name === 'mail-message-watches' && beforeLeave()) followUps?.open(null);
+      if (name === 'mail-message-follow-up' && snapshot?.reminder_ref && !loading && !opening && beforeLeave()) followUps?.open(snapshot.reminder_ref);
       if (attachments.handleAction(name, target)) return;
       if (name === 'mail-message-more' && !loading && !opening && !refreshing) { moreOpen = !moreOpen; paint(); }
       if (name === 'mail-message-mark') void changeState('read');
@@ -594,7 +615,13 @@ ${find.renderBody()}</pre>`}` : ''}
       if (name === 'mail-message-select' || name === 'mail-message-toggle') {
         const id = target?.getAttribute('data-mail-record'); if (id) {
           select(id, name === 'mail-message-toggle');
-          if (name === 'mail-message-select') opts.document.querySelector('.data-mail-conversation-card.is-selected')?.scrollIntoView({ block: 'start' });
+          if (name === 'mail-message-select') {
+            const card = opts.document.querySelector<HTMLElement>('.data-mail-conversation-card.is-selected');
+            const index = card?.closest('[data-mail-reading-pane]')?.querySelector<HTMLElement>('.data-mail-conversation-index');
+            // The desktop index sits above the cards and stays visible while reading.
+            if (card && index?.offsetHeight) card.style.scrollMarginTop = `${index.offsetHeight + 28}px`;
+            card?.scrollIntoView({ block: 'start' });
+          }
         }
       }
     },
@@ -652,17 +679,17 @@ ${find.renderBody()}</pre>`}` : ''}
      * as route disposal would, retaining its recovery copy, so an in-place
      * reading return does not need to destroy the whole Data route. */
     releaseComposeAfterLeave: (): boolean => {
-      if (mutating || compose?.hasInFlightWork() || opts.reminderLifecycle?.pending()) return false;
-      opts.reminderLifecycle?.reset();
+      if (mutating || compose?.hasInFlightWork() || followUps?.hasInFlightWork() || opts.reminderLifecycle?.pending()) return false;
+      opts.reminderLifecycle?.reset(); followUps?.reset();
       cancelCreateOpen(); compose?.destroy(); compose = null; portal?.remove(); portal = null;
       composeWasOpen = false; createClosed = null; composeTarget = 'reply';
       return true;
     },
     cancelCreateOpen,
     reset,
-    hasUnsavedChanges: (): boolean => compose?.hasUnsavedChanges() === true || opts.reminderLifecycle?.hasDraft() === true,
-    hasInFlightWork: (): boolean => opening || mutating || compose?.hasInFlightWork() === true || opts.reminderLifecycle?.pending() === true,
+    hasUnsavedChanges: (): boolean => compose?.hasUnsavedChanges() === true || followUps?.hasUnsavedChanges() === true || opts.reminderLifecycle?.hasDraft() === true,
+    hasInFlightWork: (): boolean => opening || mutating || compose?.hasInFlightWork() === true || followUps?.hasInFlightWork() === true || opts.reminderLifecycle?.pending() === true,
     isReading: (): boolean => loading || opening || refreshing || olderLoading,
-    dispose: (): void => { opts.reminderLifecycle?.reset(); attachments.dispose(); find.reset(); disposed = true; generation++; readGeneration++; compose?.destroy(); portal?.remove(); },
+    dispose: (): void => { opts.reminderLifecycle?.reset(); followUps?.dispose(); attachments.dispose(); find.reset(); disposed = true; generation++; readGeneration++; compose?.destroy(); portal?.remove(); },
   };
 };

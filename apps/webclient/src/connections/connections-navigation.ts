@@ -7,7 +7,7 @@ import {
 } from '../shell/hierarchical-navigation.js';
 import { CONNECTION_NAME_REGEX, OAUTH_APP_ID, isAuthenticationIncidentScope, isAuthenticationAccessSelection,
   authenticationIncidentHistoryFilters, isAuthenticationIncidentHistoryFilters,
-  type AuthenticationIncidentScope, type AuthenticationIncidentHistoryFilters, type AuthenticationAccessSelection, type OAuthAppIssuer } from '@recued/contracts';
+  type AuthenticationIncidentScope, type AuthenticationIncidentHistoryFilters, type AuthenticationAccessSelection, type ConnectionKind, type OAuthAppIssuer } from '@recued/contracts';
 import type { ChatAnswerAddress, ShellRoute } from '../shell/route.js';
 import { PACK_PERMISSION_REPAIR_ID } from '../settings/pack-permission-repair.js';
 
@@ -42,6 +42,7 @@ export const isFoundationalConnectionsLane = (
 
 /** D-322 — resolve non-secret pack metadata locally, never an API URL from a route. */
 export interface ConnectionEnrollmentPack { slug: string; slot?: string }
+export interface ConnectionInventorySelection { readonly kind: ConnectionKind; readonly name: string }
 
 export type ConnectionsAddress =
   | {
@@ -55,6 +56,14 @@ export type ConnectionsAddress =
       readonly kind: 'account';
       readonly lane: FoundationalConnectionsLane;
       readonly slug: string;
+    }
+  | {
+      readonly kind: 'connection';
+      readonly selection: ConnectionInventorySelection;
+    }
+  | {
+      readonly kind: 'webhook';
+      readonly ingressId: string;
     }
   | {
       readonly kind: 'enroll';
@@ -76,6 +85,18 @@ export const connectionsAccountAddress = (
   'connections',
   hierarchicalLevel(`connections-lane:${lane}`, lane),
   hierarchicalLevel(`connections-account:${slug}`, slug),
+);
+
+export const connectionsInventoryAddress = (selection: ConnectionInventorySelection): HierarchicalAddress => hierarchicalAddress(
+  'connections',
+  hierarchicalLevel('connections-lane:others', 'others'),
+  hierarchicalLevel(`connections-inventory:${selection.kind}/${selection.name}`, 'connection', selection.kind, selection.name),
+);
+
+export const connectionsWebhookAddress = (ingressId: string): HierarchicalAddress => hierarchicalAddress(
+  'connections',
+  hierarchicalLevel('connections-lane:webhooks', 'webhooks'),
+  hierarchicalLevel(`connections-webhook:${ingressId}`, 'webhook', ingressId),
 );
 
 export const connectionsEnrollAddress = (
@@ -307,6 +328,16 @@ export const parseConnectionsAddress = (
         ...(typeof slot === 'string' && slot.trim() ? { slot } : {}) } } : {}),
     };
   }
+  if (tab === 'others' && tail === 'connection' && route.segments.length === 4) {
+    const [, , kind, name] = route.segments;
+    if ((kind === 'api' || kind === 'mcp' || kind === 'notification') && name && CONNECTION_NAME_REGEX.test(name)) {
+      return { kind: 'connection', selection: { kind, name } };
+    }
+  }
+  if (tab === 'webhooks' && tail === 'webhook' && route.segments.length === 3) {
+    const ingressId = route.segments[2];
+    if (ingressId?.trim()) return { kind: 'webhook', ingressId };
+  }
   return { kind: 'lane', tab };
 };
 
@@ -332,7 +363,7 @@ export const connectionsAddressSelection = (
     };
   }
   return {
-    tab: address?.tab ?? 'mail',
+    tab: address?.kind === 'connection' ? 'others' : address?.kind === 'webhook' ? 'webhooks' : address?.tab ?? 'mail',
     detailSlug: null,
     enrollVendor: null,
   };

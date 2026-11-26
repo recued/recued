@@ -32,7 +32,7 @@ import {
 } from '@recued/contracts';
 import type { SourceMirrorStore } from '../source-mirror/store.js';
 
-const CRM_RECORD_MIRROR_TABLE = 'crm_record_mirror';
+export const CRM_RECORD_MIRROR_TABLE = 'crm_record_mirror';
 
 /** Default / max rows a single `list` returns — mirrors the enrichment
  *  `listScopeMeta` caps so the chat surface stays bounded (clamped further to the

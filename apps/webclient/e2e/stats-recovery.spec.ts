@@ -83,6 +83,43 @@ const preview = async (page: Page): Promise<void> => {
   await expect(stats(page).locator('[data-recued-publish-confirm]')).toBeVisible();
 };
 
+test('the desktop Stats overview preserves the publish preview and Cancel restores its draft in both layouts', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await open(page);
+  const root = stats(page);
+  const firstSection = root.getByRole('heading', { level: 3 }).first();
+  await expect(firstSection).toHaveText('Milestones');
+  await preview(page);
+  const review = root.getByRole('region', { name: 'Review publishing Autopilot', exact: true });
+  const payload = review.locator('[data-recued-publish-payload]');
+  const exactPayload = await payload.textContent();
+  expect(exactPayload).toContain('my-board');
+  const cancel = review.getByRole('button', { name: 'Cancel', exact: true });
+  await cancel.focus();
+
+  await page.setViewportSize({ width: 390, height: 740 });
+  await expect(firstSection).toHaveText('Publish a score');
+  await expect(payload).toHaveJSProperty('textContent', exactPayload);
+  await expect(cancel).toBeFocused();
+  const cancelAndCheckDraft = async () => {
+    await cancel.press('Enter');
+    await expect(review).toHaveCount(0);
+    await expect(tag(page)).toHaveValue('my-board');
+    await expect(season(page)).toHaveValue('2026');
+    await expect(tag(page)).toBeFocused();
+  };
+  await cancelAndCheckDraft();
+
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await expect(firstSection).toHaveText('Milestones');
+  await expect(tag(page)).toBeFocused();
+  await root.getByRole('button', { name: 'Preview what would be sent', exact: true }).click();
+  await expect(payload).toHaveJSProperty('textContent', exactPayload);
+  await cancelAndCheckDraft();
+  expect(await calls(page, 'metric.publish')).toEqual([]);
+  expect(await calls(page, 'metric.submit')).toEqual([]);
+});
+
 test('an initial Stats read failure offers a read-only Retry', async ({ page }) => {
   await open(page, { failRead: true });
   await expect(stats(page).getByRole('alert')).toContainText('Stats temporarily unavailable.');

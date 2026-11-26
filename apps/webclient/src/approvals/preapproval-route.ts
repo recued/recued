@@ -1,7 +1,7 @@
 /** One owner review for a concrete execution. Only the explicit decision
  * controls call decide; navigation, selection and refresh cannot approve. */
 import type { Conn, PreapprovalDecision, PreapprovalDecisionRequest, PreapprovalInspection,
-  PreapprovalContinuationRequest, PreapprovalReview, ServerPendingAsk, ServerRpcRegistry } from '@recued/contracts';
+  PreapprovalContinuationRequest, PreapprovalMailFollowUpStop, PreapprovalReview, ReminderMailReference, ServerPendingAsk, ServerRpcRegistry } from '@recued/contracts';
 import { serializeShellRoute } from '../shell/route.js';
 import { renderResourceReview, parsePreapprovalContinuation, PREAPPROVAL_LIMITS } from '@recued/contracts';
 import { localUpdateUndoControl, hasLocalUpdateUndoWork } from './local-update-undo.js';
@@ -59,6 +59,7 @@ export const renderPreapprovalAsk = (doc: Document, ask: ServerPendingAsk): HTML
 export const bootstrapPreapprovalRoute = (opts: {
   root: HTMLElement; document?: Document; proposalId?: string; call: Conn<ServerRpcRegistry>; now?: () => number;
   serverTimeZone?: () => string | undefined;
+  openReceivedReply?(ref: ReminderMailReference): void;
 }) => {
   const doc = opts.document ?? document; const now = opts.now ?? Date.now;
   const host = doc.createElement('section'); host.setAttribute('data-recued-preapproval-route', '');
@@ -99,6 +100,8 @@ export const bootstrapPreapprovalRoute = (opts: {
     return value;
   };
   const status = (value: string): string => value.replaceAll('_', ' ');
+  const stopLabel = (stop: PreapprovalMailFollowUpStop): string => stop.kind === 'reply' ? 'Skipped' : 'Needs review';
+  const mailStop = (value: PreapprovalInspection) => value.members.find(member => member.mail_follow_up_stop)?.mail_follow_up_stop;
   const date = (value: number, zone?: string): string => new Date(value).toLocaleString(undefined,
     zone ? { timeZone: zone, timeZoneName: 'short' } : { timeZoneName: 'short' });
   const button = (label: string, action: () => void, disabled = false, tone: 'default' | 'primary' = 'default'): HTMLButtonElement => {
@@ -172,7 +175,8 @@ export const bootstrapPreapprovalRoute = (opts: {
           const item = node('li');
           const open = link(`${entry.members[0]?.label ?? 'Execution'} · ${entry.members.length} operations`, preapprovalHref(entry.proposal_id));
           open.setAttribute('data-preapproval-entry', '');
-          item.append(open, node('p', `${status(entry.execution_status)} · Requested ${date(entry.created_at)}`));
+          const stopped = mailStop(entry);
+          item.append(open, node('p', `${stopped ? stopLabel(stopped) : status(entry.execution_status)} · Requested ${date(entry.created_at)}`));
           list.append(item);
         }
         layout.content.append(list);
@@ -183,8 +187,12 @@ export const bootstrapPreapprovalRoute = (opts: {
       }
       layout.content.append(link('Every run you have looked at', preapprovalHref()));
       if (inspection) {
-        const state = node('p', `Execution: ${status(inspection.execution_status)}`); state.setAttribute('role', 'status'); state.setAttribute('data-review-status', inspection.execution_status); layout.summary.append(state);
-        if (inspection.status_reason) layout.summary.append(node('p', status(inspection.status_reason)));
+        const stopped = mailStop(inspection);
+        const state = node('p', `Execution: ${stopped ? stopLabel(stopped) : status(inspection.execution_status)}`);
+        state.setAttribute('role', 'status');
+        state.setAttribute('data-review-status', stopped ? stopped.kind === 'reply' ? 'skipped' : 'needs_review' : inspection.execution_status);
+        layout.summary.append(state);
+        if (inspection.status_reason && !stopped) layout.summary.append(node('p', status(inspection.status_reason)));
         if (inspection.decision) layout.summary.append(node('p', `Owner decision: ${status(inspection.decision.decision)} · ${date(inspection.decision.decided_at)}`));
         if (inspection.retired_review) layout.summary.append(node('p', `This stopped being valid on ${date(inspection.retired_review.at)}. The decision and operation outcomes remain available.`));
       }
@@ -319,8 +327,12 @@ export const bootstrapPreapprovalRoute = (opts: {
       if (inspection?.decision) {
         layout.content.append(node('h2', 'What happened'));
         for (const member of inspection.members) {
-          const row = node('article', `${member.label}: ${status(member.status)}${member.status_message ? ` · ${member.status_message}` : ''}`);
+          const stopped = member.mail_follow_up_stop;
+          const row = node('article', `${member.label}: ${stopped ? stopLabel(stopped) : status(member.status)}${member.status_message ? ` · ${member.status_message}` : ''}`);
           row.className = 'approval-review-member';
+          if (stopped?.kind === 'reply' && opts.openReceivedReply) {
+            row.append(button('Open received reply', () => opts.openReceivedReply?.(stopped.reply_ref)));
+          }
           if (member.reconciled_outcome) row.append(doc.createTextNode(' · Verified outcome: ' + status(member.reconciled_outcome)));
           if (member.status === 'in_doubt' && !member.reconciled_outcome && member.provider_verification === 'mail' && !inspection.retired_review) {
             const verify = button('Verify mail outcome', () => {

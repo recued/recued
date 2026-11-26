@@ -1,8 +1,9 @@
-import { test, expect, type Browser, type Page } from '@playwright/test';
+import { test, expect, type Browser, type Page, type Request } from '@playwright/test';
 import { build } from 'esbuild';
 import { mkdir, rm } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { decodeUploadChunkFrame, type UploadCreateRpcRequest } from '@recued/contracts';
 import type { createFileLifecycleFixture as Factory } from './harness/file-lifecycle-backend.js';
 
 const setup = async (browser: Browser, fullApp = false, libraryCount = 0, savedListSupported = true) => {
@@ -48,7 +49,7 @@ const setup = async (browser: Browser, fullApp = false, libraryCount = 0, savedL
   if (fullApp) {
     await data.addInitScript(() => {
       Object.assign(window, { __connectionsFixture: async (method: string, args: unknown) => {
-        if (['collection.listInstances', 'collection.list', 'collection.get', 'data.file.usage', 'data.file.mutate', 'data.file.rename', 'data.file.read', 'data.file.attachments.list', 'data.file.attachments.preview'].includes(method)) {
+        if (['collection.listInstances', 'collection.list', 'collection.get', 'data.file.usage', 'data.file.mutate', 'data.file.rename', 'data.file.read', 'data.file.attachments.list', 'data.file.attachments.preview', 'upload.create', 'upload.finalize'].includes(method)) {
           const response = await fetch('/file-lifecycle-rpc', { method: 'POST', body: JSON.stringify({ method, args }) });
           const envelope = await response.json();
           return envelope.error ? { error: typeof envelope.error === 'string' ? { code: 'bad_request', message: envelope.error } : envelope.error } : envelope;
@@ -135,7 +136,11 @@ test('reviews selected saved files, reports a changed review without retrying wr
     await expect(results).toContainText('1 confirmed');
     await f.data.getByRole('button', { name: 'Show archived files', exact: true }).click();
     await expect(f.data.locator('[data-collection-record]')).toHaveCount(3);
-    await f.data.getByRole('button', { name: 'Select shown', exact: true }).click();
+    const selectShown = f.data.getByRole('button', { name: 'Select shown', exact: true });
+    await expect(f.data.getByRole('region', { name: 'File selection', exact: true })).toHaveCount(0);
+    await selectShown.press('Enter');
+    await expect(f.data.getByRole('region', { name: 'File selection', exact: true })).toContainText('3 files selected');
+    await expect(selectShown).toBeFocused();
     await f.data.getByRole('button', { name: 'Review restore', exact: true }).click();
     await f.data.getByRole('button', { name: 'Restore 3 files', exact: true }).click();
     await expect(results).toContainText('3 confirmed');
@@ -195,6 +200,151 @@ test('Saved files keeps the searched page and reading position through preview a
     await expect(f.data.locator(`[data-collection-record="${id}"]`)).toBeInViewport();
     expect(f.calls.filter(method => method === 'data.file.attachments.list').length).toBe(reads);
   } finally { await f.close(); }
+});
+
+test('Files uploads from its desktop picker and drop target and retains an in-flight upload when narrowed', async ({ browser }) => {
+  const f = await setup(browser, true, 5);
+  let releaseFinalize!: () => void;
+  const finalizing = new Promise<void>(resolve => { releaseFinalize = resolve; });
+  const uploads = new Map<string, { file: UploadCreateRpcRequest; bytes?: Uint8Array }>();
+  try {
+    await f.data.routeWebSocket(/\/ws\/upload$/, socket => {
+      socket.onMessage(message => {
+        if (typeof message === 'string') throw new Error('Expected a binary file chunk');
+        const chunk = decodeUploadChunkFrame(message);
+        if (!chunk.ok) throw new Error(chunk.reason);
+        const { upload_id, req_id, offset, bytes } = chunk.frame;
+        const session = uploads.get(upload_id)!;
+        expect(offset).toBe(0);
+        expect(bytes.byteLength).toBe(session.file.declared_size);
+        session.bytes = bytes;
+        socket.send(JSON.stringify({ type: 'upload_ack', req_id, ok: true, offset: bytes.byteLength, complete: true }));
+      });
+    });
+    await f.data.route('**/file-lifecycle-rpc', async route => {
+      const { method, args } = route.request().postDataJSON();
+      if (method === 'upload.create') {
+        const id = (uploads.size + 1).toString(16).padStart(64, '0');
+        uploads.set(id, { file: args });
+        await route.fulfill({ json: { result: { status: 'created', upload_id: id } } });
+      } else if (method === 'upload.finalize') {
+        const upload = uploads.get(args.upload_id)!;
+        if (!upload.bytes) throw new Error('No file bytes arrived');
+        await finalizing;
+        const record = await f.fixture.files!.ingest({ filename: upload.file.filename, bytes: Buffer.from(upload.bytes),
+          mime_type: upload.file.mime_reported, origin: 'webclient_upload', source_id: args.upload_id, scan_status: 'clean' });
+        await route.fulfill({ json: { result: { status: 'finalized', record_id: record.record_id } } });
+      } else await route.fallback();
+    });
+    await f.data.setViewportSize({ width: 1280, height: 800 });
+    await f.data.reload();
+    const widget = f.data.locator('[data-upload="data-file-upload"]');
+    const dropTarget = widget.locator('[data-upload-dropzone]');
+    await expect(dropTarget).toHaveText('Upload file');
+    const [chooser] = await Promise.all([f.data.waitForEvent('filechooser'), dropTarget.click()]);
+    await chooser.setFiles({ name: 'Picked.txt', mimeType: 'text/plain', buffer: Buffer.from('Picked bytes') });
+    await expect(widget.getByText('Finalizing…')).toBeVisible();
+    await f.data.setViewportSize({ width: 390, height: 844 });
+    await expect(dropTarget).toHaveText('Drop a file here, or click to choose');
+    await expect(widget.getByText('Finalizing…')).toBeVisible();
+    releaseFinalize();
+    await expect(f.data.getByRole('button', { name: /^Picked\.txt/ })).toBeVisible();
+    await expect(widget.getByText('Uploaded ✓')).toBeVisible();
+
+    await f.data.setViewportSize({ width: 1280, height: 800 });
+    await expect(dropTarget).toHaveText('Upload file');
+    await dropTarget.evaluate(element => {
+      const dataTransfer = new DataTransfer();
+      dataTransfer.items.add(new File(['Dropped bytes'], 'Dropped.txt', { type: 'text/plain' }));
+      element.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer }));
+    });
+    await expect(f.data.getByRole('button', { name: /^Dropped\.txt/ })).toBeVisible();
+    expect([...uploads.values()].map(item => Buffer.from(item.bytes!).toString())).toEqual(['Picked bytes', 'Dropped bytes']);
+  } finally { releaseFinalize(); await f.close(); }
+});
+
+test('desktop Saved files switches previews in place and returns focus from the full-size viewer', async ({ browser }) => {
+  const f = await setup(browser, true, 65);
+  let releaseFirst!: () => void;
+  const held = new Promise<void>(resolve => { releaseFirst = resolve; });
+  try {
+    await f.data.setViewportSize({ width: 1440, height: 900 });
+    const search = f.data.getByRole('searchbox', { name: 'Search saved files' });
+    await search.fill('Invoice'); await search.press('Enter');
+    await expect(f.data.locator('[data-saved-file-status]')).toHaveText('30 saved files shown for “Invoice”.');
+    await f.data.getByRole('button', { name: 'Load more files' }).click();
+    const rows = f.data.locator('[data-recued-data-action="file-open-preview"]');
+    await expect(rows).toHaveCount(60);
+    const first = rows.nth(42), second = rows.nth(43);
+    const firstId = await first.getAttribute('data-collection-record');
+    const secondId = (await second.getAttribute('data-collection-record'))!;
+    const filename = String(f.fixture.files!.get(secondId)!.hot_fields.filename);
+    const content = `Invoice body ${Number(filename.match(/\d+/)?.[0])}`;
+    const previewMethod = 'data.file.attachments.preview';
+    const requestFor = (id: string | null) => (request: Request) => {
+      if (!request.url().endsWith('/file-lifecycle-rpc')) return false;
+      const { method, args } = request.postDataJSON();
+      return method === previewMethod && args.record_id === id;
+    };
+    await f.data.route('**/file-lifecycle-rpc', async route => {
+      if (requestFor(firstId)(route.request())) await held;
+      await route.fallback();
+    });
+
+    await first.scrollIntoViewIfNeeded();
+    const top = (await first.boundingBox())!.y;
+    await Promise.all([f.data.waitForRequest(requestFor(firstId)), first.click()]);
+    const pane = f.data.getByRole('region', { name: 'File preview', exact: true });
+    await expect(first).toHaveAttribute('aria-current', 'true');
+    await expect(pane.getByText('Loading preview…', { exact: true })).toBeVisible();
+    await expect(pane.getByRole('button', { name: 'Open full size' })).toBeInViewport();
+    const secondRequest = f.data.waitForRequest(requestFor(secondId));
+    await second.press('Enter');
+    const revision = (await secondRequest).postDataJSON().args.selection_revision;
+    expect(revision).toBeTruthy();
+    const heading = pane.getByRole('heading', { name: filename, exact: true });
+    await expect(heading).toBeFocused();
+    await expect(pane.getByLabel('File text')).toHaveText(content);
+    await expect(second).toHaveAttribute('aria-current', 'true');
+    await expect(first).not.toHaveAttribute('aria-current');
+    const late = f.data.waitForResponse(response => requestFor(firstId)(response.request()));
+    releaseFirst();
+    await (await late).finished(); await f.data.evaluate(() => new Promise(requestAnimationFrame));
+    await expect(pane.getByLabel('File text')).toHaveText(content);
+    await expect(search).toHaveValue('Invoice');
+    await expect(rows).toHaveCount(60);
+    expect(Math.abs((await first.boundingBox())!.y - top)).toBeLessThan(2);
+
+    await heading.press('ArrowLeft'); await expect(second).toBeFocused();
+    await second.press('ArrowRight'); await expect(heading).toBeFocused();
+    const expand = pane.getByRole('button', { name: 'Open full size' });
+    const expandedRequest = f.data.waitForRequest(requestFor(secondId));
+    await expand.press('Enter');
+    expect((await expandedRequest).postDataJSON().args.selection_revision).toBe(revision);
+    const dialog = f.data.getByRole('dialog', { name: 'File preview', exact: true });
+    await expect(dialog.getByLabel('File text')).toHaveText(content);
+    await dialog.getByRole('button', { name: 'Close preview' }).press('Escape');
+    await expect(dialog).toHaveCount(0);
+    await expect(expand).toBeFocused();
+    await expect(pane.getByLabel('File text')).toHaveText(content);
+    await expand.press('Escape');
+    await expect(pane).toHaveCount(0);
+    await expect(second).toBeFocused();
+    await expect(second).toBeInViewport();
+    expect(Math.abs((await first.boundingBox())!.y - top)).toBeLessThan(2);
+
+    await second.press('Enter'); await expect(pane.getByLabel('File text')).toHaveText(content);
+    const previewReads = f.calls.filter(method => method === previewMethod).length;
+    await f.data.getByRole('button', { name: 'Load more files' }).click();
+    await expect(rows).toHaveCount(64);
+    await expect(second).toHaveAttribute('aria-current', 'true');
+    await expect(pane.getByLabel('File text')).toHaveText(content);
+    expect(f.calls.filter(method => method === previewMethod)).toHaveLength(previewReads);
+    await search.fill('no results'); await search.press('Enter');
+    await expect(rows).toHaveCount(0);
+    await expect(pane).toHaveCount(0);
+    await expect(search).toBeFocused();
+  } finally { releaseFirst(); await f.close(); }
 });
 
 test('Saved files retains loaded rows on a failed next page, retries it and ignores a late error after another search', async ({ browser }) => {

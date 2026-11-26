@@ -10,6 +10,8 @@ export const createYoursFixture = () => {
   (globalThis as { __assetRuleWrites?: YoursCommand[] }).__assetRuleWrites = ruleWrites;
   const renewals: YoursCommand[] = [];
   (globalThis as { __occurrenceRenewals?: YoursCommand[] }).__occurrenceRenewals = renewals;
+  const laterReminders = new Map<string, number>();
+  let failRenewal = new URLSearchParams(location.search).has('yours_fail_renewal_once');
   // §15.7 (2026-10-24) — Today's Done on the passport acknowledges its latest reminder.
   let acknowledged = false;
   const factWrites: YoursCommand[] = [];
@@ -220,6 +222,23 @@ export const createYoursFixture = () => {
     promised_at: time, promised_for_at: Date.parse('2027-04-17'), expiry_policy: 'escalate_overdue', lifecycle_state: 'pending', due_status: 'not_due',
     lifecycle_changed_at: time, due_status_changed_at: time, state_changed_at: time, created_at: time, updated_at: time, last_seen_at: time,
     sync_state: 'live', conflict_policy: 'recued_wins', blocks_task_ids: [], blocks_project_ids: [] };
+  const dueOccurrences: YoursSnapshot['occurrences'] = [];
+  if (demo && new URLSearchParams(location.search).has('yours_due_queue')) {
+    const dueItem = (id: string, title: string, due_on: string | null, task: Commitment | null = null): YoursSnapshot['occurrences'][number] =>
+      ({ id, title, due_on, commitment: task, asset_id: 'passport', rule_id: id, question: false, current_ask_id: null, later_until: null });
+    const dueTask = (id: string, title: string, at: string, status: Commitment['due_status']) => dueItem(id, title, at.slice(0, 10), {
+      ...commitment, id: `${id}-commitment`, statement: title, promised_for_at: Date.parse(at), due_status: status,
+    });
+    // The timed task has a different UTC date from its local date in the Pacific test.
+    dueOccurrences.push(
+      dueTask('meter', 'Inspect the meter', '2026-11-22', 'overdue'),
+      dueTask('insurance', 'Check insurance', '2026-11-24', 'due_soon'),
+      dueTask('gate', 'Check gate tonight', '2026-11-25T07:30:00Z', 'due_soon'),
+      dueTask('alarm', 'Test smoke alarm', '2026-11-25', 'not_due'),
+      { ...dueItem('birthday-notice', 'Birthday reminder', '2026-11-24'), asset_id: 'ana-birthday', subject_kind: 'occasion' },
+      { ...dueItem('boiler-date', 'When was the boiler serviced?', null), question: true },
+    );
+  }
   const proposals = new Map<string, ProactiveProposal>();
   // `&occasion_history=1` (with contact_history) — Ana's birthday has a history of two
   // episodes and a suggestion that would change its reminder (D-325 §15.2, P44).
@@ -252,6 +271,12 @@ export const createYoursFixture = () => {
       title: 'Review passport', explanation: 'Check this proposed passport update.', merchant: undefined, sources: [],
       subject: { collection: 'asset', id: 'passport' }, payload: { asset: { name: 'Ana’s passport', class_id: 'passport' } } });
   }
+  if (demo && new URLSearchParams(location.search).has('yours_proposal_service')) {
+    const id = 'service-review';
+    proposals.set(id, { id, key: id, kind: 'completion', title: 'Review service details', explanation: 'Confirm when the service happened.',
+      confidence: 'medium', state: 'proposed', origin: 'owner', sources: [], subject: { collection: 'asset', id: 'passport' },
+      payload: { asset_id: 'passport', on: '2026-10-10', reading: 120, unit: 'hours' }, created_at: time, updated_at: time });
+  }
   if (new URLSearchParams(location.search).has('learning')) {
     const base = { confidence: 'medium' as const, state: 'proposed' as const, origin: 'learner' as const, sources: [], created_at: time, updated_at: time };
     proposals.set('ranking', { ...base, id: 'ranking', key: 'ranking', kind: 'ranking', title: 'Review passport ranking', explanation: 'Three owner completions support this ranking.', payload: { ranking_factor: 1.3 } });
@@ -261,6 +286,9 @@ export const createYoursFixture = () => {
       rule: { ...rule, id: 'habit_flowers', title: 'Buy flowers', enabled: false, consequence: 'routine', expiry_policy: 'strict_expire', when: { kind: 'expiry', field: 'next_on', offset: { amount: 2, unit: 'days' } }, schedule: { before: [{ amount: 1, unit: 'weeks' }], on_day: true } } } });
   }
   let failures = new URLSearchParams(location.search).has('yours_fail_once') ? 1 : 0;
+  let proposalToFail = new URLSearchParams(location.search).get('yours_fail_proposal_once');
+  let withdrawProposalRead = new URLSearchParams(location.search).has('yours_fail_confirmation_once');
+  let proposalReadUnavailable = false;
   let number = 0;
   const fileLinks: Link[] = [];
   const identityLinks = new Map<string, Set<string>>();
@@ -272,9 +300,62 @@ export const createYoursFixture = () => {
   let metadataFailures = fileDetailsMode === 'retry' ? 1 : 0;
   if (fileDetailsMode) fileLinks.push({ _id: 'existing-file', _collection: 'link', from_collection: 'asset', from_id: 'passport', to_collection: 'file', to_id: receipt.file_id, role: 'attachment', authored_by_recipe_id: 'owner', created_at: time });
   const spherePlacements = new Map<string, { sphere?: 'personal' | 'professional'; reason: string; pinned: boolean; source?: string }>();
+  const occasionWorkspace = new URLSearchParams(location.search).has('yours_occasion_workspace');
+  const occasionCalendar = { slug: 'work', calendar_id: 'appointments', name: 'Appointments' };
+  if (occasionWorkspace) {
+    const add = (id: string, title: string, on: string, options: Partial<Occasion> = {}) => {
+      occasions.set(id, { id, title, month_day: on.slice(5), source_next_on: on, people: [], rules: [], muted: false,
+        created_at: time, updated_at: time + 1, ...options });
+      spherePlacements.set(JSON.stringify(['occasion', id]), { sphere: 'professional', reason: 'placed by you', pinned: true });
+    };
+    add('clinic-follow-up', 'Clinic follow-up', '2026-11-20', {
+      after_each: true, time: '09:30', time_zone: 'America/Los_Angeles', alert_minutes: 30, in_calendar: true, updated_at: time + 2,
+      rules: [{ ...rule, id: 'clinic-records', title: 'Bring clinic records', consequence: 'routine', when: { kind: 'expiry', field: 'next_on' } }],
+    });
+    add('team-review', 'Team review', '2026-12-03', { updated_at: time + 2 });
+    add('last-year-review', 'Last year’s review', '2026-10-18');
+    for (let index = 1; index <= 52; index++) {
+      const name = String(index).padStart(2, '0');
+      add(`site-visit-${name}`, `Site visit ${name}`, new Date(Date.UTC(2027, 0, index * 2 - 1)).toISOString().slice(0, 10));
+    }
+    // The nearest date is on the last server page, which is ordered by last update.
+    add('permit-renewal', 'Permit renewal', '2026-12-01', { updated_at: time });
+    episodes.set('clinic-first-visit', { ...derived, id: 'clinic-first-visit', title: 'First clinic appointment', occasion_id: 'clinic-follow-up',
+      basis: 'declared', storage_reason: 'owner_record', created_at: time, updated_at: time });
+  }
+  if (new URLSearchParams(location.search).has('yours_episode_workspace')) {
+    const add = (id: string, title: string, from: number, options: Partial<Episode> = {}) => {
+      const episode: Episode = { id, title, when: { from, to: from + 30 * 60_000 }, people: [], subjects: [], evidence: [], sensitive: [],
+        basis: 'declared', storage_reason: 'owner_record', sphere: 'professional', created_at: time, updated_at: time, ...options };
+      episodes.set(id, episode);
+      spherePlacements.set(JSON.stringify(['episode', id]), { sphere: episode.sphere, reason: 'placed by you', pinned: true });
+    };
+    for (let index = 1; index <= 65; index++) {
+      const number = String(index).padStart(2, '0');
+      add(`daily-entry-${number}`, index === 1 ? 'Design review' : `Daily entry ${number}`, Date.UTC(2026, 10, 23 - index, 18));
+    }
+    add('personal-check-in', 'Personal check-in', Date.UTC(2026, 10, 23, 18), { sphere: 'personal' });
+    add('design-review', 'Design review', Date.UTC(2026, 9, 17, 20), {
+      people: ['ana'], where: { key: 'studio', name: 'Studio' }, notes: 'Confirm the prototype photos before sharing.',
+      evidence: [{ collection: 'mail', id: 'personal:flowers' }],
+    });
+  }
+  if (dueOccurrences.length) for (const id of [commitment.id, 'gate-commitment']) {
+    spherePlacements.set(JSON.stringify(['commitment', id]), { sphere: 'professional', reason: 'placed by you', pinned: true });
+  }
   if (new URLSearchParams(location.search).has('yours_asset_spheres')) for (const asset of assets.values()) {
     const sphere = asset.id.startsWith('filter-missing-') ? 'professional' : asset.id.startsWith('filter-overdue-') ? 'personal' : undefined;
     if (sphere) spherePlacements.set(JSON.stringify(['asset', asset.id]), { sphere, reason: 'placed by you', pinned: true });
+  }
+  if (closingDays && new URLSearchParams(location.search).has('yours_pursuit_workspace')) {
+    for (let day = 1; day <= 12; day++) {
+      const dayOfMonth = String(day).padStart(2, '0'); const id = `practice-${dayOfMonth}`;
+      assets.set(id, make(id, { name: `Practice ${dayOfMonth}`, class_id: 'pursuit', dates: { target_on: `2026-11-${dayOfMonth}` } }));
+    }
+    const books = assets.get('read-books')!;
+    books.dates.target_on = '2026-12-01';
+    books.readings.progress = { value: 2, unit: 'books', as_of: time, evidence: [] };
+    spherePlacements.set(JSON.stringify(['asset', 'guitar']), { sphere: 'professional', reason: 'placed by you', pinned: true });
   }
   const placementFor = (ref: { collection: string; id: string }): Omit<YoursSnapshot['sphere_placements'][number], 'ref'> => spherePlacements.get(JSON.stringify([ref.collection, ref.id])) ?? { reason: 'unsorted', pinned: false };
   const sourceSpheres = new Map<string, 'personal' | 'professional'>([['mail:personal', 'personal'], ['calendar:work', 'professional']]);
@@ -350,6 +431,16 @@ export const createYoursFixture = () => {
     const listedEpisodes = [...episodes.values()].filter(row => input.episode_id ? row.id === input.episode_id
       : !hidden(row.id) && (!input.occasion_id || row.occasion_id === input.occasion_id) && (!input.asset_id || cites(row, input.asset_id)))
       .sort((a, b) => b.when.from - a.when.from || b.updated_at - a.updated_at || a.id.localeCompare(b.id));
+    const episodeLimit = input.limit ?? 50;
+    const requestedOffset = input.offset ?? 0;
+    const anchor = input.episode_anchor ? listedEpisodes.findIndex(row => row.id === input.episode_anchor) : -1;
+    const episodeOffset = anchor >= 0 && (anchor < requestedOffset || anchor >= requestedOffset + episodeLimit)
+      ? Math.floor(anchor / episodeLimit) * episodeLimit : requestedOffset;
+    const episodePage = input.episode_id ? listedEpisodes : listedEpisodes.slice(episodeOffset, episodeOffset + episodeLimit);
+    const listedOccasions = [...occasions.values()].filter(row => !input.occasion_id || row.id === input.occasion_id);
+    const occasionPage = occasionWorkspace && !input.occasion_id
+      ? listedOccasions.sort((a, b) => b.updated_at - a.updated_at || a.id.localeCompare(b.id)).slice(input.offset ?? 0, (input.offset ?? 0) + (input.limit ?? 50))
+      : listedOccasions;
     const localDay = (at: number) => { const d = new Date(at); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
     const pursuitIds = new URLSearchParams(location.search).has('yours_without_pursuit_activity') ? undefined
       : input.pursuits === 'only' ? selected.map(asset => asset.id) : input.asset_id && selected[0]?.class_id === 'pursuit' ? [selected[0].id] : undefined;
@@ -358,7 +449,13 @@ export const createYoursFixture = () => {
       const first = localDay(time - 29 * 86_400_000);
       return days.length ? [[id, { last_on: days.at(-1)!, days_30: days.filter(on => on >= first).length }]] : [];
     })) : undefined;
-    return { assets: selected, related_assets: [...related.values()], total_assets: matching.length, classes,
+    const occurrences = input.asset_id || input.occasion_id ? [] : [...dueOccurrences];
+    if (demo && (!input.asset_id || input.asset_id === 'passport') && commitment.lifecycle_state === 'pending') {
+      occurrences.push({ id: 'passport-occurrence', asset_id: 'passport', rule_id: 'renew', title: commitment.statement,
+        due_on: '2027-04-17', question: false, commitment, current_ask_id: null, later_until: null, closes_by_proof: true,
+        renewal: { field: 'expires_on', current: '2027-04-17' } });
+    }
+    return { assets: selected, related_assets: [...related.values()], total_assets: ordered.length, classes,
       proposals: input.asset_id ? [] : input.occasion_id ? [...proposals.values()].filter(row => row.subject?.collection === 'occasion' && row.subject.id === input.occasion_id)
         : [...proposals.values()].filter(row => !input.proposal_kind || row.kind === input.proposal_kind), total_proposals: proposals.size, matching_proposals: [...proposals.values()].filter(row => !input.proposal_kind || row.kind === input.proposal_kind).length,
       ...(input.asset_filter && !legacyFilters ? { asset_filter: { kind: input.asset_filter, unavailable } } : {}),
@@ -368,14 +465,18 @@ export const createYoursFixture = () => {
         reading_comparisons: { asset_id: 'passport', rules: [{ rule_id: 'meter_service', comparison: { kind: 'compared' as const,
           value: 9000, target: 10000, unit: 'km', observed_at: time, relation: 'below' as const, difference: '1000' } }] },
       } : {}),
-      occurrences: demo && (!input.asset_id || input.asset_id === 'passport') && commitment.lifecycle_state === 'pending' ? [{ id: 'passport-occurrence', asset_id: 'passport', rule_id: 'renew', title: commitment.statement, due_on: '2027-04-17', question: false, commitment, current_ask_id: null, later_until: null, closes_by_proof: true,
-        renewal: { field: 'expires_on', current: '2027-04-17' } }] : [],
+      occurrences: occurrences.map(item => ({ ...item, later_until: laterReminders.get(item.id) ?? item.later_until })),
       // `&yours_proof=1` — a mailbox takes forwarded proof (D-325 §5.3).
       ...(new URLSearchParams(location.search).has('yours_proof') ? { proof_addresses: ['ana+done@example.test'] } : {}),
-      occasions: [...occasions.values()].filter(row => !input.occasion_id || row.id === input.occasion_id),
-      episodes: listedEpisodes,
+      occasions: occasionPage,
+      ...(occasionWorkspace ? { occasion_next: true as const, occasion_alert: true as const, occasion_calendar_events: true as const,
+        occasion_events: (occasions.get('clinic-follow-up')?.source_next_on ?? '') >= '2026-11-24'
+          ? { 'clinic-follow-up': { name: occasionCalendar.name } } : {} } : {}),
+      episodes: episodePage,
+      ...(episodeOffset !== requestedOffset ? { episode_page_offset: episodeOffset } : {}),
       ...(input.pursuits ? { pursuits: input.pursuits } : {}), ...(pursuit_activity ? { pursuit_activity } : {}),
-      ...(input.include_derived && demo && !suppressions.some(row => row.kind === 'episode' && row.value === derived.id) ? { derived_episodes: [derived] } : {}),
+      ...(input.include_derived && demo && (!input.episode_id || input.episode_id === derived.id)
+        && !suppressions.some(row => row.kind === 'episode' && row.value === derived.id) ? { derived_episodes: [derived] } : {}),
       recall_rates: recallRates,
       sources: [{ id: 'mail:personal', name: 'Personal mail', enabled: true, proposals: proposals.size }], suppressions,
       observation_handoffs: input.asset_id ? handoffs.filter(row => row.id.startsWith(`${input.asset_id}:`)) : [],
@@ -394,9 +495,10 @@ export const createYoursFixture = () => {
       // `&yours_holder_gone=1` — the server says the holder's contact is no longer on file.
       ...(input.asset_id === 'passport' && new URLSearchParams(location.search).has('yours_holder_gone') ? { holder: { contact_id: 'ana', name: null } } : {}),
       intake: { emails_read: 42, receipts_found: 3, likely_assets: proposals.size, last_scan_at: time }, unmatched_replies: [], phone_ready: false,
-      settings: { digest: 'weekly', last_time: lastTime, measures: false }, sphere_placements: [
-        ...selected.map(row => ({ collection: 'asset', id: row.id })), ...[...occasions.values()].map(row => ({ collection: 'occasion', id: row.id })),
-        ...[...episodes.values(), derived].map(row => ({ collection: 'episode', id: row.id! })), { collection: 'commitment', id: commitment.id },
+      settings: { digest: 'weekly', last_time: lastTime, measures: false, ...(occasionWorkspace ? { occasion_calendar: occasionCalendar } : {}) }, sphere_placements: [
+        ...selected.map(row => ({ collection: 'asset', id: row.id })), ...(occasionWorkspace ? occasionPage : [...occasions.values()]).map(row => ({ collection: 'occasion', id: row.id })),
+        ...[...episodePage, derived].map(row => ({ collection: 'episode', id: row.id! })), { collection: 'commitment', id: commitment.id },
+        ...dueOccurrences.flatMap(item => item.commitment ? [{ collection: 'commitment', id: item.commitment.id }] : []),
       ].map(ref => ({ ref, ...placementFor(ref) })),
       sphere_sources: ['mail:personal', 'calendar:work'].map(source => ({ source, name: source, ...(sourceSpheres.has(source) ? { sphere: sourceSpheres.get(source)! } : {}) })),
       household: { telegram: householdTelegram, telegram_connections: [{ name: 'Family', enrolled_at: 200, recipient: '-100123' }],
@@ -415,8 +517,13 @@ export const createYoursFixture = () => {
     if (input.action === 'occurrence.renewed') {
       renewals.push(structuredClone(input));
       if (!(input.on > '2027-04-17')) return { error: { code: 'bad_request', message: 'Enter a date after 2027-04-17' } };
+      if (failRenewal) { failRenewal = false; return { error: { code: 'unavailable', message: 'The new date could not be saved. Try again.' } }; }
       commitment.lifecycle_state = 'fulfilled';
       return { result: { message: 'New date saved. This task is done, and the next reminders follow the new date.' } };
+    }
+    if (input.action === 'occurrence.later') {
+      laterReminders.set(input.id, input.until);
+      return { result: { message: 'Next reminder moved. The deadline and schedule stay the same.' } };
     }
     if (input.action === 'asset.automatic_updates') {
       handoffWrites.push(structuredClone(input));
@@ -472,8 +579,27 @@ export const createYoursFixture = () => {
     if (input.action === 'occasion.save') { const id = input.occasion.id ?? `occasion-${++number}`; const old = occasions.get(id);
       occasions.set(id, { ...input.occasion, id, created_at: old?.created_at ?? time, updated_at: time, rules: input.occasion.rules.length || old ? input.occasion.rules : [{ ...rule, id: 'date', title: input.occasion.title,
         when: { kind: 'expiry', field: 'next_on' }, consequence: 'routine', expiry_policy: 'strict_expire', reaction: { notify: true, occurrence: 'notice', emit: false }, schedule: { before: [{ amount: 1, unit: 'weeks' }], on_day: true } }] }); }
+    if (input.action === 'occasion.next' && occasionWorkspace) {
+      const occasion = occasions.get(input.id);
+      if (!occasion?.after_each) return { error: { code: 'bad_request', message: 'This occasion does not ask for its next date.' } };
+      const updated = { ...occasion, updated_at: Date.now() };
+      if (input.on === null) delete updated.after_each;
+      else {
+        updated.source_next_on = input.on;
+        updated.month_day = input.on.slice(5);
+        if (input.time) updated.time = input.time;
+        else if (input.time === null) { delete updated.time; delete updated.time_zone; delete updated.alert_minutes; }
+      }
+      occasions.set(input.id, updated);
+      return { result: { id: input.id, message: input.on ? `Next one saved: ${input.on}.` : 'No next one: it keeps its last date.' } };
+    }
     if (input.action === 'occasion.delete') occasions.delete(input.id);
-    if (input.action === 'episode.save') { const id = input.episode.id ?? `episode-${++number}`; episodes.set(id, { ...input.episode, id, basis: 'declared', storage_reason: input.episode.id ? 'owner_correction' : 'owner_record', created_at: time, updated_at: time }); }
+    if (input.action === 'episode.save') {
+      const id = input.episode.id ?? `episode-${++number}`;
+      episodes.set(id, { ...input.episode, id, basis: 'declared', storage_reason: input.episode.id ? 'owner_correction' : 'owner_record',
+        created_at: episodes.get(id)?.created_at ?? time, updated_at: Date.now() });
+      return { result: { id, message: 'Episode saved from your record.' } };
+    }
     if (input.action === 'episode.delete') { episodes.delete(input.id); suppressions.push({ id: `suppression-${++number}`, kind: 'episode', value: input.id, created_at: time }); }
     if (input.action === 'suppression.save') suppressions.push({ ...input.suppression, id: `suppression-${++number}`, created_at: time });
     if (input.action === 'suppression.delete') { const index = suppressions.findIndex(row => row.id === input.id); if (index >= 0) suppressions.splice(index, 1); }
@@ -560,10 +686,23 @@ export const createYoursFixture = () => {
     else if (input.action === 'rule.save') { const old = assets.get(input.asset_id)!; assets.set(old.id, { ...old, rules: [...old.rules.filter(rule => rule.id !== input.rule.id), input.rule] }); }
     else if (input.action === 'proposal.edit') { const proposal = proposals.get(input.id)!; proposals.set(input.id, { ...proposal,
       ...(input.title !== undefined ? { title: input.title } : {}), ...(input.payload ? { payload: input.payload } : {}) }); }
-    else if (input.action === 'proposal.accept') { for (const id of input.ids) { const proposal = proposals.get(id); if (!proposal) continue;
-      if (proposal.kind === 'asset') { const data = proposal.payload.asset as Partial<Asset> & { name: string }; assets.set(`accepted-${id}`, make(`accepted-${id}`, data)); }
-      if (proposal.kind === 'habit') { const data = proposal.payload.occasion as Occasion; occasions.set(`accepted-${id}`, { ...data, id: `accepted-${id}`, rules: [{ ...(proposal.payload.rule as AssetRule), enabled: true, pinned: true }], created_at: time, updated_at: time }); }
-      proposals.delete(id); } }
+    else if (input.action === 'proposal.accept') {
+      let changed = 0;
+      const failed: Array<{ id: string; reason: string }> = [];
+      for (const id of input.ids) {
+        const proposal = proposals.get(id); if (!proposal) continue;
+        if (id === proposalToFail) {
+          proposalToFail = null;
+          failed.push({ id, reason: 'The proposed record is currently unavailable.' });
+          continue;
+        }
+        if (proposal.kind === 'asset') { const data = proposal.payload.asset as Partial<Asset> & { name: string }; assets.set(`accepted-${id}`, make(`accepted-${id}`, data)); }
+        if (proposal.kind === 'habit') { const data = proposal.payload.occasion as Occasion; occasions.set(`accepted-${id}`, { ...data, id: `accepted-${id}`, rules: [{ ...(proposal.payload.rule as AssetRule), enabled: true, pinned: true }], created_at: time, updated_at: time }); }
+        proposals.delete(id); changed++;
+      }
+      if (changed && withdrawProposalRead) { withdrawProposalRead = false; proposalReadUnavailable = true; }
+      return { result: { changed, ...(failed.length ? { failed } : {}), message: 'Change saved.' } };
+    }
     else if (input.action === 'proposal.dismiss' || input.action === 'proposal.delete') proposals.delete(input.id);
     return { result: { message: 'Change saved.' } };
   };
@@ -625,6 +764,10 @@ export const createYoursFixture = () => {
       { ts: time - 86_400_000, source: 'memory', kind: 'observation.accepted', payload: {} },
     ] } };
     if (method === 'yours.read') {
+      if (proposalReadUnavailable) {
+        proposalReadUnavailable = false;
+        return { error: { code: 'unavailable', message: 'Proposal list unavailable.' } };
+      }
       if ((raw as YoursReadRequest).search !== undefined && assetSearchFailures-- > 0) return { error: { code: 'unavailable', message: 'Asset search unavailable. Try again.' } };
       // P44: a list read must never ask the server to assemble derived episodes.
       if ((raw as YoursReadRequest).include_derived && !(raw as YoursReadRequest).episode_id) {

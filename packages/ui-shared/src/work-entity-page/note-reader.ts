@@ -33,7 +33,8 @@ export const renderNoteReader = (
   view: WorkEntityNoteView,
   sourceLabel: string,
   historyHtml?: string,
-  closeLabel = 'Back to notes',
+  closeLabel?: string,
+  inline = false,
 ): string => {
   const note = view.entity;
   const title = note.title?.trim() || 'Note';
@@ -50,12 +51,14 @@ export const renderNoteReader = (
     : note.sync_state === 'stale_unreachable' ? 'This source cannot be reached. The note may be out of date.'
     : note.deleted_at != null || note.sync_state === 'tombstoned' ? 'This note was deleted at its source.'
     : note.sync_state === 'orphaned' ? 'This note’s source was removed.' : '';
-  return `<div class="work-entity-dialog-backdrop" data-action="close-work-entity-dialog-on-backdrop" data-mode="read">
-    <div class="work-entity-dialog work-entity-note-reader" role="dialog" aria-modal="true"
-      aria-labelledby="work-entity-dialog-title" data-kind="note" data-mode="read" data-note-id="${e(note.id)}" data-note-format="${formatted ? 'formatted' : 'plain'}">
+  const outline = markdown?.headings.length ? `<details class="work-entity-note-outline" data-note-section="outline"><summary>On this page <span>${markdown.headings.length} ${markdown.headings.length === 1 ? 'heading' : 'headings'}</span></summary>
+    <nav aria-label="Note headings"><ol>${markdown.headings.map(heading => `<li data-level="${heading.level}"><button type="button" data-action="go-note-heading" data-note-heading-target="${e(heading.id)}" data-note-focus="outline-${e(heading.id)}">${e(heading.text || 'Untitled section')}</button></li>`).join('')}</ol></nav></details>` : '';
+  const edit = view.can_edit ? `<button type="button" class="work-entity-dialog-submit" data-action="edit-note"${view.opening ? ' aria-disabled="true" aria-busy="true"' : ''}>${view.opening ? 'Opening…' : 'Edit'}</button>` : '';
+  const close = '<button type="button" class="work-entity-dialog-close" data-action="close-work-entity-dialog" aria-label="Close">×</button>';
+  const body = `
       <header class="work-entity-dialog-header">
         <h2 class="work-entity-dialog-title" id="work-entity-dialog-title" tabindex="-1">${e(title)}</h2>
-        <button type="button" class="work-entity-dialog-close" data-action="close-work-entity-dialog" aria-label="Close">×</button>
+        ${inline && edit ? `<div class="work-entity-note-heading-actions">${edit}${close}</div>` : close}
       </header>
       <div class="work-entity-note-display" role="group" aria-label="Note display">
         <button type="button" data-action="set-note-format" data-note-format="plain" data-note-focus="format-plain" aria-pressed="${!formatted}">Plain text</button>
@@ -75,14 +78,14 @@ export const renderNoteReader = (
         ${view.find.can_search_everywhere ? `<button type="button" class="work-entity-note-find-everywhere" data-action="note-find-everywhere" data-note-focus="find-everywhere" data-note-find-everywhere${view.find.query.trim() ? '' : ' disabled'}>Search everywhere</button>` : ''}
       </div>` : ''}
       ${view.navigation_html ?? ''}
+      ${inline ? outline : ''}
       <div class="work-entity-note-content">
         <div class="work-entity-note-meta"><span>${e(sourceLabel)}</span>
           <span>Updated <time datetime="${e(new Date(note.updated_at).toISOString())}">${e(new Date(note.updated_at).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' }))}</time></span></div>
         ${warning ? `<p class="work-entity-note-warning" role="status">${e(warning)}</p>` : ''}
         ${renderReaderCopyFallback(view.copy, 'note')}
         ${view.duplicate?.from ? `<p class="work-entity-note-meta">Copied from ${e(view.duplicate.from)}.</p>` : ''}
-        ${markdown?.headings.length ? `<details class="work-entity-note-outline" data-note-section="outline"><summary>On this page <span>${markdown.headings.length} ${markdown.headings.length === 1 ? 'heading' : 'headings'}</span></summary>
-          <nav aria-label="Note headings"><ol>${markdown.headings.map(heading => `<li data-level="${heading.level}"><button type="button" data-action="go-note-heading" data-note-heading-target="${e(heading.id)}" data-note-focus="outline-${e(heading.id)}">${e(heading.text || 'Untitled section')}</button></li>`).join('')}</ol></nav></details>` : ''}
+        ${inline ? '' : outline}
         <article class="work-entity-note-body${formatted ? ' work-entity-note-markdown' : ''}" data-note-body>${markdown?.html ?? renderTaskNotes(note.body, 'note')}</article>
         ${links.length ? `<details class="work-entity-note-secondary" data-note-section="related"><summary>Related records</summary>
           <p>${e(links.map(([count, singular, plural]) => `${count} ${count === 1 ? singular : plural}`).join(' · '))}</p>
@@ -100,12 +103,18 @@ export const renderNoteReader = (
       <footer class="work-entity-dialog-actions">
         ${view.task?.created ? `<p class="work-entity-note-notice" data-note-created-task role="status">Task created: ${e(view.task.created.title)} <button type="button" class="work-entity-dialog-cancel" data-action="open-note-created-task" data-note-focus="open-created-task"${view.task.busy || view.task.disabled ? ' aria-disabled="true"' : ''}>${view.task.busy === 'open' ? 'Opening…' : 'Open task'}</button></p>` : ''}
         ${view.notice ? `<p data-note-notice class="work-entity-note-notice" role="${view.notice.kind === 'error' ? 'alert' : 'status'}" tabindex="-1">${e(view.notice.text)}</p>` : ''}
-        <button type="button" class="work-entity-dialog-cancel" data-action="close-work-entity-dialog">${e(closeLabel)}</button>
+        <button type="button" class="work-entity-dialog-cancel" data-action="close-work-entity-dialog">${e(closeLabel ?? (inline ? 'Close note' : 'Back to notes'))}</button>
         <button type="button" class="work-entity-dialog-cancel" data-action="copy-note-text"${view.copying || view.copy?.disabled ? ' aria-disabled="true"' : ''}${view.copying ? ' aria-busy="true"' : ''}>${view.copying ? 'Copying…' : 'Copy'}</button>
         ${view.task?.can_create ? `<button type="button" class="work-entity-dialog-cancel" data-action="create-note-task" data-note-focus="create-task"${view.task.busy || view.task.disabled ? ' aria-disabled="true"' : ''}${view.task.busy === 'create' ? ' aria-busy="true"' : ''}>${view.task.busy === 'create' ? 'Preparing task…' : 'Create task'}</button>` : ''}
         ${view.duplicate?.can_duplicate ? `<button type="button" class="work-entity-dialog-cancel" data-action="duplicate-work-entity"${view.duplicate.busy ? ' disabled aria-busy="true"' : ''}>${view.duplicate.busy ? 'Opening copy…' : 'Duplicate note'}</button>` : ''}
-        ${view.can_edit ? `<button type="button" class="work-entity-dialog-submit" data-action="edit-note"${view.opening ? ' aria-disabled="true" aria-busy="true"' : ''}>${view.opening ? 'Opening…' : 'Edit'}</button>` : ''}
+        ${inline ? '' : edit}
       </footer>
-    </div>
+  `;
+  const identity = `aria-labelledby="work-entity-dialog-title" data-kind="note" data-mode="read" data-note-id="${e(note.id)}" data-note-format="${formatted ? 'formatted' : 'plain'}"`;
+  if (inline) {
+    return `<section class="work-entity-dialog work-entity-note-reader work-entity-reader--inline" ${identity}>${body}</section>`;
+  }
+  return `<div class="work-entity-dialog-backdrop" data-action="close-work-entity-dialog-on-backdrop" data-mode="read">
+    <div class="work-entity-dialog work-entity-note-reader" role="dialog" aria-modal="true" ${identity}>${body}</div>
   </div>`;
 };

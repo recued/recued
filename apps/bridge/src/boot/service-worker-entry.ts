@@ -547,6 +547,11 @@ const bridgeServiceWorkerMain = async (): Promise<void> => {
           capabilityProfileSnapshot: async ({ granted_origins }) => ({
             software_version: BRIDGE_VERSION,
             dom_readiness: true,
+            horizontal_scroll: true,
+            generated_download_wait: true,
+            double_click: true,
+            file_drop: true,
+            text_paste: true,
             guarded_links: true,
             wait_read: true,
             structural_reads: true,

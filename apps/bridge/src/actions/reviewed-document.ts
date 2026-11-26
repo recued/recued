@@ -124,6 +124,8 @@ export const executeReviewedBridgeDocument = async (
   const ref = named.ref === undefined ? [] : [named.ref];
   const navigationGuard = readNavigationGuard(args.navigation_guard);
   if (navigationGuard === null || navigationGuard && (action !== 'click' || !named.ref || navigationGuard.before_url !== document.url)) return blocked();
+  const clickCount = args.click_count;
+  if (clickCount !== undefined && (action !== 'click' || clickCount !== 2 || navigationGuard)) return blocked();
   let results: Awaited<ReturnType<DocumentScripting['executeScript']>>;
   // Read, fill and click run the field functions the ordinary executor runs,
   // with the reviewed address checked inside the same injection (`page-fields.ts`).
@@ -131,8 +133,9 @@ export const executeReviewedBridgeDocument = async (
     ? scripting.executeScript({ target, func: readPageField, args: [named.selector, document.url] })
     : action === 'fill'
       ? scripting.executeScript({ target, func: fillPageField, args: [named.selector ?? '', args.value, document.url, ...ref] })
-      : scripting.executeScript({ target, func: clickPageElement, args: [named.selector ?? '', document.url, ...ref,
-        ...(navigationGuard ? [null, navigationGuard.after_url] : [])] }));
+      : scripting.executeScript({ target, func: clickPageElement, args: [named.selector ?? '', document.url,
+        ...(clickCount === 2 ? [named.ref ?? null, null, null, null, null, null, null, null, clickCount]
+          : [...ref, ...(navigationGuard ? [null, navigationGuard.after_url] : [])])] }));
   } catch {
     // An injection rejection can follow navigation or loss of acknowledgement.
     // Report uncertainty; neither endpoint may infer that the effect failed.
@@ -142,12 +145,12 @@ export const executeReviewedBridgeDocument = async (
   if (result?.documentId !== document.document_id || !result.result || typeof result.result !== 'object'
     || Array.isArray(result.result)) return missingAcknowledgement();
   const value = result.result as { blocked?: boolean; missing?: boolean; stale?: boolean; protected?: boolean; uncertain?: boolean;
-    not_applied?: unknown; outputs?: Record<string, unknown>; several?: unknown };
+    not_applied?: unknown; outputs?: Record<string, unknown>; several?: unknown; partial_clicks?: unknown };
   // Only one canonical branch can acknowledge the injected operation. Truthy
   // flags or conflicting success/refusal fields do not prove that it settled.
   if (Object.keys(value).length !== 1) return missingAcknowledgement();
   if (value.blocked === true) return blocked();
-  if (value.uncertain === true) return unconfirmed();
+  if (value.uncertain === true || action === 'click' && (value.partial_clicks === 1 || value.partial_clicks === 2)) return unconfirmed();
   if (value.missing === true) return { status: 'error', error: { code: 'selector_not_found', message: 'The reviewed selector is missing.' } };
   // D-402 slice G (§4 rule 4) — the reviewed selector now names several elements: none was written to.
   if (typeof value.several === 'number') return { status: 'error', error: { code: 'selector_not_found',

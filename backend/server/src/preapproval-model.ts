@@ -109,6 +109,10 @@ export interface PreparedFutureExecution {
   recipe_snapshots: PreparedRecipeSnapshot[];
   /** Private saved content, owned by this execution once accepted. */
   draft_snapshot?: MailDraft;
+  /** Chosen with the saved draft and disclosed in this immutable review. */
+  mail_follow_up?: import('@recued/contracts').MailFollowUpPreference;
+  /** Resolved from the original watch and sealed with the reviewed send. */
+  mail_condition?: import('./mail-follow-up-service.js').ScheduledFollowUpCondition;
   /** Host-compiled successor. Original receipts grant no new authority. */
   continuation?: {
     proposal_id: string;

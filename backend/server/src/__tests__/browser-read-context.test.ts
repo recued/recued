@@ -43,6 +43,38 @@ describe('identical browser reads in model context', () => {
     expect((projectBrowserObservationOrder([old, proposal])[0]!.result as any).output.render[0].data.read_state.context.current_for_controls).toBe(true);
   });
 
+  it('retires an opening document after read-only pagination and retains the collected data', () => {
+    const first = 'bridge:A:7:LIST1', second = 'bridge:A:7:LIST2', other = 'bridge:B:7:LIST1';
+    const state = { source: 'bridge_read', scope: { kind: 'page', form: 'outline' }, loading: false, complete: true, truncated: false };
+    const opening = call({ ...page, page: first, read_state: state });
+    const unrelated = call({ ...page, page: other, read_state: state }, 3);
+    const args = { page: first, steps: [{ do: 'collect', items: '.card', fields: { title: '.title' },
+      next: { text: 'Next' }, max_pages: 2 }, { do: 'data', pipeline: [{ transform: 'count' }] }] };
+    const dataRef = 'data:7664a948-ec66-4ea6-972d-39009d286722';
+    for (const destination of [first, second]) {
+      const moved = destination !== first;
+      const pages = [{ page: first, url: page.url, items: 2 }, ...(moved ? [{ page: second, url: page.url + '?page=2', items: 1 }] : [])];
+      const batch: ChatPriorToolCall = { ...call({}, 5), tool_name: 'recued-core/act-on-web-page', args,
+        result: { recipe_id: 'act-on-web-page', success: true, output: { render: [{ type: 'json', data: {
+          page: destination, tabs: [{ page: destination, reads: [
+            { step: 1, collection: { pages, data_ref: dataRef, records_omitted: true } },
+            { step: 2, data: { value: moved ? 3 : 2 } },
+          ] }],
+        } }] } } };
+      const packet = JSON.parse(composeChatMainTurnPromptParts({ available_tools: [],
+        content: { chat_tail: [], user_message: 'Count the matching cards.' },
+        prior_tool_calls: [opening, unrelated, batch], native_browser_page_key: 'collector-regression-test' }).body);
+      expect(packet.prior_tool_calls[0].result.output.render[0].data.read_state.context).toMatchObject({
+        current_for_controls: !moved, ...(moved ? { invalidated_by_call: 3 } : {}),
+      });
+      expect(packet.browser_context.pages.map((entry: { page: string; document_handle?: string }) => entry.document_handle ?? entry.page))
+        .toEqual(moved ? [other] : [other, first]);
+      expect(packet.prior_tool_calls[2].result.output.render[0].data.tabs[0].reads).toMatchObject([
+        { step: 1, collection: { data_ref: dataRef } }, { step: 2, data: { value: moved ? 3 : 2 } },
+      ]);
+    }
+  });
+
   it('marks only matching page, address and read scopes as superseded in the actual native packet', async () => {
     const state = { source: 'bridge_read', scope: { kind: 'page', form: 'outline' }, loading: true, complete: false, truncated: false };
     const old = call({ ...page, loading: true, complete: false, read_state: state });

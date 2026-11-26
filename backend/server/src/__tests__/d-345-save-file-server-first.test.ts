@@ -66,7 +66,8 @@ const ownerFiles = () => {
 
 /** The adapter; its Bridge reads a page linking to `links` (shown as `labels` names them, else by
  *  ref) and fetches any file as the page would. */
-const adapterFor = (base: string, links: Record<string, string> = {}, labels: Record<string, string> = {}) => {
+const adapterFor = (base: string, links: Record<string, string> = {}, labels: Record<string, string> = {},
+  fetch: typeof fetchFile = fetchFile, download?: (request: DispatchRequest) => DispatchOutcome | undefined) => {
   const requests: DispatchRequest[] = [];
   const page = { page: '7:DOC', url: `${base}/files`, title: 'Files' };
   const html = `<body>${Object.entries(links).map(([ref, href]) => `<a ref="${ref}" href="${href}">${labels[ref] ?? ref}</a>`).join('')}</body>`;
@@ -74,6 +75,8 @@ const adapterFor = (base: string, links: Record<string, string> = {}, labels: Re
     requests.push(request);
     if (request.action === 'inspect') return ok({ url: page.url, title: page.title, html, truncated: false });
     if (request.action === 'download_file') {
+      const answered = download?.(request);
+      if (answered !== undefined) return answered;
       return ok({ ...page, address: String(request.args.address ?? `${base}/statement.pdf`), filename: 'statement.pdf',
         mime_type: 'application/pdf', size: ACCOUNT_PDF.length, data: ACCOUNT_PDF.toString('base64') });
     }
@@ -85,7 +88,7 @@ const adapterFor = (base: string, links: Record<string, string> = {}, labels: Re
     getDispatcher: () => ({ dispatch, cancel: vi.fn(), canResolve: vi.fn(() => false) }),
     pageReads: createPageReadStore(),
     files: owner.files,
-    fetchFile,
+    fetchFile: fetch,
   });
   return { adapter, requests, kept: owner.kept };
 };
@@ -186,6 +189,38 @@ describe('D-345 slice E — a sequence\'s download step, server first', () => {
     expect(actions(requests)).toEqual([]);
     expect(done).toMatchObject({ done: 1, files: [{ filename: 'Annual report.pdf' }] });
     await expect(adapter(act({ steps: [{ do: 'download', address: `${base}/private.pdf` }] })))
-      .rejects.toThrow(/could not fetch .*private\.pdf.*pass the page handle/);
+      .rejects.toThrow(/could not fetch .*private\.pdf itself \(.*private\.pdf answered 401\): pass the page handle/);
+  });
+});
+
+// 2026-11-23 (task L; the owner: "go ahead with L download fix too") — a file the server could not fetch itself, which the
+// Bridge cannot hand over either: the step says both. The server's reason was dropped, so a fetch that timed out under a
+// loaded machine read as the Bridge's 2.5 MB limit alone.
+describe('D-345 slice E — a file neither the server nor the Bridge could save says why, both', () => {
+  const TIMED_OUT = 'files.test did not finish answering in time.';
+  const TOO_LARGE = 'The file is 12.5 MB, and the Browser Bridge hands over files of at most 2.5 MB.';
+  const stalled: typeof fetchFile = async (address) => (address.endsWith('/big.zip')
+    ? { kind: 'refused', reason: TIMED_OUT } : fetchFile(address));
+  const refusesSize = (_request: DispatchRequest): DispatchOutcome => ({ kind: 'completed', bridge_client_token_id: 'bridge-1',
+    attempts: 1, result: { command_id: 'c', duration_ms: 3, bridge_version: '0.0.14', idempotency_key_seen: false, status: 'error',
+      error: { code: 'unknown', message: TOO_LARGE } } as unknown as BridgeResult });
+  const BOTH = `The server could not download it itself (files.test did not finish answering in time), so the Browser Bridge was asked: `;
+
+  it('Save a file from a web page', async () => {
+    const base = await site();
+    const { adapter, requests } = adapterFor(base, {}, {}, stalled, refusesSize);
+    const error = await adapter(call('dom-download', { page: '7:DOC', address: `${base}/big.zip` })).then(() => undefined, (e: unknown) => e);
+    expect(actions(requests)).toEqual(['download_file']);
+    expect(String((error as Error).message)).toContain(BOTH);
+    expect(String((error as Error).message)).toContain(TOO_LARGE);
+  });
+
+  it('a sequence\'s download step', async () => {
+    const base = await site();
+    const { adapter } = adapterFor(base, {}, {}, stalled, refusesSize);
+    const error = await adapter(call('dom-act', { page: '7:DOC', steps: [{ do: 'download', address: `${base}/big.zip` }] }))
+      .then(() => undefined, (e: unknown) => e);
+    expect(String((error as Error).message)).toContain(`Stopped at step 1 of 1: ${BOTH}`);
+    expect(String((error as Error).message)).toContain(TOO_LARGE);
   });
 });

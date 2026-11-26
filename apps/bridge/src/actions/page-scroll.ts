@@ -23,7 +23,7 @@ export const scrollTarget = (now: { screen: number; screens: number }, to: Bridg
   screen !== undefined ? screen
     : to === 'top' ? 1
       : to === 'bottom' ? now.screens
-        : to === 'previous' ? Math.max(1, now.screen - 1)
+        : to === 'previous' || to === 'left' ? Math.max(1, now.screen - 1)
           : Math.min(now.screens, now.screen + 1);
 
 /** Resolves once the page has changed and then nothing has for `quietMs`, when nothing changed for

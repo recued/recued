@@ -41,6 +41,9 @@ export const RECORDS_PURGE_ACTION = 'records-purge';
 export const RECORDS_CONFIRM_PURGE_ACTION = 'records-confirm-purge';
 export const RECORDS_CANCEL_PURGE_ACTION = 'records-cancel-purge';
 export const RECORDS_NAMESPACE_ATTR = 'data-records-namespace';
+export const RECORDS_PACK_PICKER_ACTION = 'records-pick-pack';
+export const RECORDS_MANAGEMENT_ATTR = 'data-records-management';
+export const RECORDS_WIDE_DESKTOP_MEDIA = '(min-width: 1280px) and (hover: hover) and (pointer: fine)';
 export const RECORDS_KIND_ATTR = 'data-records-kind';
 export const RECORDS_KIND_PANEL_ATTR = 'data-records-kind-panel';
 export const RECORDS_ID_ATTR = 'data-records-id';
@@ -53,7 +56,10 @@ export type RecordsExportAction =
   | typeof RECORDS_EXPORT_KIND_ACTION
   | typeof RECORDS_EXPORT_KIND_CSV_ACTION;
 
+import { CUSTOMER_WATCH_ACTION } from './customer-decision-watch.js';
+
 export interface RecordsExplorerState extends RecordsBrowseState {
+  canWatchCustomer?: boolean;
   namespaces: readonly RecordsNamespaceView[];
   globalQuota: RecordsGlobalQuotaSnapshot | null;
   selectedNamespace: RecordsNamespaceView | null;
@@ -182,6 +188,20 @@ const renderNamespaceNav = (state: RecordsExplorerState): string => {
   </nav>`;
 };
 
+const renderPackPicker = (state: RecordsExplorerState, locked: boolean): string => {
+  const selected = state.selectedNamespace === null ? '' : namespaceKey(state.selectedNamespace);
+  return `<label class="records-pack-picker">Pack
+    <select data-action="${RECORDS_PACK_PICKER_ACTION}"${locked ? ' aria-disabled="true"' : ''}
+      ${state.loadingNamespaceKey === null ? '' : 'aria-busy="true"'}>
+      ${selected === '' ? '<option value="" selected disabled>Choose a pack</option>' : ''}
+      ${state.namespaces.map(namespace => {
+        const key = namespaceKey(namespace);
+        return `<option value="${e(key)}"${key === selected ? ' selected' : ''}>${e(packLabel(namespace))} · ${e(namespace.owner.publisher)} · ${e(stateLabel(namespace))}</option>`;
+      }).join('')}
+    </select>
+  </label>`;
+};
+
 const renderQuota = (namespace: RecordsNamespaceView): string => {
   const quota = namespace.quota;
   return `<dl class="records-quota" aria-label="Records quota">
@@ -201,7 +221,7 @@ const renderGlobalQuota = (quota: RecordsGlobalQuotaSnapshot | null): string => 
   </dl>`;
 };
 
-const renderKindNav = (state: RecordsExplorerState): string => {
+const renderKindNav = (state: RecordsExplorerState, reading = false): string => {
   const tabStop = state.kinds.some((kind) => kind.kind === state.selectedKind)
     ? state.selectedKind
     : state.kinds[0]?.kind ?? null;
@@ -210,7 +230,7 @@ const renderKindNav = (state: RecordsExplorerState): string => {
       id="${e(recordsKindTabId(kind.kind))}"
       ${state.selectedKind === null ? '' : `aria-controls="${RECORDS_KIND_PANEL_ID}"`}
       data-action="${RECORDS_SELECT_KIND_ACTION}" ${RECORDS_KIND_ATTR}="${e(kind.kind)}"
-      ${recordsControlsLocked(state) ? 'aria-disabled="true"' : ''}
+      ${reading || recordsControlsLocked(state) ? 'aria-disabled="true"' : ''}
       ${state.loadingKind === kind.kind ? 'aria-busy="true"' : ''}
       aria-selected="${kind.kind === state.selectedKind ? 'true' : 'false'}"
       tabindex="${kind.kind === tabStop ? '0' : '-1'}">
@@ -288,24 +308,54 @@ const renderList = (state: RecordsExplorerState): string => {
   </table></div>`;
 };
 
-const renderDetail = (state: RecordsExplorerState): string => {
+interface RecordsInspectorLayout {
+  pendingId?: string;
+}
+
+const renderInspectorList = (state: RecordsExplorerState, inspector: RecordsInspectorLayout): string => {
+  const fields = state.selectedNamespace?.schema.entities[state.selectedKind ?? '']?.fields.slice(0, 6) ?? [];
+  const titleField = fields.find(field => (field.kind === 'string' || field.kind === 'text') && field.privacy === undefined);
+  const locked = recordsControlsLocked(state) || state.exporting || state.outboxRefreshing || state.changesRefreshing || state.markingReviewed;
+  return `<ul class="records-inspector-list" aria-label="Records results">
+    ${state.records.map(record => {
+      const value = titleField ? getPath(record, titleField.key) : undefined;
+      const title = typeof value === 'string' && value.trim() ? displayValue(value.trim(), true) : record.id;
+      const description = title === record.id ? '' : ` aria-description="${e(title)}"`;
+      return `<li><button type="button" data-action="${RECORDS_OPEN_RECORD_ACTION}" ${RECORDS_ID_ATTR}="${e(record.id)}"
+        aria-label="Open record ${e(record.id)}"${description}${record.id === state.detail?.id ? ' aria-current="true"' : ''}${record.id === inspector.pendingId ? ' aria-busy="true"' : ''}${locked ? ' aria-disabled="true"' : ''}>
+        <strong>${e(title)}</strong>${title !== record.id ? `<small>${e(record.id)}</small>` : ''}
+      </button></li>`;
+    }).join('')}
+  </ul>`;
+};
+
+const renderDetail = (state: RecordsExplorerState, inspector?: RecordsInspectorLayout): string => {
   const record = state.detail;
   const namespace = state.selectedNamespace;
   const kind = state.selectedKind;
-  if (record === null || namespace === null || kind === null) return '';
+  if (namespace === null || kind === null) return '';
   const entity = namespace.schema.entities[kind];
   if (entity === undefined) return '';
-  return `<section class="records-detail" aria-labelledby="records-detail-title">
-    <header><div><small>${e(namespaceKey(namespace))} / ${e(kind)}</small><h3 id="records-detail-title" tabindex="-1">${e(record.id)}</h3></div>
-      <button type="button" data-action="${RECORDS_CLOSE_RECORD_ACTION}" ${recordsControlsLocked(state) ? 'aria-disabled="true"' : ''}>Back</button></header>
+  const closeLocked = recordsControlsLocked(state) || (inspector !== undefined
+    && (state.exporting || state.outboxRefreshing || state.changesRefreshing || state.markingReviewed));
+  const locked = closeLocked || inspector?.pendingId !== undefined;
+  const error = state.error ? `<p role="alert">${e(state.error)}</p>` : '';
+  const header = `<section class="records-detail${inspector ? ' records-detail--inspector' : ''}" aria-labelledby="records-detail-title">
+    <header><div><small>${e(namespaceKey(namespace))} / ${e(kind)}</small><h3 id="records-detail-title" tabindex="-1">${e(record?.id ?? 'Record details')}</h3></div>
+      <button type="button" data-action="${RECORDS_CLOSE_RECORD_ACTION}" ${closeLocked ? 'aria-disabled="true"' : ''}>${inspector ? 'Close inspector' : 'Back'}</button></header>
+    ${inspector?.pendingId ? `<p class="records-inspector-status" role="status">Loading ${e(inspector.pendingId)}…</p>` : ''}
+    ${inspector ? error : ''}`;
+  if (record === null) return `${header}</section>`;
+  return `${header}
     <dl>${entity.fields.map((field) => {
       const value = field.kind === 'id' ? record.id : getPath(record, field.key);
       return `<div><dt>${e(recordsFieldLabel(field))} ${field.privacy ? `<small class="records-pii-tag">${e(field.privacy)}</small>` : ''}</dt>
-        <dd>${field.kind === 'ref' ? renderReference(value, recordsControlsLocked(state)) : e(displayValue(value))}</dd><small>${e(field.kind)} · ${e(field.slot)}${field.required ? ' · required' : ''}</small></div>`;
+        <dd>${field.kind === 'ref' ? renderReference(value, locked) : e(displayValue(value))}</dd><small>${e(field.kind)} · ${e(field.slot)}${field.required ? ' · required' : ''}</small></div>`;
     }).join('')}</dl>
+    ${state.canWatchCustomer ? `<div><button type="button" data-action="${CUSTOMER_WATCH_ACTION}"${locked ? ' disabled' : ''}>Watch customer reengagement</button></div>` : ''}
     <div class="records-detail-meta">Pack version ${record._record.version} · revision ${record._record.revision} · created ${new Date(record._record.created_at).toISOString()} · updated ${new Date(record._record.updated_at).toISOString()}</div>
     ${state.diagnostics?.incoming.length ? `<section class="records-relationship-impact"><h4>Records that reference this row</h4><ul>${state.diagnostics.incoming.map((impact) =>
-      `<li>${renderReference(`${impact.source_entity}/${encodeURIComponent(impact.source_id)}`, recordsControlsLocked(state))}
+      `<li>${renderReference(`${impact.source_entity}/${encodeURIComponent(impact.source_id)}`, locked)}
         through <code>${e(impact.source_field)}</code></li>`).join('')}</ul></section>` : ''}
     <details><summary>Advanced raw-slot diagnostics</summary><pre>${e(JSON.stringify({
       schema: entity,
@@ -316,15 +366,15 @@ const renderDetail = (state: RecordsExplorerState): string => {
         incoming: state.diagnostics.incoming,
       },
     }, null, 2))}</pre></details>
-    ${state.error ? `<p role="alert">${e(state.error)}</p>` : ''}
+    ${inspector ? '' : error}
     ${!state.canDelete ? '' : state.deletePending ? `<div class="records-delete-confirm" role="alert"><p>Delete this record permanently? ${state.diagnostics?.incoming.length
         ? `${state.diagnostics.incoming.length} incoming relationship${state.diagnostics.incoming.length === 1 ? '' : 's'} will be checked, and may stop you deleting this.`
         : 'Nothing else points at this record.'}</p>
       <div class="records-detail-delete-actions">
-        <button type="button" data-action="${RECORDS_CONFIRM_DELETE_ACTION}" ${state.deleting ? 'aria-disabled="true" aria-busy="true"' : recordsControlsLocked(state) ? 'aria-disabled="true"' : ''}>${state.deleting ? 'Deleting…' : 'Delete record'}</button>
-        <button type="button" data-action="${RECORDS_CANCEL_DELETE_ACTION}" ${recordsControlsLocked(state) ? 'aria-disabled="true"' : ''}>Cancel</button>
+        <button type="button" data-action="${RECORDS_CONFIRM_DELETE_ACTION}" ${state.deleting ? 'aria-disabled="true" aria-busy="true"' : locked ? 'aria-disabled="true"' : ''}>${state.deleting ? 'Deleting…' : 'Delete record'}</button>
+        <button type="button" data-action="${RECORDS_CANCEL_DELETE_ACTION}" ${locked ? 'aria-disabled="true"' : ''}>Cancel</button>
       </div></div>`
-      : `<button type="button" data-action="${RECORDS_DELETE_RECORD_ACTION}" ${recordsControlsLocked(state) ? 'aria-disabled="true"' : ''}>Delete record…</button>`}
+      : `<button type="button" data-action="${RECORDS_DELETE_RECORD_ACTION}" ${locked ? 'aria-disabled="true"' : ''}>Delete record…</button>`}
   </section>`;
 };
 
@@ -459,46 +509,85 @@ const renderExportButton = (
     ${ownsExport ? 'aria-busy="true"' : ''}>${ownsExport ? 'Exporting…' : label}</button>`;
 };
 
-export const renderRecordsExplorer = (state: RecordsExplorerState, importPanel = ''): string => {
+export const renderRecordsExplorer = (
+  state: RecordsExplorerState,
+  importPanel = '',
+  layout: { desktop?: boolean; managementOpen?: boolean; inspector?: RecordsInspectorLayout } = {},
+): string => {
   const namespace = state.selectedNamespace;
   const browsingLocked = state.loading || recordsControlsLocked(state) || state.exporting || state.outboxRefreshing;
   const pagingLocked = browsingLocked || recordsViewHasDraft(state);
   const policy = state.selectedKind === null ? undefined : state.retention[state.selectedKind];
-  return `<section class="records-explorer" data-recued-records-explorer>
+  const globalQuota = renderGlobalQuota(state.globalQuota);
+  const packExports = namespace && state.canExport
+    ? `<div class="records-export-actions">${renderExportButton(state, RECORDS_EXPORT_PACK_ACTION, 'Export pack JSON')}
+        ${renderExportButton(state, RECORDS_EXPORT_PACK_CSV_ACTION, 'Export pack CSV')}</div>`
+    : '';
+  const packSummary = namespace === null ? '' : `<section class="records-pack-summary">
+    <div><h3>${e(packLabel(namespace))}</h3><p>by ${e(namespace.owner.publisher)} · ${e(stateLabel(namespace))}</p></div>
+    ${renderQuota(namespace)}${renderPurge(state, namespace)}
+  </section>`;
+  const packActivity = namespace === null ? '' : importPanel + renderChanges(state) + renderOutbox(state);
+  const kindTools = state.selectedKind === null ? '' : `<div class="records-kind-toolbar">
+    <span>Retention: ${e(policy?.mode ?? 'keep')}${policy?.days ? ` · ${policy.days} days` : ''}${policy?.legal_hold ? ' · legal hold' : ''}</span>
+    ${state.canExport ? `<div class="records-export-actions">${renderExportButton(state, RECORDS_EXPORT_KIND_ACTION, 'Export kind JSON')}
+      ${renderExportButton(state, RECORDS_EXPORT_KIND_CSV_ACTION, 'Export kind CSV')}</div>` : ''}
+  </div>`;
+  const desktop = layout.desktop === true;
+  const inspector = desktop ? layout.inspector : undefined;
+  const kind = state.selectedKind;
+  const entity = kind === null ? undefined : namespace?.schema.entities[kind];
+  const pagination = `<nav class="records-pagination" aria-label="Records pages">
+    <span role="status">Page ${state.page} · ${state.records.length} records</span>
+    <div class="records-page-actions">
+      <button type="button" data-action="records-prev-page"${pagingLocked || !state.prevCursor ? ' aria-disabled="true"' : ''}>Previous page</button>
+      <button type="button" data-action="records-next-page"${pagingLocked || !state.nextCursor ? ' aria-disabled="true"' : ''}>Next page</button>
+    </div>
+    <button type="button" data-action="records-first-page"${pagingLocked ? ' aria-disabled="true"' : ''}>Refresh results</button>
+  </nav>`;
+  const results = namespace === null ? ''
+    : kind === null ? renderList(state)
+    : `<div class="records-kind-panel" ${RECORDS_KIND_PANEL_ATTR}="" id="${RECORDS_KIND_PANEL_ID}"
+        role="tabpanel" aria-labelledby="${e(recordsKindTabId(kind))}">
+        ${desktop ? '' : kindTools}
+        ${state.detail && !inspector ? renderDetail(state) : `
+          ${entity ? renderRecordsViewControls(state, entity, browsingLocked) : ''}
+          ${inspector ? `<div class="records-inspector-workspace">
+            <div class="records-inspector-index">${renderInspectorList(state, inspector)}${pagination}</div>
+            ${renderDetail(state, inspector)}
+          </div>` : `${renderList(state)}${pagination}`}`}
+      </div>`;
+  const kindNav = namespace === null ? '' : renderKindNav(state, inspector?.pendingId !== undefined);
+  const workspaceTools = desktop ? `
+    ${state.namespaces.length === 0 ? '' : `<div class="records-scope-bar">
+      ${renderPackPicker(state, browsingLocked || state.changesRefreshing || state.markingReviewed)}
+      ${kindNav}
+      ${namespace && !state.detail && !inspector && state.error && !browsingLocked
+        ? `<button type="button" data-action="${RECORDS_SELECT_NAMESPACE_ACTION}" ${RECORDS_NAMESPACE_ATTR}="${e(namespaceKey(namespace))}">Reload pack</button>`
+        : ''}
+    </div>`}
+    ${namespace === null && !globalQuota ? '' : `<details class="records-management" ${RECORDS_MANAGEMENT_ATTR}${layout.managementOpen ? ' open' : ''}>
+      <summary data-action="records-toggle-management">Manage records</summary>
+      <div class="records-management-body">
+        ${globalQuota}${packSummary}
+        ${packExports}${kindTools}${packActivity}
+      </div>
+    </details>`}
+  ` : packSummary + packActivity + kindNav;
+  return `<section class="records-explorer${desktop ? ' records-explorer--desktop' : ''}" data-recued-records-explorer>
     <header class="records-heading"><div><span>Pack-owned storage</span><h2>Records</h2>
       <p>Inspect, export, and delete pack-owned records, or import a CSV through a supported pack recipe.</p></div>
-      ${namespace && state.canExport ? `<div class="records-export-actions">${renderExportButton(state, RECORDS_EXPORT_PACK_ACTION, 'Export pack JSON')}
-        ${renderExportButton(state, RECORDS_EXPORT_PACK_CSV_ACTION, 'Export pack CSV')}</div>` : ''}
+      ${desktop ? '' : packExports}
     </header>
-    ${renderGlobalQuota(state.globalQuota)}
-    ${state.error && state.detail === null ? `<p role="alert">${e(state.error)}</p>` : ''}
-    ${state.loading ? '<p aria-live="polite">Loading Records…</p>' : ''}
-    <div class="records-layout">${renderNamespaceNav(state)}
-      <section class="records-content" aria-label="Record contents">${namespace === null ? '' : `<section class="records-pack-summary"><div><h3>${e(packLabel(namespace))}</h3><p>by ${e(namespace.owner.publisher)} · ${e(stateLabel(namespace))}</p></div>${renderQuota(namespace)}${renderPurge(state, namespace)}</section>
-        ${importPanel}
-        ${renderChanges(state)}
-        ${renderOutbox(state)}
-        ${renderKindNav(state)}
-        ${state.selectedKind === null
-          ? renderList(state)
-          : `<div class="records-kind-panel" ${RECORDS_KIND_PANEL_ATTR}=""
-              id="${RECORDS_KIND_PANEL_ID}" role="tabpanel"
-              aria-labelledby="${e(recordsKindTabId(state.selectedKind))}">
-              <div class="records-kind-toolbar"><span>Retention: ${e(policy?.mode ?? 'keep')}${policy?.days ? ` · ${policy.days} days` : ''}${policy?.legal_hold ? ' · legal hold' : ''}</span>
-                ${state.canExport ? `<div class="records-export-actions">${renderExportButton(state, RECORDS_EXPORT_KIND_ACTION, 'Export kind JSON')}
-                  ${renderExportButton(state, RECORDS_EXPORT_KIND_CSV_ACTION, 'Export kind CSV')}</div>` : ''}</div>
-              ${state.detail ? renderDetail(state) : `${namespace.schema.entities[state.selectedKind]
-                ? renderRecordsViewControls(state, namespace.schema.entities[state.selectedKind]!, browsingLocked) : ''}
-                ${renderList(state)}
-                <nav class="records-pagination" aria-label="Records pages">
-                  <span role="status">Page ${state.page} · ${state.records.length} records</span>
-                  <div class="records-page-actions">
-                    <button type="button" data-action="records-prev-page"${pagingLocked || !state.prevCursor ? ' aria-disabled="true"' : ''}>Previous page</button>
-                    <button type="button" data-action="records-next-page"${pagingLocked || !state.nextCursor ? ' aria-disabled="true"' : ''}>Next page</button>
-                  </div>
-                  <button type="button" data-action="records-first-page"${pagingLocked ? ' aria-disabled="true"' : ''}>Refresh results</button>
-                </nav>`}
-            </div>`}`}</section>
+    ${desktop ? '' : globalQuota}
+    ${state.error && state.detail === null && !inspector ? `<p role="alert">${e(state.error)}</p>` : ''}
+    ${state.loading && !inspector?.pendingId ? '<p aria-live="polite">Loading Records…</p>' : ''}
+    <div class="records-layout">
+      ${desktop && state.namespaces.length > 0 ? '' : renderNamespaceNav(state)}
+      <section class="records-content" aria-label="Record contents">
+        ${workspaceTools}
+        ${results}
+      </section>
     </div>
   </section>`;
 };
@@ -570,7 +659,7 @@ export const RECORDS_EXPLORER_STYLES = `
   .records-change-events,.records-outbox-events{gap:8px;margin:12px 0 0;padding:0;list-style:none}.records-change-events>li,.records-outbox-events>li{gap:6px;padding:12px;border:0;border-radius:var(--wc-radius,9px);background:var(--surface-subtle,#f7f8fa);font-size:13px;line-height:1.5}.records-change-events small,.records-outbox-events small{font-size:12px;line-height:1.5}.records-outbox-events p{margin:0}.records-outbox-events>li>button{justify-self:start;max-width:100%}
   @container records-content (max-width:34rem){.records-changes-summary,.records-outbox-summary{display:grid;grid-template-columns:minmax(0,1fr)}.records-change-actions{width:100%}}
   @container records-content (max-width:27rem){.records-outbox-metrics{grid-template-columns:repeat(2,minmax(0,1fr))}.records-outbox-summary>button{width:100%}}
-  .records-detail{gap:16px}.records-detail header small{font-size:12px;line-height:1.5;color:var(--muted)}.records-detail h3{margin:4px 0 0;font-size:18px;font-weight:600;line-height:1.3}
+  .records-detail{gap:16px}.records-detail>header{scroll-margin-block-start:var(--wc-space-md,16px)}.records-detail header small{font-size:12px;line-height:1.5;color:var(--muted)}.records-detail h3{margin:4px 0 0;font-size:18px;font-weight:600;line-height:1.3}
   .records-explorer .records-detail header>button{min-height:var(--wc-control-h,44px);padding:0 12px;border-radius:var(--wc-radius,9px);font-weight:600}
   .records-detail>dl{grid-template-columns:repeat(auto-fit,minmax(min(100%,14rem),1fr));gap:12px;margin:0}.records-detail>dl>div{display:grid;align-content:start;gap:6px;padding:12px;border-radius:var(--wc-radius,9px);background:var(--surface,#fff)}
   .records-detail>dl dt{font-size:12px;font-weight:600;line-height:1.4;color:var(--muted)}.records-detail>dl dd{margin:0;font-size:14px;line-height:1.5}.records-detail>dl>div>small{font-size:12px;line-height:1.4;color:var(--muted)}
@@ -590,4 +679,110 @@ export const RECORDS_EXPLORER_STYLES = `
   .records-purge-actions{width:min(100%,32rem)}.records-purge-actions>button{width:100%}
   @container records-content (max-width:22rem){.records-purge-actions{grid-template-columns:minmax(0,1fr)}}
   @media(max-width:760px){.records-layout{grid-template-columns:1fr}.records-heading,.records-pack-summary{display:grid}.records-quota{display:grid}}
+  .records-explorer--desktop .records-layout { grid-template-columns: minmax(0, 1fr); }
+  .records-explorer--desktop .records-scope-bar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px 16px;
+    padding: 8px 12px;
+    border: 1px solid var(--border);
+    border-radius: var(--wc-radius-lg, 12px);
+    background: var(--surface);
+  }
+  .records-explorer--desktop .records-pack-picker {
+    display: flex;
+    flex: 0 1 360px;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+    color: var(--muted);
+    font-size: 12px;
+    font-weight: 600;
+  }
+  .records-explorer--desktop .records-pack-picker select {
+    box-sizing: border-box;
+    flex: 1;
+    min-width: 0;
+    min-height: var(--wc-control-h, 40px);
+    padding: 0 10px;
+    border: 1px solid var(--border-strong);
+    border-radius: var(--wc-radius, 9px);
+    background: var(--surface);
+    color: var(--fg);
+    font-size: 13px;
+  }
+  .records-explorer--desktop .records-pack-picker select[aria-disabled="true"] { opacity: .65; }
+  .records-explorer--desktop .records-scope-bar > button {
+    min-height: var(--wc-control-h, 40px);
+    border-radius: var(--wc-radius, 9px);
+  }
+  .records-explorer--desktop .records-scope-bar .records-kind-nav {
+    margin: 0;
+    padding: 0;
+    background: transparent;
+  }
+  .records-explorer--desktop .records-management {
+    margin: 8px 0 16px;
+    border-bottom: 1px solid var(--border);
+  }
+  .records-explorer--desktop .records-management > summary {
+    width: fit-content;
+    min-height: var(--wc-control-h, 40px);
+    padding: 10px 6px;
+    color: var(--fg);
+    font-size: 13px;
+    font-weight: 600;
+  }
+  .records-explorer--desktop .records-management-body {
+    display: grid;
+    gap: 12px;
+    padding: 4px 0 16px;
+  }
+  .records-explorer--desktop .records-management-body > :is(.records-import, .records-changes, .records-outbox, .records-kind-toolbar) { margin: 0; }
+  .records-inspector-workspace {
+    display: grid;
+    grid-template-columns: minmax(14rem, 34%) minmax(0, 1fr);
+    gap: var(--wc-space-lg, 24px);
+    align-items: start;
+  }
+  .records-inspector-index { min-width: 0; position: sticky; top: var(--wc-space-md, 16px); }
+  .records-inspector-list {
+    margin: 0;
+    padding: 4px;
+    max-block-size: clamp(14rem, 47dvh, 36rem);
+    overflow: auto;
+    scroll-padding-block: 4px;
+    list-style: none;
+    border: 1px solid var(--border);
+    border-radius: var(--wc-radius, 9px);
+    background: var(--surface);
+  }
+  .records-explorer .records-inspector-list button {
+    display: grid;
+    gap: 4px;
+    width: 100%;
+    min-height: 48px;
+    padding: 8px 12px;
+    border-color: transparent;
+    text-align: start;
+    overflow-wrap: anywhere;
+  }
+  .records-inspector-list small { color: var(--muted); font-size: 12px; }
+  .records-explorer .records-inspector-list button[aria-current="true"] {
+    background: var(--accent-weak);
+    box-shadow: inset 3px 0 var(--accent);
+  }
+  .records-inspector-index .records-pagination { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+  .records-inspector-index .records-pagination > span { grid-column: 1 / -1; }
+  .records-inspector-index .records-page-actions { grid-column: span 2; }
+  .records-detail--inspector {
+    padding: var(--wc-space-md, 16px);
+    border: 1px solid var(--border);
+    border-radius: var(--wc-radius, 9px);
+    background: var(--surface);
+  }
+  .records-detail--inspector > p { margin: 0; overflow-wrap: anywhere; }
+  .records-inspector-status { color: var(--muted); font-size: 13px; }
+  @media (max-height: 759px) { .records-inspector-index { position: static; } }
 `;

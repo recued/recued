@@ -74,8 +74,12 @@ const sweepFields = (page: Page): Promise<Sweep> =>
     const fields = [...document.querySelectorAll<HTMLElement>('input, select, textarea')]
       .filter((el) => !(el instanceof HTMLInputElement && skip.has(el.type)) && shown(el));
     const weak = fields.flatMap((el) => {
-        const cs = getComputedStyle(el);
-        const outside = behind(el.parentElement ?? el);
+        // Chat presents its message field and controls inside one framed
+        // composer. Measure that visible boundary; the textarea is borderless.
+        const boundary = el.matches('textarea[data-recued-chat-route-input]')
+          ? el.closest<HTMLElement>('[data-recued-chat-route-composer]') ?? el : el;
+        const cs = getComputedStyle(boundary);
+        const outside = behind(boundary.parentElement ?? boundary);
         const fill = ratio(over(parse(cs.backgroundColor) ?? [0, 0, 0, 0], outside), outside);
         const edge = Math.max(0, ...(['Top', 'Bottom', 'Left', 'Right'] as const)
           .filter((side) => parseFloat(cs.getPropertyValue(`border-${side.toLowerCase()}-width`)) > 0
@@ -90,7 +94,7 @@ const sweepFields = (page: Page): Promise<Sweep> =>
   }, MEASURE);
 
 /** Tab through the route from its top and measure each stop's ring. */
-const sweepFocus = async (page: Page): Promise<Sweep> => {
+const sweepFocus = async (page: Page, nextControl: string): Promise<Sweep> => {
   const weak: Array<{ element: string; measured: string }> = [];
   const started = await page.evaluate(() => {
     const content = document.querySelector<HTMLElement>('[data-recued-webclient-content]');
@@ -102,7 +106,7 @@ const sweepFocus = async (page: Page): Promise<Sweep> => {
   expect(started).toBe(true);
   const seen = new Set<string>();
   for (let stop = 0; stop < 60; stop += 1) {
-    await page.keyboard.press('Tab');
+    await page.keyboard.press(nextControl);
     const result = await page.evaluate((measure) => {
       const { parse, over, ratio, behind, shown, name } = (0, eval)(measure);
       const el = document.activeElement as HTMLElement | null;
@@ -186,8 +190,10 @@ const sweepLinks = (page: Page): Promise<Sweep> =>
   }, MEASURE);
 
 for (const scheme of ['light', 'dark'] as const) {
-  test(`every route's fields and focus rings meet 3:1 in the ${scheme} theme`, async ({ page }) => {
+  test(`every route's fields and focus rings meet 3:1 in the ${scheme} theme`, async ({ page, browserName }) => {
     test.setTimeout(240_000);
+    // On macOS, Option-Tab includes buttons and links in WebKit's keyboard traversal.
+    const nextControl = browserName === 'webkit' && process.platform === 'darwin' ? 'Alt+Tab' : 'Tab';
     await page.emulateMedia({ colorScheme: scheme });
     await page.goto(`${HARNESS_URL}?devices=ready&account=bound&server_profiles=multiple#chat`);
     await page.waitForFunction(() => window.__app?.ready === true);
@@ -200,7 +206,7 @@ for (const scheme of ['light', 'dark'] as const) {
       await page.evaluate((hash) => window.__app.setHash(`#${hash}`), route);
       await page.waitForTimeout(500);
       const fieldSweep = await sweepFields(page);
-      const focusSweep = await sweepFocus(page);
+      const focusSweep = await sweepFocus(page, nextControl);
       fields += fieldSweep.measured;
       stops += focusSweep.measured;
       for (const found of [...fieldSweep.weak, ...focusSweep.weak]) weak.push({ route, ...found });

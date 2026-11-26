@@ -51,6 +51,7 @@ import { AUTHENTICATION_MANAGEMENT_STYLES, renderAuthenticationManagement, type 
 import { button } from '../primitives/button.js';
 import { textInput, select as selectField, formRow } from '../primitives/field.js';
 import { inlineError, inlineHint, inlineMessage } from '../primitives/message.js';
+import { formatClientDateTime } from '../date-time.js';
 
 // ════════════════════════════════════════════════════════════════
 // Schema model
@@ -1259,6 +1260,12 @@ type AccountDisplayState = CollectionAuthState | 'syncing';
 const displayStatusFor = (
   row: AccountRow,
 ): { state: AccountDisplayState; label: string } => {
+  if (row.cloudSource) {
+    if (row.cloudSource.stale) return { state: 'degraded', label: 'Sync needs refresh' };
+    return row.cloudSource.last_synced_at === null
+      ? { state: 'syncing', label: 'First sync pending' }
+      : { state: 'healthy', label: 'Metadata available' };
+  }
   if (row.adapterType === 'smtp') return { state: row.authState,
     label: row.authState === 'healthy' ? 'Send only' : AUTH_STATE_LABEL[row.authState] };
   if (row.mailSync !== undefined) {
@@ -1503,30 +1510,50 @@ const renderOAuthReloadRecovery = (state: AccountsPanelState): string => {
   `;
 };
 
-const renderRow = (lane: AccountLane, row: AccountRow): string => {
-  if (row.cloudSource) {
+const renderFileSourceLinks = (row: AccountRow, inWorkspace = false): string => {
+  const source = row.cloudSource;
+  const slug = source ? 'remote:' + source.source_id : row.slug;
+  const variant = inWorkspace ? 'primary' : source ? 'secondary' : 'outline';
+  const browse = `<a class="rx-btn rx-btn-${variant} rx-btn-sm" data-accounts-file-link="browse" data-slug="${e(row.slug)}" href="#data/files/source/${encodeURIComponent(slug)}">Browse files</a>`;
+  if (!source?.authentication_connection || !CONNECTION_NAME_REGEX.test(source.authentication_connection)) return browse;
+  const repair = ['google', 'onedrive', 'sharepoint', 'dropbox', 'box'].includes(source.provider) ? 'switch-file-authentication' : 'review-access';
+  return browse + `<a class="rx-btn rx-btn-secondary rx-btn-sm" data-accounts-file-link="authentication" data-slug="${e(row.slug)}" href="#connections/others/${repair}/api/${encodeURIComponent(source.authentication_connection)}">Manage authentication</a>`;
+};
+
+const renderRow = (
+  lane: AccountLane,
+  row: AccountRow,
+  workspace?: Pick<AccountsPanelState, 'detailSlug' | 'rowBusy' | 'rowError'>,
+): string => {
+  if (row.cloudSource && !workspace) {
     const source = row.cloudSource;
-    const provider = FILE_VENDOR_DECLARATIONS.find(vendor => vendor.vendor === source.provider)?.display_name ?? source.provider;
+    const provider = providerLabelFor(lane, source.provider);
     return `<li class="accounts-row"><div class="accounts-row-main accounts-cloud-source"><strong class="accounts-row-name">${e(source.label)}</strong>
       <span class="accounts-row-meta">${e(provider)} · Cloud source · ${source.stale ? 'File list may be out of date' : source.last_synced_at === null ? 'Waiting for first sync' : 'Metadata available'}</span>
-      <div class="accounts-form-actions"><a class="rx-btn rx-btn-secondary rx-btn-sm" href="#data/files/${encodeURIComponent('remote:' + source.source_id)}">Browse files</a>
-      ${source.authentication_connection && CONNECTION_NAME_REGEX.test(source.authentication_connection) ? `<a class="rx-btn rx-btn-secondary rx-btn-sm" href="#connections/others/${['google', 'onedrive', 'sharepoint', 'dropbox', 'box'].includes(source.provider) ? 'switch-file-authentication' : 'review-access'}/api/${encodeURIComponent(source.authentication_connection)}">Manage authentication</a>` : ''}</div>
+      <div class="accounts-form-actions">${renderFileSourceLinks(row)}</div>
     </div></li>`;
   }
   const status = displayStatusFor(row);
+  const name = `<span class="accounts-row-name">${e(row.cloudSource?.label ?? row.slug)}</span>`;
+  const statusText = `<span class="accounts-status" data-state="${e(status.state)}">${e(status.label)}</span>`;
+  const resyncing = workspace?.rowBusy.has(`resync:${row.slug}`);
+  const error = workspace && workspace.detailSlug !== row.slug && Object.hasOwn(workspace.rowError, row.slug)
+    ? workspace.rowError[row.slug] : undefined;
   return `
     <li class="accounts-row" data-account-slug="${e(row.slug)}">
       <button type="button" class="accounts-row-main"
-        data-action="accounts-open-detail" data-slug="${e(row.slug)}">
-        <span class="accounts-row-name">${e(row.slug)}</span>
+        data-action="accounts-open-detail" data-slug="${e(row.slug)}"${workspace?.detailSlug === row.slug ? ' aria-current="true"' : ''}>
+        ${workspace ? `<span class="accounts-workspace-row-heading">${name}${statusText}</span>` : name}
         <span class="accounts-row-meta">
           <span class="accounts-badge">${e(providerLabelFor(lane, row.adapterType))}</span>
-          <span class="accounts-status" data-state="${e(status.state)}">${e(status.label)}</span>
+          ${workspace ? '' : statusText}
           ${row.sendCapable ? '<span class="accounts-badge accounts-badge--send">'+(row.managedConnectionName ? 'sending enabled' : 'can send')+'</span>' : ''}
           ${row.managedConnectionName ? '<span class="accounts-badge">' + (row.sourceAuthentication === 'direct_oauth' ? 'direct OAuth' : 'managed OAuth') + '</span>' : ''}
+          ${resyncing ? '<span class="accounts-status" data-state="syncing">Re-syncing…</span>' : ''}
         </span>
         ${row.sublabel ? `<span class="accounts-row-sub">${e(row.sublabel)}</span>` : ''}
       </button>
+      ${error ? `<p class="accounts-workspace-row-error" role="alert">${e(error)}</p>` : ''}
     </li>
   `;
 };
@@ -1561,12 +1588,12 @@ const renderEmptyState = (lane: AccountLane): string => `
   </section>
 `;
 
-const renderList = (lane: AccountLane, state: AccountsPanelState): string => {
+const renderList = (lane: AccountLane, state: AccountsPanelState, inWorkspace = false): string => {
   const filters = state.filters;
   const visible = state.rows.filter(row => (!filters?.query || [row.slug, row.sublabel, row.cloudSource?.label, row.adapterType].join(' ').toLowerCase().includes(filters.query.toLowerCase()))
     && (!filters?.provider || row.adapterType === filters.provider)
     && (!filters?.status || (filters.status === 'attention' ? row.cloudSource?.stale || row.authState !== 'healthy' : row.cloudSource ? !row.cloudSource.stale : row.authState === 'healthy')));
-  const filterBar = state.rows.length ? `<div class="accounts-inventory-filters" role="group" aria-label="Filter connections">
+  const filterBar = state.rows.length ? `<div class="${inWorkspace ? 'accounts-workspace-filters' : 'accounts-inventory-filters'}" role="group" aria-label="Filter connections">
     <label>Search connections<input type="search" data-acct-filter="query" value="${e(filters?.query ?? '')}" autocomplete="off"></label>
     <label>Provider<select data-acct-filter="provider"><option value="">All providers</option>${[...new Set(state.rows.map(row => row.adapterType))].map(provider => `<option value="${e(provider)}"${filters?.provider === provider ? ' selected' : ''}>${e(providerLabelFor(lane, provider))}</option>`).join('')}</select></label>
     <label>Status<select data-acct-filter="status"><option value="">All statuses</option><option value="healthy"${filters?.status === 'healthy' ? ' selected' : ''}>No recorded problems</option><option value="attention"${filters?.status === 'attention' ? ' selected' : ''}>Needs attention</option></select></label>
@@ -1580,38 +1607,47 @@ const renderList = (lane: AccountLane, state: AccountsPanelState): string => {
     && state.error === null
     && !state.cloudFilesError && !state.localFilesError
     && state.rows.length === 0;
-  const retry = lane.id === 'file' && (state.localFilesError || state.cloudFilesError) ? '' : button({
+  const fileInventoryError = lane.id === 'file' && (state.localFilesError || state.cloudFilesError);
+  const retry = button({
     label: lane.id === 'mail' ? 'Refresh mailboxes' : lane.id === 'calendar' ? 'Refresh calendars' : 'Refresh file sources',
     action: 'accounts-retry-inventory', size: 'sm', ariaDisabled: state.loading, ariaBusy: state.loading,
   });
+  const inventoryRetry = fileInventoryError ? '' : retry;
   let body: string;
-  if (state.loading) {
+  const rows = () => visible.length
+    ? `<ul class="accounts-rows"${inWorkspace ? ' role="list"' : ''}>${visible.map(r => renderRow(lane, r, inWorkspace ? state : undefined)).join('')}</ul>`
+    : inlineHint('No connections match these filters.');
+  if (inWorkspace) {
+    const feedback = state.error !== null ? inlineError(state.error) + inventoryRetry : '';
+    body = `${feedback}${filterBar}${rows()}`;
+  } else if (state.loading) {
     body = hasSuccess || hasRecovery ? '' : `
       <div class="accounts-loading-state" role="status" aria-live="polite">
         <span class="accounts-loading-dot" aria-hidden="true"></span>
         <span>Loading ${e(lane.label.toLowerCase())}…</span>
-      </div>${retry}
+      </div>${inventoryRetry}
     `;
   } else if (state.error !== null) {
-    body = inlineError(state.error) + retry;
+    body = inlineError(state.error) + inventoryRetry;
   } else if (isEmpty) {
     body = renderEmptyState(lane);
   } else if (state.rows.length === 0) {
     body = '';
   } else {
-    body = `${filterBar}${visible.length ? `<ul class="accounts-rows">${visible.map((r) => renderRow(lane, r)).join('')}</ul>` : inlineHint('No connections match these filters.')}`;
+    body = `${filterBar}${rows()}`;
   }
   const canAdd = lane.providers.length > 0;
   const addRow = canAdd
     && !state.loading
     && state.error === null
     && state.rows.length > 0
-    ? `<div class="accounts-add-row">${button({
+    && (!inWorkspace || state.stage === 'list')
+    ? button({
         label: `+ ${lane.addLabel}`,
         variant: 'primary',
         size: 'sm',
         action: 'accounts-open-add',
-      })}</div>`
+      })
     : '';
   const pending = lane.pending ? inlineHint(lane.pending) : '';
   return `
@@ -1621,18 +1657,20 @@ const renderList = (lane: AccountLane, state: AccountsPanelState): string => {
       ? ''
       : `<header class="accounts-list-header">
           <h2 class="accounts-list-title">${e(lane.listTitle)}</h2>
+          ${inWorkspace ? addRow : ''}
           <p class="accounts-blurb">${e(lane.blurb)}</p>
         </header>`}
-    ${addRow}
+    ${!inWorkspace && addRow ? `<div class="accounts-add-row">${addRow}</div>` : ''}
     ${lane.id === 'file' ? `<details class="accounts-cloud-connect"><summary>Connect cloud source</summary><p>Files stay with the provider. Recued mirrors their metadata and reads downloads or exports when requested.</p><div class="accounts-form-actions">${FILE_VENDOR_DECLARATIONS.map(vendor => `<a class="rx-btn rx-btn-outline rx-btn-sm" href="#connections/others/enroll/${encodeURIComponent(vendor.vendor)}">${e(vendor.display_name)}</a>`).join('')}</div></details>
       ${state.localFilesError ? inlineError(state.localFilesError) : ''}${state.cloudFilesError ? inlineError(state.cloudFilesError) : ''}
-      ${state.cloudFilesError || state.localFilesError ? button({ label: 'Refresh file sources', action: 'accounts-success-refresh', size: 'sm' }) : ''}` : ''}
+      ${fileInventoryError ? retry : ''}` : ''}
     ${body}
     ${pending}
   `;
 };
 
-const renderDetail = (lane: AccountLane, state: AccountsPanelState): string => {
+const renderDetail = (lane: AccountLane, state: AccountsPanelState, inWorkspace = false): string => {
+  const back = button({ label: inWorkspace ? 'Close details' : 'Back', size: 'sm', action: 'accounts-back-to-list' });
   const row = state.rows.find((r) => r.slug === state.detailSlug);
   if (row === undefined) {
     return `
@@ -1643,31 +1681,33 @@ const renderDetail = (lane: AccountLane, state: AccountsPanelState): string => {
             : inlineError('Account not found — it may have been removed.')
         }
         <div class="accounts-form-actions">
-          ${button({ label: 'Back', size: 'sm', action: 'accounts-back-to-list' })}
+          ${back}
         </div>
       </div>
     `;
   }
   const busyKey = (op: string): boolean => state.rowBusy.has(`${op}:${row.slug}`);
-  const rowErr = state.rowError[row.slug];
+  const rowErr = Object.hasOwn(state.rowError, row.slug) ? state.rowError[row.slug] : undefined;
   const status = displayStatusFor(row);
   const lastSyncedAt = row.lastSyncedAt;
   const hasSynced = lastSyncedAt !== undefined && lastSyncedAt !== null;
   const synced =
     !hasSynced
-      ? row.authState === 'healthy' ? 'Waiting for first sync' : 'No successful sync yet'
-      : new Date(lastSyncedAt).toLocaleString();
+      ? row.authState === 'healthy' && !row.cloudSource?.stale ? 'Waiting for first sync' : 'No successful sync yet'
+      : inWorkspace ? formatClientDateTime(lastSyncedAt, { includeSeconds: false }) : new Date(lastSyncedAt).toLocaleString();
   // Re-sync is independent of authorization. A mailbox offers it once its first
   // import is done: before that, a restart would only start the import over.
-  const lifecycle = row.adapterType !== 'smtp' && (lane.id !== 'mail' || row.mailSync?.initial_sync_complete === true);
+  const lifecycle = !row.cloudSource && row.adapterType !== 'smtp' && (lane.id !== 'mail' || row.mailSync?.initial_sync_complete === true);
+  const apiConnection = row.cloudSource?.authentication_connection ?? row.managedConnectionName;
+  const title = `<h2 class="accounts-detail-title" data-accounts-detail-heading tabindex="-1">${e(row.cloudSource?.label ?? row.slug)}</h2>`;
   return `
     <div class="accounts-detail">
-      <h2 class="accounts-detail-title" data-accounts-detail-heading tabindex="-1">${e(row.slug)}</h2>
+      ${inWorkspace ? `<header class="accounts-workspace-detail-header">${title}${back}</header>` : title}
       <dl class="accounts-detail-grid">
         <dt>Provider</dt><dd>${e(providerLabelFor(lane, row.adapterType))}</dd>
         <dt>Status</dt><dd><span class="accounts-status" data-state="${e(status.state)}">${e(status.label)}</span></dd>
         ${row.sublabel ? `<dt>Account</dt><dd>${e(row.sublabel)}</dd>` : ''}
-        ${row.managedConnectionName ? `<dt>API connection</dt><dd>${e(row.managedConnectionName)}</dd>` : ''}
+        ${apiConnection ? `<dt>API connection</dt><dd>${e(apiConnection)}</dd>` : ''}
         ${row.adapterType === 'smtp' ? '<dt>Mail history</dt><dd>Local Sent copies only. This account does not receive mail.</dd>' : `<dt>${hasSynced ? row.mailSync ? 'Last mailbox read' : 'Last synced' : 'Sync'}</dt><dd>${e(synced)}</dd>`}
         ${row.mailSync ? `<dt>Initial sync</dt><dd>${row.mailSync.initial_sync_complete ? 'Complete' : row.mailSync.access_verified ? 'Importing mail in the background' : 'Waiting for mailbox access'}</dd>` : ''}
       </dl>
@@ -1679,7 +1719,7 @@ const renderDetail = (lane: AccountLane, state: AccountsPanelState): string => {
         ${row.mailSync && !row.mailSync.initial_sync_complete
           ? button({ label: 'Check sync status', action: 'accounts-success-refresh', size: 'sm' }) : ''}
         ${row.passwordRepairAvailable ? button({ label: 'Update credentials', action: 'accounts-update-credentials', size: 'sm', data: { slug: row.slug } }) : ''}
-        ${lane.id === 'file' ? `<a class="rx-btn rx-btn-outline rx-btn-sm" href="#data/files/${encodeURIComponent(row.slug)}">Browse files</a>` : ''}
+        ${lane.id === 'file' ? renderFileSourceLinks(row, inWorkspace) : ''}
         ${(row.authenticationSwitchAvailable || row.oauthAppSwitchAvailable) && ((lane.id === 'mail' && ['gmail', 'graph'].includes(row.adapterType))
           || (lane.id === 'calendar' && ['gcal', 'graph'].includes(row.adapterType)))
           ? button({ label: 'Manage authentication', action: 'accounts-manage-authentication', size: 'sm', data: { slug: row.slug } }) : ''}
@@ -1695,7 +1735,7 @@ const renderDetail = (lane: AccountLane, state: AccountsPanelState): string => {
               })
             : ''
         }
-        ${button({
+        ${row.cloudSource ? '' : button({
           label: busyKey('delete') ? 'Removing…' : 'Remove',
           variant: 'danger',
           size: 'sm',
@@ -1703,7 +1743,7 @@ const renderDetail = (lane: AccountLane, state: AccountsPanelState): string => {
           data: { slug: row.slug },
           disabled: busyKey('delete'),
         })}
-        ${button({ label: 'Back', size: 'sm', action: 'accounts-back-to-list' })}
+        ${inWorkspace ? '' : back}
       </div>
     </div>
   `;
@@ -1879,6 +1919,8 @@ const oauthAppGuide = (
 
 export interface AccountsPanelProps {
   state: AccountsPanelState;
+  /** An opt-in presentation for the webclient's wide foundational account views. */
+  desktopAccountWorkspace?: boolean;
 }
 
 /** Pure renderer for ONE foundational-account lane — the active stage
@@ -1942,11 +1984,40 @@ const renderAccountsDeleteConfirm = (state: AccountsPanelState): string => {
 };
 
 export const renderAccountsPanel = (props: AccountsPanelProps): string => {
-  const { state } = props;
+  const { state, desktopAccountWorkspace } = props;
   const lane = findAccountLane(state.lane) ?? ACCOUNT_LANES[0]!;
+  const inWorkspace = desktopAccountWorkspace && state.rows.length > 0
+    && !state.oauthFinishing && state.oauthReloadRecovery === null && state.connectionSuccess === null
+    && (state.stage === 'list' || state.stage === 'detail');
+  const authentication = state.stage === 'detail' && state.authenticationManagement?.slug === state.detailSlug ? (() => {
+    const row = state.rows.find(r => r.slug === state.detailSlug);
+    return row ? renderAuthenticationManagement({ prefix: 'accounts', action: state.authenticationManagement!.action,
+      current: row.sourceAuthentication === 'broker' ? 'Broker sign-in' : 'Recued direct OAuth', account: row.sublabel,
+      canChangeApp: row.oauthAppSwitchAvailable === true && !row.managedConnectionName,
+      ...((state.lane === 'mail' || state.lane === 'calendar') ? { historyScope: { kind: 'collection' as const, platform: state.lane, slug: row.slug } } : {}),
+      canChangeMethod: row.authenticationSwitchAvailable === true, busy: state.authenticationManagementBusy })
+      + (row.managedConnectionName && state.authenticationManagement!.action === 'reauthorize'
+        ? '<p>Re-authorize the saved API connection shared by this account. Review its linked connections before applying.</p>'
+          + button({ label: 'Continue to current sign-in', action: 'accounts-open-managed-connection', size: 'sm' }) : '') : '';
+  })() : '';
+  const detailTools = `
+    <div data-account-password-host></div>
+    <div data-collection-authentication-host></div>
+    <div data-collection-oauth-app-host></div>`;
 
   let stageHtml: string;
-  if (state.oauthFinishing) {
+  if (inWorkspace) {
+    const accountName = { mail: 'Mailbox', calendar: 'Calendar', file: 'File source' }[lane.id];
+    stageHtml = `
+      <section class="accounts-workspace-roster" aria-label="${e(lane.listTitle)}"${state.loading ? ' aria-busy="true"' : ''}>
+        ${renderList(lane, state, true)}
+      </section>
+      <section class="accounts-workspace-inspector" aria-label="${accountName} details" data-accounts-workspace-inspector="${e(state.detailSlug ?? '')}">
+        ${state.stage === 'detail'
+          ? renderDetail(lane, state, true) + authentication + detailTools
+          : `<p class="accounts-workspace-inspector-empty">Select a ${accountName.toLowerCase()} to review its sync status.</p>`}
+      </section>`;
+  } else if (state.oauthFinishing) {
     // Overlays the OAuth `form` for the whole connect span (popup-open through
     // the code-exchange) — see `renderOAuthFinishing`.
     const provider =
@@ -1969,26 +2040,14 @@ export const renderAccountsPanel = (props: AccountsPanelProps): string => {
 
   return `
     <div class="accounts-panel" data-accounts-lane="${e(state.lane)}">
-      <div class="accounts-stage">${stageHtml}</div>
+      <div class="accounts-stage"${inWorkspace ? ' data-accounts-workspace' : ''}>${stageHtml}</div>
       ${state.bulkOAuthAppSwitchAvailable && state.stage === 'list' && !state.oauthFinishing && ['mail', 'calendar'].includes(state.lane)
         && state.rows.some(row => ['gmail', 'gcal', 'graph'].includes(row.adapterType) && !row.managedConnectionName)
         ? button({ label: 'Switch OAuth app for several accounts', action: 'accounts-bulk-switch-oauth-app', size: 'sm' }) : ''}
-      ${state.stage === 'detail' && state.authenticationManagement?.slug === state.detailSlug ? (() => {
-        const row = state.rows.find(r => r.slug === state.detailSlug);
-        return row ? renderAuthenticationManagement({ prefix: 'accounts', action: state.authenticationManagement!.action,
-          current: row.sourceAuthentication === 'broker' ? 'Broker sign-in' : 'Recued direct OAuth', account: row.sublabel,
-          canChangeApp: row.oauthAppSwitchAvailable === true && !row.managedConnectionName,
-          ...((state.lane === 'mail' || state.lane === 'calendar') ? { historyScope: { kind: 'collection' as const, platform: state.lane, slug: row.slug } } : {}),
-          canChangeMethod: row.authenticationSwitchAvailable === true, busy: state.authenticationManagementBusy })
-          + (row.managedConnectionName && state.authenticationManagement!.action === 'reauthorize'
-            ? '<p>Re-authorize the saved API connection shared by this account. Review its linked connections before applying.</p>'
-              + button({ label: 'Continue to current sign-in', action: 'accounts-open-managed-connection', size: 'sm' }) : '') : '';
-      })() : ''}
+      ${inWorkspace ? '' : authentication}
       <div data-bulk-collection-oauth-app-host></div>
-      ${state.stage === 'list' && !state.oauthFinishing ? '<div data-accounts-list-footer-host></div>' : ''}
-      <div data-account-password-host></div>
-      <div data-collection-authentication-host></div>
-      <div data-collection-oauth-app-host></div>
+      ${inWorkspace || state.stage === 'list' && !state.oauthFinishing ? '<div data-accounts-list-footer-host></div>' : ''}
+      ${inWorkspace ? '' : detailTools}
       ${renderAccountsDeleteConfirm(state)}
     </div>
   `;
@@ -2004,8 +2063,8 @@ ${AUTHENTICATION_MANAGEMENT_STYLES}
 .accounts-panel > div:empty,
 .accounts-panel > [data-accounts-list-footer-host]:not(:has(> :not([hidden]))) { display: none; }
 .accounts-inventory-filters{display:flex;flex-wrap:wrap;align-items:end;gap:10px;margin:12px 0;font-size:13px}
-.accounts-inventory-filters label,.accounts-password-repair label{display:grid;gap:5px;min-width:0}
-.accounts-inventory-filters input,.accounts-inventory-filters select,.accounts-password-repair input{box-sizing:border-box;max-width:100%;min-width:0;font:inherit;padding:9px;border:1px solid var(--border);border-radius:7px;background:var(--surface);color:var(--fg)}
+:is(.accounts-inventory-filters, .accounts-workspace-filters) label,.accounts-password-repair label{display:grid;gap:5px;min-width:0}
+:is(.accounts-inventory-filters, .accounts-workspace-filters) :is(input, select),.accounts-password-repair input{box-sizing:border-box;max-width:100%;min-width:0;font:inherit;padding:9px;border:1px solid var(--border);border-radius:7px;background:var(--surface);color:var(--fg)}
 .accounts-inventory-filters label:first-child{flex:1 1 180px}.accounts-cloud-connect{margin:12px 0;font-size:13px}.accounts-cloud-connect summary{cursor:pointer;font-size:14px;font-weight:600}.accounts-cloud-connect p{color:var(--fg-muted)}
 .accounts-password-repair{border:1px solid var(--border);padding:16px;border-radius:10px;overflow-wrap:anywhere;font-size:13px;line-height:1.5}.accounts-password-repair h3{margin-top:0;font-size:16px}.accounts-password-repair form{display:grid;gap:12px}
 .accounts-password-repair p{color:var(--fg-muted);font-weight:400}.accounts-password-repair label{font-weight:500}
@@ -2354,6 +2413,70 @@ ${AUTHENTICATION_MANAGEMENT_STYLES}
 }
 .accounts-detail-grid dt { color: var(--muted); }
 .accounts-detail-grid dd { min-width: 0; margin: 0; overflow-wrap: anywhere; }
+.accounts-stage[data-accounts-workspace] {
+  --accounts-workspace-pane-height: clamp(20rem, calc(100dvh - var(--wc-header-height, 64px) - var(--wc-connection-banner-h, 0px) - 14.5rem), 48rem);
+  display: grid;
+  grid-template-columns: minmax(17rem, 36%) minmax(0, 1fr);
+  align-items: start;
+  gap: var(--wc-space-lg, 24px);
+}
+.accounts-workspace-roster {
+  min-width: 0;
+  max-height: var(--accounts-workspace-pane-height);
+  display: flex;
+  flex-direction: column;
+}
+.accounts-workspace-roster > :not(.accounts-rows) { flex: none; }
+.accounts-workspace-roster .accounts-list-header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 4px 12px;
+  margin: 0;
+}
+.accounts-workspace-roster .accounts-list-title { min-height: var(--wc-control-h, 40px); display: flex; align-items: center; margin: 0; }
+.accounts-workspace-roster .accounts-blurb { grid-column: 1 / -1; }
+.accounts-workspace-filters { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 12px; margin: 12px 0 8px; font-size: 13px; }
+.accounts-workspace-filters label { font-size: 12px; font-weight: 600; color: var(--muted); }
+.accounts-workspace-filters label:first-child { grid-column: 1 / -1; }
+.accounts-workspace-filters :is(input, select) { width: 100%; min-height: var(--wc-control-h, 40px); font-size: 13px; font-weight: 400; }
+.accounts-workspace-filters button { justify-self: start; }
+.accounts-workspace-filters [role="status"] { align-self: center; color: var(--muted); font-size: 12px; }
+.accounts-stage[data-accounts-workspace] .accounts-workspace-roster .accounts-rows { min-height: 0; overflow: auto; gap: 8px; padding: 2px; scrollbar-width: thin; }
+.accounts-stage[data-accounts-workspace] .accounts-workspace-roster .accounts-row-main { gap: 3px; padding: 9px 12px; border-radius: inherit; text-align: start; }
+.accounts-workspace-roster .accounts-row-main[aria-current="true"] { background: var(--accent-weak); box-shadow: inset 3px 0 var(--accent); }
+.accounts-workspace-roster .accounts-row-main:focus-visible { outline-offset: -2px; }
+.accounts-workspace-row-heading { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: baseline; gap: 8px; }
+.accounts-workspace-row-error { margin: 3px 12px 9px; color: var(--danger); font-size: 12px; overflow-wrap: anywhere; }
+.accounts-workspace-inspector {
+  min-width: 0;
+  max-height: var(--accounts-workspace-pane-height);
+  overflow: auto;
+  scrollbar-width: thin;
+  padding: 0 18px 18px;
+  border: 1px solid var(--border);
+  border-radius: var(--wc-radius-lg, 12px);
+  background: var(--surface);
+  overflow-wrap: anywhere;
+}
+.accounts-workspace-inspector > :not(:empty) + :not(:empty) { margin-top: 16px; }
+.accounts-workspace-inspector-empty { margin: 16px 0 0; color: var(--muted); font-size: 13px; }
+.accounts-workspace-detail-header {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 16px;
+  padding: 12px 0;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+}
+.accounts-workspace-inspector .accounts-workspace-detail-header .accounts-detail-title { margin: 0; font-size: 18px; }
+.accounts-workspace-detail-header button { flex-shrink: 0; }
+.accounts-workspace-inspector .accounts-form-actions > [data-action="accounts-delete"] { margin-inline-start: auto; }
 .accounts-loading { color: var(--muted); font-size: 13px; }
 @media (max-width: 640px) {
   .accounts-empty {

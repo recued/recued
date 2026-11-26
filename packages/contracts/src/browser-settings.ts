@@ -55,7 +55,8 @@ type BrowserSettingsRecipe = {
 /** A browser step's op and arguments in either spelling: as authored (`op: 'core.dom.act'`, `args`), or
  *  as the server runs it once lowered (`ingredient: 'dom-act'`, `input`), which is what the check before
  *  step 1 reads. */
-const browserStepOf = (step: Record<string, unknown>): { op: string; args: Record<string, unknown> } | undefined => {
+export const browserStepBinding = (step: unknown): { op: string; args: Record<string, unknown> } | undefined => {
+  if (step === null || typeof step !== 'object' || Array.isArray(step)) return undefined;
   const { op, args, ingredient, input } = step as { op?: unknown; args?: unknown; ingredient?: unknown; input?: unknown };
   const named = typeof op === 'string' ? op : typeof ingredient === 'string' ? kernelOpForBackingSlug(ingredient) : undefined;
   const given = typeof op === 'string' ? args : input;
@@ -67,8 +68,7 @@ const browserStepOf = (step: Record<string, unknown>): { op: string; args: Recor
 export const recipeBrowserSteps = (recipe: BrowserSettingsRecipe): BrowserSettingStep[] => {
   const found: BrowserSettingStep[] = [];
   for (const step of [...(recipe.prefetch_steps ?? []), ...(recipe.steps ?? [])]) {
-    if (step === null || typeof step !== 'object') continue;
-    const browser = browserStepOf(step as Record<string, unknown>);
+    const browser = browserStepBinding(step);
     if (browser === undefined) continue;
     const { id } = step as { id?: unknown };
     const { op, args } = browser;

@@ -32,7 +32,8 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { ReceptionManageCredentialStore } from '../../../storage/reception-manage-credential-store.js';
 import type { FormSubmissionSummary } from '../../../storage/reception-form-store.js';
 import type { ReceptionLookupRunOutcome } from '../../../reception-lookup-recipe-runner.js';
-import { htmlEscape, renderReceptionOutputBlocks } from './reception-page-render.js';
+import { RECEPTION_PAGE_STYLE_SRC } from '../static-assets.js';
+import { htmlEscape, renderReceptionOutputBlocks, type ReceptionOutputBlock } from './reception-page-render.js';
 import { RECEPTION_LOOKUP_PATH } from './visitor-lookup-mint.js';
 
 export interface ReceptionLookupHandlerDeps {
@@ -109,11 +110,21 @@ const STATE_COPY: Readonly<Record<VisitorLookupState, string>> = {
 };
 
 const page = (title: string, body: string): string =>
-  `<!doctype html><html lang="en"><head><meta charset="utf-8">`
-  + `<meta name="viewport" content="width=device-width,initial-scale=1">`
-  + `<meta name="robots" content="noindex,nofollow">`
-  + `<title>${htmlEscape(title)}</title></head><body>`
-  + `<main class="rcp-page">${body}</main></body></html>`;
+  `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="robots" content="noindex,nofollow">
+  <title>${htmlEscape(title)}</title>
+  <link rel="stylesheet" href="${RECEPTION_PAGE_STYLE_SRC}">
+</head>
+<body>
+  <main class="rcp-shell rcp-lookup-shell">
+    <div class="rcp-card">${body}</div>
+  </main>
+</body>
+</html>`;
 
 /** The visitor-facing AI notice for a viewback page.
  *
@@ -135,8 +146,8 @@ const AI_NOTICE_HTML =
  *  answer. */
 const UNAVAILABLE = page(
   'Link unavailable',
-  '<h1>This link is no longer available</h1>'
-  + '<p>It may have expired, or the address may be incomplete. '
+  '<h1 class="rcp-name">This link is no longer available</h1>'
+  + '<p class="rcp-tagline">It may have expired, or the address may be incomplete. '
   + 'If you still need an update, reply to the confirmation you received.</p>',
 );
 
@@ -201,12 +212,23 @@ export const createReceptionLookupHandler = (
       );
     }
     const state = projectLookupState(record, completion);
-    const submitted = new Date(record.submitted_at).toISOString();
-    const substrateBody =
-      `<h1>Your request</h1>`
-      + `<p class="rcp-lookup-state">${htmlEscape(STATE_COPY[state])}</p>`
-      + `<p class="rcp-lookup-meta">Reference ID: <code>${htmlEscape(record.submission_id)}</code></p>`
-      + `<p class="rcp-lookup-meta">Submitted ${htmlEscape(submitted)}</p>`;
+    const submitted = htmlEscape(new Date(record.submitted_at).toISOString());
+    const substrateBody = `<div class="rcp-lookup-status">
+      <div>
+        <h1 class="rcp-name">Your request</h1>
+        <p class="rcp-lookup-state">${htmlEscape(STATE_COPY[state])}</p>
+      </div>
+      <dl class="rcp-lookup-details">
+        <div>
+          <dt class="rcp-meta">Reference ID</dt>
+          <dd><code>${htmlEscape(record.submission_id)}</code></dd>
+        </div>
+        <div>
+          <dt class="rcp-meta">Submitted</dt>
+          <dd><time datetime="${submitted}">${submitted}</time></dd>
+        </div>
+      </dl>
+    </div>`;
 
     // D-240 slice 3b — a bound viewback recipe REPLACES the substrate status.
     //
@@ -221,7 +243,7 @@ export const createReceptionLookupHandler = (
     // "the page still renders" is exactly how it would not. The failure is
     // logged with the endpoint and the reason; the visitor sees the honest
     // narrower answer.
-    let blocks: ReadonlyArray<unknown> | null = null;
+    let blocks: ReadonlyArray<ReceptionOutputBlock> | null = null;
     // Tracked beside `blocks` on purpose: the notice belongs to the SAME outcome
     // that produced them, so a fallback to the substrate status cannot carry an
     // AI claim over text the substrate wrote.
@@ -295,8 +317,10 @@ export const createReceptionLookupHandler = (
           // The notice leads the blocks rather than trailing them: "at the
           // latest at the time of first exposure" means before the content, not
           // under it.
-          ? (blocksUsedAi ? AI_NOTICE_HTML : '')
-            + renderReceptionOutputBlocks(blocks as never)
+          ? '<h1 class="rcp-name">Your request</h1><div class="rcp-lookup-output">'
+            + (blocksUsedAi ? AI_NOTICE_HTML : '')
+            + renderReceptionOutputBlocks(blocks)
+            + '</div>'
           : substrateBody,
       ),
       200,

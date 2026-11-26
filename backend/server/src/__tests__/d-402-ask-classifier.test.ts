@@ -117,14 +117,14 @@ describe('D-402 slice F1 — what each step does about asking, at the caller\'s 
 });
 
 describe('D-402 slice F1 — a browser batch, as the gates read it', () => {
-  it('reads on the page it names never ask; a click asks and can be approved ahead; reaching an address may open a page', () => {
+  it('reads never ask, on the page it names or one it opens (a read since 2026-11-23); a click asks and can be approved ahead', () => {
     const page = 'bridge:work:3:D1';
     expect(verdicts(classifyRecipeAsks(recipe('r', [act('look', [{ do: 'read', form: 'outline' }], page)]), CHAT, lookups)))
       .toEqual(['look:never']);
     expect(verdicts(classifyRecipeAsks(recipe('r', [act('buy', [{ do: 'click', text: 'Buy', role: 'button' }], page)]), CHAT, lookups)))
       .toEqual(['buy:ahead']);
     expect(verdicts(classifyRecipeAsks(recipe('r', [act('go', [{ url: 'https://shop.example.com/', do: 'read', form: 'outline' }])]), CHAT, lookups)))
-      .toEqual(['go:ahead']);
+      .toEqual(['go:never']);
   });
 
   it('putting one of the owner\'s files into a page asks every time; its secrets and downloads are listed', () => {

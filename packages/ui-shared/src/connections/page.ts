@@ -123,6 +123,11 @@ export interface ConnectionsPageProps extends ConnectionsPageState {
   layout?: 'standalone' | 'embedded';
   /** D-322 §23 — hide the switch entry point when the host has no broker RPC. */
   managedOAuthAvailable?: boolean;
+  inventoryWorkspace?: {
+    desktop: boolean;
+    selection: Pick<ConnectionView, 'kind' | 'name'> | null;
+    probes: ReadonlyMap<string, { revision: ConnectionView['updated_at']; result: NonNullable<ConnectionsDialogState['recentProbe']> }>;
+  };
   /** The host can open the persistent Account/server-profile guide from an
    * unsupported safe-start receipt. Absent hosts keep the direct recheck and
    * dismiss actions, rather than rendering a dead guide button. */
@@ -165,6 +170,14 @@ const healthOfView = (connection: ConnectionView) => {
   const health = connection.health as { status?: string; last_error?: string; last_probed_at?: number } | undefined;
   return health && typeof health === 'object' ? health : undefined;
 };
+const connectionHealthLabel = (health: ReturnType<typeof healthOfView>): string => {
+  if (health?.status === 'ok' && !health.last_error) return 'Last check passed';
+  if (health?.status === 'auth_failed') return 'Access denied — needs attention';
+  if (health?.status === 'unreachable') return 'Could not reach service';
+  return 'Access not verified';
+};
+const connectionSignIn = (conn: ConnectionView): string =>
+  conn.auth_type === 'managed_oauth' ? 'OAuth broker' : conn.auth_type ? AUTH_LABELS[conn.auth_type] : 'Authentication not reported';
 const KIND_LABELS: Record<ConnectionKind, string> = {
   api: 'API',
   mcp: 'MCP',
@@ -338,6 +351,7 @@ const renderRow = (
   installedPacks: readonly InstalledPackScopes[],
   mcpPackStatus: Readonly<Record<string, McpPackStatusView>> | undefined,
   managedOAuthAvailable = false,
+  detail?: { closeLabel: string; probe: ConnectionsDialogState['recentProbe'] },
 ): string => {
   const key = connectionRowKey(conn.kind, conn.name);
   const probing = probeInFlight.has(key);
@@ -361,21 +375,39 @@ const renderRow = (
   const engagementToggleLabel = engagementExpanded
     ? 'Hide health'
     : 'How well it is working';
+  const health = healthOfView(conn);
+  const summary = summaryFor(conn);
+  const status = connectionHealthLabel(detail?.probe ?? health);
+  const signIn = connectionSignIn(conn);
+  const accountEmail = typeof conn.account_email === 'string' && conn.account_email ? conn.account_email : undefined;
+  const showAccount = ['managed_oauth', 'oauth2_refresh'].includes(conn.auth_type ?? '');
+  const checkedAt = detail ? formatUtcMinute(detail.probe?.checked_at ?? health?.last_probed_at) : null;
   return `
     <div class="connections-row-wrap" data-conn-key="${e(key)}">
-      <div class="connections-row" data-conn-key="${e(key)}">
-        <div class="connections-row-info">
+      ${detail ? `<header class="connections-inventory-detail-header">
+        <h2 data-connection-detail-heading tabindex="-1">${e(conn.display_name || conn.name)}</h2>
+        ${button({ label: detail.closeLabel, size: 'sm', action: 'connections-close-detail' })}
+      </header>` : ''}
+      <div class="${detail ? 'connections-inventory-detail-body' : 'connections-row'}" data-conn-key="${e(key)}">
+        ${detail ? `<dl class="connections-inventory-facts">
+          ${conn.display_name && conn.display_name !== conn.name ? `<dt>Saved name</dt><dd>${e(conn.name)}</dd>` : ''}
+          ${summary ? `<dt>Endpoint</dt><dd>${e(summary)}</dd>` : ''}
+          ${conn.auth_type || conn.kind === 'api' ? `<dt>Sign-in method</dt><dd>${e(signIn)}</dd>` : ''}
+          ${showAccount ? `<dt>Account</dt><dd>${e(accountEmail ?? 'Account unknown')}</dd>` : ''}
+          <dt>Status</dt><dd>${e(status)}</dd>
+          <dt>Last check</dt><dd>${e(checkedAt ?? 'No recorded check')}</dd>
+        </dl>` : `<div class="connections-row-info">
           <div class="connections-row-identity">
             <strong class="connections-row-name">${e(conn.display_name || conn.name)}</strong>
             ${conn.subtype ? `<span class="connections-row-subtype">${e(conn.subtype)}</span>` : ''}
             ${conn.display_name && conn.display_name !== conn.name ? `<span class="connections-row-display">${e(conn.name)}</span>` : ''}
           </div>
-          <span class="connections-row-summary">${e(summaryFor(conn))}</span>
+          <span class="connections-row-summary">${e(summary)}</span>
           <div class="connections-row-meta">
-            ${conn.kind === 'api' ? `<span>${e(conn.auth_type === 'managed_oauth' ? 'OAuth broker' : conn.auth_type ? AUTH_LABELS[conn.auth_type] : 'Authentication not reported')}${['managed_oauth', 'oauth2_refresh'].includes(conn.auth_type ?? '') ? ' · ' + e(typeof conn.account_email === 'string' && conn.account_email ? conn.account_email : 'Account unknown') : ''}</span>` : ''}
-            <span>${e(healthOfView(conn)?.status === 'ok' && !healthOfView(conn)?.last_error ? 'Last check passed' : healthOfView(conn)?.status === 'auth_failed' ? 'Access denied — needs attention' : healthOfView(conn)?.status === 'unreachable' ? 'Could not reach service' : 'Access not verified')}</span>
+            ${conn.kind === 'api' ? `<span>${e(signIn)}${showAccount ? ' · ' + e(accountEmail ?? 'Account unknown') : ''}</span>` : ''}
+            <span>${e(status)}</span>
           </div>
-        </div>
+        </div>`}
         <div class="connections-row-actions">
           ${managedOAuthAvailable && conn.kind === 'api' && ['oauth2_refresh', 'bearer', 'managed_oauth'].includes(conn.auth_type ?? '')
             ? button({ label: 'Manage authentication', action: 'connections-manage-row-authentication', size: 'sm', data: { kind: conn.kind, name: conn.name }, disabled: deleting }) : ''}
@@ -418,6 +450,7 @@ const renderRow = (
           })}
         </div>
       </div>
+      ${detail ? renderRecentProbe(detail.probe) : ''}
       ${engagementPanel}
       ${renderPackUsage(conn, installedPacks)}
       ${renderMcpPackBadge(conn, mcpPackStatus)}
@@ -585,13 +618,12 @@ const formatUtcMinute = (value: number | undefined): string | null => {
 };
 
 const renderRecentProbe = (
-  dialog: ConnectionsDialogState,
+  p: ConnectionsDialogState['recentProbe'],
   postSafeStopRecoveries: ReadonlyArray<
     ConnectionsPostSafeStopRecoveryState
   > = [],
   postSafeStopProfileLabel?: string,
 ): string => {
-  const p = dialog.recentProbe;
   if (!p) return '';
   if (p.purpose === 'post_safe_stop') {
     const identity = `${p.kind}/${p.name}`;
@@ -1345,6 +1377,61 @@ const renderListView = (props: ConnectionsPageProps): string => {
       : !healthOfView(row) || healthOfView(row)?.status === 'unknown')));
   const groups = groupByKind(visible);
   const installedPacks = props.installedPacks ?? [];
+  const workspace = props.inventoryWorkspace;
+  const desktop = workspace?.desktop && props.connections.length > 0;
+  const selection = workspace?.selection;
+  const filtersHtml = props.connections.length ? `<div class="${desktop ? 'connections-workspace-filters' : 'connections-inventory-filters'}" role="group" aria-label="Filter connections">
+    <label>Search connections<input type="search" data-conn-inventory-filter="query" value="${e(filters?.query ?? '')}" autocomplete="off"></label>
+    <label>Vendor<select data-conn-inventory-filter="vendor"><option value="">All vendors</option>${[...new Set(props.connections.map(row => row.vendor).filter((vendor): vendor is string => typeof vendor === 'string' && !!vendor))].map(vendor => `<option value="${e(vendor)}"${filters?.vendor === vendor ? ' selected' : ''}>${e(vendor)}</option>`).join('')}</select></label>
+    <label>Status<select data-conn-inventory-filter="status"><option value="">All statuses</option><option value="checked"${filters?.status === 'checked' ? ' selected' : ''}>Last check passed</option><option value="attention"${filters?.status === 'attention' ? ' selected' : ''}>Needs attention</option><option value="unknown"${filters?.status === 'unknown' ? ' selected' : ''}>Not verified</option></select></label>
+    <span role="status">${visible.length} of ${props.connections.length}</span></div>` : '';
+  const add = `<div class="connections-add-row">${button({ label: '+ Add Connection', variant: 'primary', size: 'sm', action: 'connections-open-add' })}</div>`;
+  const notices = renderRecentProbe(
+    props.dialog.recentProbe, props.postSafeStopRecoveries, props.postSafeStopProfileLabel,
+  ) + renderPackInventoryRecovery(props.packInventoryRecovery);
+  const noMatches = props.connections.length && !visible.length ? inlineHint('No connections match these filters.') : '';
+  if (desktop || selection) {
+    const key = selection ? connectionRowKey(selection.kind, selection.name) : '';
+    const selected = selection ? props.connections.find(row => row.kind === selection.kind && row.name === selection.name) : undefined;
+    const probeFor = (row: ConnectionView) => {
+      const outcome = workspace?.probes.get(connectionRowKey(row.kind, row.name));
+      if (!outcome || outcome.revision !== row.updated_at) return undefined;
+      const observedAt = healthOfView(row)?.last_probed_at;
+      return observedAt !== undefined && outcome.result.checked_at !== undefined && observedAt > outcome.result.checked_at
+        ? undefined : outcome.result;
+    };
+    const closeLabel = desktop ? 'Close details' : 'Back';
+    const detail = selected ? renderRow(
+      selected, props.probeInFlight, props.deleteInFlight, props.engagementHealth, installedPacks,
+      props.mcpPackStatus, props.managedOAuthAvailable,
+      { closeLabel, probe: probeFor(selected) },
+    ) : selection
+      ? inlineHint('This connection is no longer saved.') + button({ label: closeLabel, size: 'sm', action: 'connections-close-detail' })
+      : '<p class="connections-inventory-placeholder">Select a connection to see its details.</p>';
+    const roster = desktop ? `<section class="connections-inventory-roster" aria-label="Connections">${add}${filtersHtml}
+      <div class="connections-inventory-rows" data-connection-roster-rows>
+        ${KIND_ORDER.filter(kind => groups[kind].length).map(kind => `<section>
+          <h3 class="connections-group-title">${e(KIND_LABELS[kind])} (${groups[kind].length})</h3>
+          <ul class="connections-inventory-group" role="list">
+            ${groups[kind].map(row => {
+              const rowKey = connectionRowKey(row.kind, row.name);
+              const status = props.probeInFlight.has(rowKey) ? 'Testing…' : connectionHealthLabel(probeFor(row) ?? healthOfView(row));
+              return `<li><button type="button" data-action="connections-open-detail" data-kind="${e(row.kind)}" data-name="${e(row.name)}"${key === rowKey ? ' aria-current="true"' : ''}>
+                <strong>${e(row.display_name || row.name)}</strong><span>${e(status)}</span>
+                ${row.display_name && row.display_name !== row.name ? `<small>${e(row.name)}</small>` : ''}
+              </button></li>`;
+            }).join('')}
+          </ul>
+        </section>`).join('')}
+        ${noMatches}
+      </div>
+    </section>` : '';
+    return `${notices}<div${desktop ? ' class="connections-inventory-workspace" data-connections-inventory-workspace' : ''}>
+      ${roster}
+      <section class="connections-inventory-detail" aria-label="Connection details" data-connection-inventory-detail="${e(key)}">${detail}</section>
+    </div>
+    ${desktop && props.signInGrids && groups.api.length ? `<div class="connections-signin-grids" ${SIGNIN_GRIDS_HOST_ATTR}=""></div>` : ''}`;
+  }
   const groupBlocks = KIND_ORDER.map((kind) =>
     renderKindGroup(
       kind,
@@ -1366,21 +1453,12 @@ const renderListView = (props: ConnectionsPageProps): string => {
         })
       : '';
   return `
-    <div class="connections-add-row">${button({ label: '+ Add Connection', variant: 'primary', size: 'sm', action: 'connections-open-add' })}</div>
-    ${props.connections.length ? `<div class="connections-inventory-filters" role="group" aria-label="Filter connections">
-      <label>Search connections<input type="search" data-conn-inventory-filter="query" value="${e(filters?.query ?? '')}" autocomplete="off"></label>
-      <label>Vendor<select data-conn-inventory-filter="vendor"><option value="">All vendors</option>${[...new Set(props.connections.map(row => row.vendor).filter((vendor): vendor is string => typeof vendor === 'string' && !!vendor))].map(vendor => `<option value="${e(vendor)}"${filters?.vendor === vendor ? ' selected' : ''}>${e(vendor)}</option>`).join('')}</select></label>
-      <label>Status<select data-conn-inventory-filter="status"><option value="">All statuses</option><option value="checked"${filters?.status === 'checked' ? ' selected' : ''}>Last check passed</option><option value="attention"${filters?.status === 'attention' ? ' selected' : ''}>Needs attention</option><option value="unknown"${filters?.status === 'unknown' ? ' selected' : ''}>Not verified</option></select></label>
-      <span role="status">${visible.length} of ${props.connections.length}</span></div>` : ''}
-    ${renderRecentProbe(
-      props.dialog,
-      props.postSafeStopRecoveries,
-      props.postSafeStopProfileLabel,
-    )}
-    ${renderPackInventoryRecovery(props.packInventoryRecovery)}
+    ${add}
+    ${filtersHtml}
+    ${notices}
     ${empty}
     ${groupBlocks}
-    ${props.connections.length && !visible.length ? inlineHint('No connections match these filters.') : ''}
+    ${noMatches}
   `;
 };
 
@@ -3472,7 +3550,7 @@ const renderForm = (
       dialog.recentProbe.kind,
       dialog.recentProbe.name,
     )
-    ? renderRecentProbe(dialog)
+    ? renderRecentProbe(dialog.recentProbe)
     : '';
   const onboarding = renderConnectionOnboarding(dialog, schema);
   const probeNote = schema.probe && onboarding === ''
@@ -3928,8 +4006,58 @@ export const CONNECTIONS_PAGE_STYLES = `
 ${AUTHENTICATION_MANAGEMENT_STYLES}
 .connections-auth-note{margin:0;color:var(--fg-muted);font-size:12px;line-height:1.5}
 .connections-inventory-filters{display:flex;flex-wrap:wrap;align-items:end;gap:10px;margin:12px 0;font-size:13px}
-.connections-inventory-filters label{display:grid;gap:5px;min-width:0}.connections-inventory-filters label:first-child{flex:1 1 180px}
-.connections-inventory-filters input,.connections-inventory-filters select{box-sizing:border-box;min-width:0;max-width:100%;font:inherit;padding:9px;border:1px solid var(--border);border-radius:7px;background:var(--surface);color:var(--fg)}
+:is(.connections-inventory-filters, .connections-workspace-filters) label{display:grid;gap:5px;min-width:0}
+.connections-inventory-filters label:first-child{flex:1 1 180px}
+:is(.connections-inventory-filters, .connections-workspace-filters) :is(input, select){box-sizing:border-box;min-width:0;max-width:100%;font:inherit;padding:9px;border:1px solid var(--border);border-radius:7px;background:var(--surface);color:var(--fg)}
+.connections-inventory-workspace {
+  --connections-pane-height: clamp(20rem, calc(100dvh - var(--wc-header-height, 64px) - var(--wc-connection-banner-h, 0px) - 14.5rem), 48rem);
+  display: grid; grid-template-columns: minmax(17rem, 36%) minmax(0, 1fr);
+  align-items: start; gap: var(--wc-space-lg, 24px);
+}
+.connections-inventory-roster { min-width: 0; max-height: var(--connections-pane-height); display: flex; flex-direction: column; }
+.connections-inventory-roster > :not(.connections-inventory-rows) { flex: none; }
+.connections-inventory-roster .connections-add-row { margin-top: 0; }
+.connections-workspace-filters { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 12px; margin: 12px 0 8px; }
+.connections-workspace-filters label { font-size: 12px; font-weight: 600; color: var(--fg-muted); }
+.connections-workspace-filters label:first-child { grid-column: 1 / -1; }
+.connections-workspace-filters :is(input, select) { min-height: var(--wc-control-h, 40px); font-size: 13px; font-weight: 400; }
+.connections-workspace-filters [role="status"] { font-size: 12px; color: var(--fg-muted); }
+.connections-inventory-rows { min-height: 0; overflow: auto; scrollbar-width: thin; padding: 2px; display: grid; align-content: start; gap: 12px; }
+.connections-inventory-group { display: grid; gap: 6px; list-style: none; margin: 0; padding: 0; }
+.connections-inventory-group button {
+  width: 100%; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: baseline;
+  gap: 3px 8px; padding: 9px 12px; color: var(--fg); background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--wc-radius-lg, 12px); font: inherit; font-size: 13px; text-align: start; cursor: pointer; overflow-wrap: anywhere;
+}
+.connections-inventory-group button > :is(span, small) { font-size: 11px; color: var(--fg-muted); }
+.connections-inventory-group button[aria-current="true"] { background: var(--accent-weak); box-shadow: inset 3px 0 var(--accent); }
+.connections-inventory-group button:focus-visible { outline-offset: -2px; }
+.connections-inventory-detail {
+  min-width: 0; padding: 0 18px 18px; border: 1px solid var(--border);
+  border-radius: var(--wc-radius-lg, 12px); background: var(--surface); overflow-wrap: anywhere;
+}
+.connections-inventory-workspace .connections-inventory-detail { max-height: var(--connections-pane-height); overflow: auto; scrollbar-width: thin; }
+.connections-inventory-detail-header {
+  position: sticky; top: 0; z-index: 1; display: flex; justify-content: space-between; align-items: center; gap: 12px;
+  padding: 12px 0; border-bottom: 1px solid var(--border); background: var(--surface);
+}
+.connections-inventory-detail-header h2 { margin: 0; font-size: 18px; min-width: 0; }
+.connections-inventory-detail-header button { flex-shrink: 0; }
+.connections-inventory-placeholder { margin: 16px 0 0; font-size: 13px; color: var(--fg-muted); }
+.connections-inventory-detail-body { display: grid; gap: 12px; min-width: 0; }
+.connections-inventory-detail-body .connections-row-actions { flex-wrap: wrap; gap: 8px; }
+.connections-inventory-detail-body .connections-row-actions [data-action="connections-delete"] { margin-inline-start: auto; }
+.connections-inventory-facts {
+  display: grid; grid-template-columns: minmax(7rem, 28%) minmax(0, 1fr); gap: 8px 16px; margin: 0;
+  padding: 14px 16px; border: 1px solid var(--border); border-radius: var(--wc-radius-lg, 12px); font-size: 13px;
+}
+.connections-inventory-facts dt { color: var(--fg-muted); }
+.connections-inventory-facts dd { min-width: 0; margin: 0; }
+.connections-inventory-detail > .connections-row-wrap { gap: 16px; }
+@media (max-width: 560px) {
+  .connections-inventory-facts { grid-template-columns: minmax(0, 1fr); gap: 4px; }
+  .connections-inventory-facts dd:not(:last-child) { margin-bottom: 6px; }
+}
 ${REFERENCE_PROVENANCE_STYLES}
 .connections-page {
   box-sizing: border-box;

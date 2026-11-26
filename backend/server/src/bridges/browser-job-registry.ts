@@ -28,6 +28,8 @@ export interface BrowserJobRegistry {
   end(owner: BrowserJobOwner): { job_id: string } | undefined;
   /** The job this app has going, if any and not yet an hour old. */
   activeFor(owner: BrowserJobOwner): string | undefined;
+  /** D-402 (2026-11-23) — the same, with when it ends at the latest: a pass "until this job ends" ends then too. */
+  activeJob(owner: BrowserJobOwner): { job_id: string; expires_at: number } | undefined;
   /** D-402 slice A5 — end this app's job and keep it for a draft, with the app's labels (checked by
    *  the caller), for a day: the owner answers the draft request when they can. Its calls stop
    *  being gathered. An app keeps one job for a draft: keeping another lets the earlier one go
@@ -90,6 +92,10 @@ export const createBrowserJobRegistry = (options: {
     },
     activeFor(owner) {
       return live(keyOf(owner))?.job_id;
+    },
+    activeJob(owner) {
+      const job = live(keyOf(owner));
+      return job === undefined ? undefined : { job_id: job.job_id, expires_at: job.started_at + holdMs };
     },
     keepForDraft(owner, labels) {
       const key = keyOf(owner);

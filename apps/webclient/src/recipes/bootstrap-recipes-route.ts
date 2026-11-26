@@ -295,6 +295,7 @@ import {
 import { programNeedsFromError, renderRunNeedList } from '../shell/run-needs-offer.js';
 import {
   LIST_PREVIEW_STYLES,
+  focusListTarget,
   mountListPreview,
   readListContinuity,
   readListScroll,
@@ -332,6 +333,11 @@ export const RECIPES_ROUTE_RECIPE_PACKS_ATTR = 'data-recued-recipe-packs';
 export const RECIPES_ROUTE_RECIPE_SEARCH_ATTR = 'data-recued-recipe-search';
 const RECIPES_PAGE_SIZE = 24;
 const RECIPES_LIST_CONTINUITY_KEY = 'recipes:installed';
+const RECIPES_WORKSPACE_ATTR = 'data-recued-recipes-workspace';
+const RECIPES_WORKSPACE_LIST_ATTR = 'data-recued-recipes-workspace-list';
+const RECIPES_WORKSPACE_PREVIEW_ATTR = 'data-recued-recipes-workspace-preview';
+const RECIPES_WORKSPACE_PREVIEW_ID = 'recued-installed-recipe-preview';
+const RECIPES_DESKTOP_MEDIA = '(min-width: 1280px) and (hover: hover) and (pointer: fine)';
 /** The per-card "Run" button (the trigger). The Run MODAL it opens is the
  *  shared `@recued/ui-shared` RunModal (its own `RUN_MODAL_*` hooks). */
 export const RECIPES_ROUTE_RUN_BUTTON_ATTR = 'data-recued-recipes-run-button';
@@ -1110,6 +1116,107 @@ const RECIPES_ROUTE_STYLES = `
   border-color: var(--accent);
   box-shadow: var(--wc-ring);
 }
+[${RECIPES_ROUTE_HOST_ATTR}] > [${RECIPES_WORKSPACE_ATTR}] {
+  --recipes-pane-height: clamp(19rem, calc(100dvh - var(--wc-header-height, 64px) - var(--wc-connection-banner-h, 0px) - 12rem), 48rem);
+  grid-template-columns: minmax(18rem, 38%) minmax(0, 1fr);
+  align-items: start;
+  gap: var(--wc-space-lg, 24px);
+}
+.recipes-workspace-index {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  max-height: var(--recipes-pane-height);
+}
+.recipes-workspace-index > :not([${RECIPES_WORKSPACE_LIST_ATTR}]) { flex: none; }
+[${RECIPES_ROUTE_HOST_ATTR}] .recipes-workspace-index .recipes-search { max-width: none; }
+.recipes-workspace-index [${RECIPES_ROUTE_COUNT_ATTR}] { color: var(--fg-muted); }
+[${RECIPES_WORKSPACE_LIST_ATTR}] {
+  display: grid;
+  align-content: start;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  gap: 6px;
+  padding: 3px;
+}
+[${RECIPES_WORKSPACE_LIST_ATTR}] .recipes-workspace-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 4px 12px;
+  min-height: 38px;
+  padding: 8px 10px;
+  color: var(--fg);
+  font: inherit;
+  text-align: start;
+}
+.recipes-workspace-row[aria-current="true"] {
+  border-color: var(--accent);
+  background: var(--accent-weak);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+.recipes-workspace-row:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.recipes-workspace-row > * { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.recipes-workspace-row > strong { font-weight: 650; }
+.recipes-workspace-row > small { grid-column: 1 / -1; color: var(--fg-muted); }
+.recipes-workspace-row > span { font-size: 12px; color: var(--fg-muted); }
+[${RECIPES_WORKSPACE_PREVIEW_ATTR}] {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  max-height: var(--recipes-pane-height);
+  border: 1px solid var(--border);
+  border-radius: var(--wc-radius-lg, 12px);
+  background: var(--surface);
+}
+[${RECIPES_WORKSPACE_PREVIEW_ATTR}][hidden] { display: none; }
+.recipes-preview-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: start;
+  gap: 12px;
+  padding: 16px;
+  border-bottom: 1px solid var(--border);
+}
+.recipes-preview-header > h3 {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 650;
+  overflow-wrap: anywhere;
+}
+.recipes-preview-header > button { flex: none; }
+.recipes-preview-body {
+  display: grid;
+  align-content: start;
+  gap: 16px;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 16px;
+  overflow-wrap: anywhere;
+}
+.recipes-preview-body > p { margin: 0; }
+.recipes-preview-body > dl {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  align-items: baseline;
+  gap: 10px 18px;
+  margin: 0;
+}
+.recipes-preview-body dt { color: var(--fg-muted); font-size: 13px; }
+.recipes-preview-body dd { margin: 0; }
+[${RECIPES_ROUTE_HOST_ATTR}] .recipes-preview-actions {
+  justify-content: flex-end;
+  margin: 0;
+  padding: 12px 16px;
+  border-top: 1px solid var(--border);
+}
+.recipes-preview-header > .recipes-button,
+.recipes-preview-actions > .recipes-button { min-height: var(--wc-control-h, 40px); }
+.recipes-preview-empty { margin: 0; padding: 24px 16px; color: var(--fg-muted); }
 [${RECIPES_ROUTE_RECIPE_CARD_ATTR}] .recipe-card {
   border: 0;
   padding: 0;
@@ -2037,6 +2144,33 @@ const renderRecipeFilters = (
   `;
 };
 
+const renderRecipeActions = (
+  entry: ServerRecipeListEntry,
+  readiness: RecipeRunnabilityEntry | undefined,
+): string => {
+  const name = e(recipeDisplayName(entry));
+  const id = e(entry.recipe_id);
+  const missingPacks = readiness === undefined ? [] : missingPackRefsFromRunnability(readiness);
+  return `
+    <button type="button" class="recipes-button"
+      ${RECIPES_ROUTE_RECIPE_OPEN_ATTR}="${id}"
+      ${RECIPES_ROUTE_ACTION_ATTR}="open-recipe"
+      ${RECIPES_ROUTE_RECIPE_ID_ATTR}="${id}"
+      aria-label="Open ${name} details">Open</button>
+    ${classifyRecipeAction(entry.recipe) === 'manual'
+      ? `<button type="button" class="recipes-button recipes-button--primary"
+        ${RECIPES_ROUTE_RUN_BUTTON_ATTR}="${id}"
+        ${RECIPES_ROUTE_ACTION_ATTR}="open-run"
+        ${RECIPES_ROUTE_RECIPE_ID_ATTR}="${id}"
+        aria-label="Run ${name}"${missingPackRunAttrs(missingPacks)}>
+        ${renderActionLabel('play', 'Run')}
+      </button>`
+      : `<a class="recipes-button recipes-button--primary"
+        href="${e(serializeShellRoute('automation', entry.recipe_id))}"
+        aria-label="Manage automation for ${name}"
+        ${RECIPES_ROUTE_AUTOMATION_LINK_ATTR}>Manage</a>`}`;
+};
+
 /** The slim management card (R24): name + trigger badge + "from pack X" +
  *  runnability / PII pills + actions. Card body/Space opens a read-only preview;
  *  Enter or the explicit Open action enters durable detail. */
@@ -2047,13 +2181,9 @@ const renderRecipeListCard = (
   pii: ReadonlyMap<string, RecipePiiPostureSummary> | null,
 ): string => {
   const name = recipeDisplayName(entry);
-  const actionKind = classifyRecipeAction(entry.recipe);
   const searchText = recipeListSearchText(entry);
   const packs = recipePackRefs(entry.recipe);
   const targetRunnability = runnability?.get(entry.recipe_id);
-  const missingPacks = targetRunnability === undefined
-    ? []
-    : missingPackRefsFromRunnability(targetRunnability);
   return `
     <div ${RECIPES_ROUTE_RECIPE_CARD_ATTR}="${e(entry.recipe_id)}"
       ${RECIPES_ROUTE_ACTION_ATTR}="preview-recipe"
@@ -2076,60 +2206,107 @@ const renderRecipeListCard = (
           aria-label="Preview ${e(name)}">
           Preview
         </button>
-        <button type="button" class="recipes-button"
-          ${RECIPES_ROUTE_RECIPE_OPEN_ATTR}="${e(entry.recipe_id)}"
-          ${RECIPES_ROUTE_ACTION_ATTR}="open-recipe"
-          ${RECIPES_ROUTE_RECIPE_ID_ATTR}="${e(entry.recipe_id)}"
-          aria-label="Open ${e(name)} details">
-          Open
-        </button>
-        ${actionKind === 'manual'
-          ? `<button type="button" class="recipes-button recipes-button--primary"
-          ${RECIPES_ROUTE_RUN_BUTTON_ATTR}="${e(entry.recipe_id)}"
-          ${RECIPES_ROUTE_ACTION_ATTR}="open-run"
-          ${RECIPES_ROUTE_RECIPE_ID_ATTR}="${e(entry.recipe_id)}"
-          aria-label="Run ${e(name)}"${missingPackRunAttrs(missingPacks)}>
-          ${renderActionLabel('play', 'Run')}
-        </button>`
-          : `<a class="recipes-button recipes-button--primary"
-          href="${serializeShellRoute('automation', entry.recipe_id)}"
-          aria-label="Manage automation for ${e(name)}"
-          ${RECIPES_ROUTE_AUTOMATION_LINK_ATTR}>Manage</a>`}
+        ${renderRecipeActions(entry, targetRunnability)}
       </div>
     </div>
   `;
 };
 
-const renderRecipeSection = (
+const installedRecipePage = (
   recipes: ReadonlyArray<ServerRecipeListEntry>,
-  catalog: ReadonlyArray<ToolCatalogEntryView>,
-  runnability: ReadonlyMap<string, RecipeRunnabilityEntry> | null,
-  pii: ReadonlyMap<string, RecipePiiPostureSummary> | null,
   filter: RecipeListFilter,
   page: number,
+) => {
+  const filtered = recipes.filter((entry) => recipeMatchesListFilter(entry, filter));
+  const total = Math.max(1, Math.ceil(filtered.length / RECIPES_PAGE_SIZE));
+  const number = Math.max(1, Math.min(page, total));
+  const start = (number - 1) * RECIPES_PAGE_SIZE;
+  const entries = filtered.slice(start, start + RECIPES_PAGE_SIZE);
+  return { number, total, entries, start, count: filtered.length };
+};
+
+const RECIPE_ACTIVATION_LABEL = {
+  manual: 'Manual',
+  autorun: 'Auto-run',
+  'managed-reactive': 'Reactive',
+};
+
+const renderRecipeWorkspaceRow = (entry: ServerRecipeListEntry, selected: boolean, tabStop: boolean): string => {
+  const id = e(entry.recipe_id);
+  const name = e(recipeDisplayName(entry));
+  const activation = RECIPE_ACTIVATION_LABEL[classifyRecipeAction(entry.recipe)];
+  const packs = recipePackRefs(entry.recipe).map(ref => packSlugLabel(ref.pack)).join(', ');
+  return `<button type="button" class="recipes-workspace-row" ${RECIPES_ROUTE_RECIPE_CARD_ATTR}="${id}"
+    ${RECIPES_ROUTE_ACTION_ATTR}="preview-recipe" ${RECIPES_ROUTE_RECIPE_ID_ATTR}="${id}"
+    aria-label="${name}" aria-controls="${RECIPES_WORKSPACE_PREVIEW_ID}"
+    aria-keyshortcuts="ArrowUp ArrowDown Space Enter" tabindex="${tabStop ? 0 : -1}"${selected ? ' aria-current="true"' : ''}>
+      <strong title="${name}">${name}</strong><span>${activation}</span>
+      ${packs === '' ? '' : `<small title="${e(packs)}">${e(packs)}</small>`}
+    </button>`;
+};
+
+const renderRecipeWorkspacePreview = (
+  entry: ServerRecipeListEntry | undefined,
+  runnability: ReadonlyMap<string, RecipeRunnabilityEntry> | null,
+  pii: ReadonlyMap<string, RecipePiiPostureSummary> | null,
+  hasRows: boolean,
 ): string => {
+  const region = `${RECIPES_WORKSPACE_PREVIEW_ATTR} id="${RECIPES_WORKSPACE_PREVIEW_ID}" aria-label="Recipe preview"`;
+  if (entry === undefined) {
+    return `<section ${region}${hasRows ? '' : ' hidden'}><p class="recipes-preview-empty">Select a recipe to preview it.</p></section>`;
+  }
+  const activation = RECIPE_ACTIVATION_LABEL[classifyRecipeAction(entry.recipe)];
+  const description = entry.recipe.metadata?.description ?? '';
+  const readiness = runnability?.get(entry.recipe_id);
+  const packs = recipePackRefs(entry.recipe);
+  return `<section ${region} ${RECIPES_ROUTE_RECIPE_ID_ATTR}="${e(entry.recipe_id)}">
+    <header class="recipes-preview-header">
+      <h3>${e(recipeDisplayName(entry))}</h3>
+      <button type="button" class="recipes-button" ${RECIPES_ROUTE_ACTION_ATTR}="close-workspace-preview">Close preview</button>
+    </header>
+    <div class="recipes-preview-body">
+      ${description === '' ? '' : `<p>${e(description)}</p>`}
+      <dl>
+        <dt>Activation</dt><dd>${activation}</dd>
+        <dt>Source</dt><dd>${packs.length === 0 ? 'Standalone recipe' : renderFromPack(packs)}</dd>
+        <dt>Readiness</dt><dd>${readiness === undefined ? 'Not checked' : renderRunnabilityLine(readiness)}</dd>
+        <dt>AI data</dt><dd>${renderPiiLine(pii?.get(entry.recipe_id)) || 'Not checked'}</dd>
+      </dl>
+    </div>
+    <div class="recipes-actions recipes-preview-actions">${renderRecipeActions(entry, readiness)}</div>
+  </section>`;
+};
+
+const renderRecipeSection = ({ recipes, catalog, runnability, pii, filter, page, workspace, previewId }: {
+  recipes: ReadonlyArray<ServerRecipeListEntry>;
+  catalog: ReadonlyArray<ToolCatalogEntryView>;
+  runnability: ReadonlyMap<string, RecipeRunnabilityEntry> | null;
+  pii: ReadonlyMap<string, RecipePiiPostureSummary> | null;
+  filter: RecipeListFilter;
+  page: ReturnType<typeof installedRecipePage>;
+  workspace: boolean;
+  previewId: string | undefined;
+}): string => {
   if (recipes.length === 0) {
     return `<p ${RECIPES_ROUTE_UNAVAILABLE_ATTR}>No recipes installed yet — install a pack from <a class="recipes-inline-link" href="#packs">Packs</a> to get started.</p>`;
   }
-  const filtered = recipes.filter((entry) => recipeMatchesListFilter(entry, filter));
-  const totalPages = Math.max(1, Math.ceil(filtered.length / RECIPES_PAGE_SIZE));
-  const safePage = Math.max(1, Math.min(page, totalPages));
-  const startIndex = (safePage - 1) * RECIPES_PAGE_SIZE;
-  const pageRows = filtered.slice(startIndex, startIndex + RECIPES_PAGE_SIZE);
-  const visibleStart = filtered.length === 0 ? 0 : startIndex + 1;
-  const visibleEnd = Math.min(startIndex + RECIPES_PAGE_SIZE, filtered.length);
+  const visibleStart = page.count === 0 ? 0 : page.start + 1;
+  const visibleEnd = page.start + page.entries.length;
+  const tabStop = previewId ?? page.entries[0]?.recipe_id;
   return `
     ${renderRecipeFilters(recipes, filter)}
-    <p ${RECIPES_ROUTE_NO_MATCHES_ATTR}${filtered.length === 0 ? '' : ' hidden'}>No installed recipes match your search.</p>
-    <div class="recipes-list-count" ${RECIPES_ROUTE_COUNT_ATTR} aria-live="polite">Showing ${visibleStart}–${visibleEnd} of ${filtered.length} recipe${filtered.length === 1 ? '' : 's'}</div>
-    <div class="recipes-card-grid">
-      ${pageRows.map((entry) => renderRecipeListCard(entry, catalog, runnability, pii)).join('')}
-    </div>
-    ${totalPages > 1
+    <p ${RECIPES_ROUTE_NO_MATCHES_ATTR}${page.count === 0 ? '' : ' hidden'}>No installed recipes match your search.</p>
+    <div class="recipes-list-count" ${RECIPES_ROUTE_COUNT_ATTR} aria-live="polite">Showing ${visibleStart}–${visibleEnd} of ${page.count} recipe${page.count === 1 ? '' : 's'}</div>
+    ${workspace
+      ? `<div ${RECIPES_WORKSPACE_LIST_ATTR} role="group" aria-label="Installed recipe list">
+          ${page.entries.map(entry => renderRecipeWorkspaceRow(entry, entry.recipe_id === previewId, entry.recipe_id === tabStop)).join('')}
+        </div>`
+      : `<div class="recipes-card-grid">${page.entries.map(entry => renderRecipeListCard(entry, catalog, runnability, pii)).join('')}</div>`}
+    ${page.total > 1
       ? `<nav class="recipes-pager" ${RECIPES_ROUTE_PAGER_ATTR} aria-label="Installed recipes pages">
-          <button type="button" class="recipes-button" ${RECIPES_ROUTE_ACTION_ATTR}="recipe-page" ${RECIPES_ROUTE_PAGER_CONTROL_ATTR}="previous" data-page="${safePage - 1}"${safePage === 1 ? ' disabled' : ''}>‹ Previous</button>
-          <span>Page ${safePage} of ${totalPages}</span>
-          <button type="button" class="recipes-button" ${RECIPES_ROUTE_ACTION_ATTR}="recipe-page" ${RECIPES_ROUTE_PAGER_CONTROL_ATTR}="next" data-page="${safePage + 1}"${safePage === totalPages ? ' disabled' : ''}>Next ›</button>
+          <button type="button" class="recipes-button" ${RECIPES_ROUTE_ACTION_ATTR}="recipe-page" ${RECIPES_ROUTE_PAGER_CONTROL_ATTR}="previous" data-page="${page.number - 1}"${page.number === 1 ? ' disabled' : ''}>‹ Previous</button>
+          <span>Page ${page.number} of ${page.total}</span>
+          <button type="button" class="recipes-button" ${RECIPES_ROUTE_ACTION_ATTR}="recipe-page" ${RECIPES_ROUTE_PAGER_CONTROL_ATTR}="next" data-page="${page.number + 1}"${page.number === page.total ? ' disabled' : ''}>Next ›</button>
         </nav>`
       : ''}
   `;
@@ -2723,6 +2900,20 @@ export const bootstrapRecipesRoute = (
   routeRoot.setAttribute(RECIPES_ROUTE_HOST_ATTR, '');
   opts.root.appendChild(routeRoot);
   const scrollRoot = opts.scrollRoot ?? opts.root;
+  const desktopMedia = doc.defaultView?.matchMedia?.(RECIPES_DESKTOP_MEDIA);
+  const workspaceList = () => routeRoot.querySelector?.<HTMLElement>(`[${RECIPES_WORKSPACE_LIST_ATTR}]`) ?? null;
+  const workspacePreview = () => routeRoot.querySelector?.<HTMLElement>(`[${RECIPES_WORKSPACE_PREVIEW_ATTR}]`) ?? null;
+  const listFocusTarget = (recipeId: string, workspace = desktopMedia?.matches === true): HTMLElement | null => {
+    if (workspace) {
+      return Array.from(workspaceList()?.querySelectorAll<HTMLElement>(`[${RECIPES_ROUTE_RECIPE_CARD_ATTR}]`) ?? [])
+        .find(row => row.getAttribute(RECIPES_ROUTE_RECIPE_CARD_ATTR) === recipeId) ?? null;
+    }
+    return routeRoot.querySelector?.<HTMLElement>(`[${RECIPES_ROUTE_RECIPE_OPEN_ATTR}="${recipeId}"]`) ?? null;
+  };
+  const resetWorkspaceScroll = (): void => {
+    const list = workspaceList();
+    if (list) restoreListScroll(list, { top: 0, left: 0 });
+  };
   const rememberedList = readListContinuity<RecipeListFilter>(
     doc,
     RECIPES_LIST_CONTINUITY_KEY,
@@ -2788,6 +2979,7 @@ export const bootstrapRecipesRoute = (
   let pendingBundleCatalogPromise: Promise<void> | null = null;
   // R24 delta 1 — the durable detail selection. `null` = the list view.
   let selectedRecipeId: string | null = opts.initialRecipeId ?? null;
+  let workspaceRecipeId = rememberedList?.previewId ?? null;
   // Recipe ids can repeat across separate list -> detail visits. Async work
   // belongs to the exact visit that started it, not merely to a matching id
   // that happened to be reopened before the earlier response arrived.
@@ -2813,6 +3005,9 @@ export const bootstrapRecipesRoute = (
       : null;
   let pendingListScrollRestore = opts.initialRecipeId === undefined
     ? rememberedList?.scroll
+    : undefined;
+  let pendingWorkspaceScrollRestore = opts.initialRecipeId === undefined
+    ? rememberedList?.listScroll
     : undefined;
   // Installed-recipes filter (client-side, survives route remounts in this
   // document without creating persistent storage).
@@ -2990,6 +3185,7 @@ export const bootstrapRecipesRoute = (
     const focused = focusedId === undefined
       ? focusedListState()
       : { kind: 'recipe', id: focusedId };
+    const index = workspaceList();
     updateListContinuity(doc, RECIPES_LIST_CONTINUITY_KEY, {
       filter: { ...recipeFilter },
       page: recipePage,
@@ -3000,6 +3196,8 @@ export const bootstrapRecipesRoute = (
             ...(focused.id === null ? {} : { focusedId: focused.id }),
           }),
       scroll: readListScroll(scrollRoot),
+      previewId: workspaceRecipeId,
+      ...(index ? { listScroll: readListScroll(index) } : {}),
     });
   };
   const syncRecipeHash = (): void => {
@@ -3084,6 +3282,17 @@ export const bootstrapRecipesRoute = (
   const render = (): void => {
     if (disposed) return;
     const activeElement = doc.activeElement as HTMLElement | null | undefined;
+    const previousIndex = workspaceList();
+    const previousIndexScroll = previousIndex ? readListScroll(previousIndex) : undefined;
+    const previousPageScroll = previousIndex ? readListScroll(scrollRoot) : undefined;
+    const previousPreview = workspacePreview();
+    const previousPreviewId = previousPreview?.getAttribute(RECIPES_ROUTE_RECIPE_ID_ATTR) ?? null;
+    const previousPreviewBody = previousPreview?.querySelector<HTMLElement>('.recipes-preview-body');
+    const previousPreviewScroll = previousPreviewBody ? readListScroll(previousPreviewBody) : undefined;
+    const focusedPreviewId = previousPreview?.contains(activeElement ?? null) ? previousPreviewId : null;
+    const focusedPreviewAction = focusedPreviewId === null ? null : activeElement?.getAttribute?.(RECIPES_ROUTE_ACTION_ATTR) ?? null;
+    const focusedPreviewLink = focusedPreviewId === null ? undefined
+      : [RECIPES_ROUTE_AUTOMATION_LINK_ATTR, RECIPES_ROUTE_FROM_PACK_ATTR].find(attr => activeElement?.hasAttribute?.(attr));
     const recipePreapprovalsShownBefore = recipePreapprovalsShownFor;
     recipePreapprovalsShownFor = null;
     // A control in that section keeps focus across the repaint (the section is the same node).
@@ -3153,9 +3362,9 @@ export const bootstrapRecipesRoute = (
         };
       }
     }
-    const focusedListCardRecipeId = activeElement?.getAttribute?.(
-      RECIPES_ROUTE_RECIPE_OPEN_ATTR,
-    ) ?? null;
+    const focusedListCardRecipeId = focusedPreviewId !== null ? null
+      : previousIndex?.contains(activeElement ?? null) ? activeElement?.getAttribute?.(RECIPES_ROUTE_RECIPE_CARD_ATTR) ?? null
+      : activeElement?.getAttribute?.(RECIPES_ROUTE_RECIPE_OPEN_ATTR) ?? null;
     const focusedSearch = activeElement?.hasAttribute?.(
       RECIPES_ROUTE_SEARCH_ATTR,
     ) === true
@@ -3376,20 +3585,22 @@ export const bootstrapRecipesRoute = (
     }
     resultActions = new Map();
     resultFiles = new Map();
-    const filteredRecipeCount = recipes.filter((entry) =>
-      recipeMatchesListFilter(entry, recipeFilter)).length;
-    const totalRecipePages = Math.max(
-      1,
-      Math.ceil(filteredRecipeCount / RECIPES_PAGE_SIZE),
-    );
+    const workspace = desktopMedia?.matches === true;
+    const page = installedRecipePage(recipes, recipeFilter, recipePage);
+    const preview = page.entries.find(entry => entry.recipe_id === workspaceRecipeId);
     // A route remount paints once before `recipe.list` resolves. At that
     // point an empty loading snapshot has one synthetic page; clamping the
     // remembered page against it would erase continuity before real rows
     // arrive. The renderer already bounds the visual page, so commit the
     // clamp only once the current list has settled.
     if (!loading) {
-      recipePage = Math.max(1, Math.min(recipePage, totalRecipePages));
+      recipePage = page.number;
+      workspaceRecipeId = preview?.recipe_id ?? null;
     }
+    const list = renderRecipeSection({
+      recipes, catalog, runnability, pii, filter: recipeFilter, page, workspace, previewId: preview?.recipe_id,
+    });
+    const heading = '<h2 class="recipes-section-title">Installed recipes</h2>';
     routeRoot.innerHTML = `
       <header class="recipes-header">
         <h1 class="recipes-title" ${RECIPES_ROUTE_HEADING_ATTR} tabindex="-1">Recipes</h1>
@@ -3405,44 +3616,44 @@ export const bootstrapRecipesRoute = (
       </div>
       ${loading ? '<p class="recipes-section-copy">Loading recipes...</p>' : ''}
       ${renderSourceErrors(errors)}
-      <section ${RECIPES_ROUTE_SECTION_ATTR}="recipes">
-        <h2 class="recipes-section-title">Installed recipes</h2>
-        <p class="recipes-section-copy">Run a manual recipe, or open any recipe to inspect what it does and manage how it activates.</p>
-        ${renderRecipeSection(
-          recipes,
-          catalog,
-          runnability,
-          pii,
-          recipeFilter,
-          recipePage,
-        )}
+      <section ${RECIPES_ROUTE_SECTION_ATTR}="recipes"${workspace ? ` ${RECIPES_WORKSPACE_ATTR}` : ''}>
+        ${workspace
+          ? `<div class="recipes-workspace-index">${heading}${list}</div>
+             ${renderRecipeWorkspacePreview(preview, runnability, pii, page.entries.length > 0)}`
+          : `${heading}<p class="recipes-section-copy">Run a manual recipe, or open any recipe to inspect what it does and manage how it activates.</p>${list}`}
       </section>
     `;
     const listFocusRecipeId = pendingListCardFocusRecipeId
       ?? focusedListCardRecipeId;
     if (listFocusRecipeId !== null) {
       const isNavigation = pendingListCardFocusRecipeId === listFocusRecipeId;
-      const card = routeRoot.querySelector?.(
-        `[${RECIPES_ROUTE_RECIPE_OPEN_ATTR}="${listFocusRecipeId}"]`,
-      ) as HTMLElement | null | undefined;
-      if (
-        card?.getAttribute?.(RECIPES_ROUTE_RECIPE_OPEN_ATTR)
-          === listFocusRecipeId
-      ) {
+      const card = listFocusTarget(listFocusRecipeId, workspace);
+      if (card !== null && card.getAttribute?.(workspace ? RECIPES_ROUTE_RECIPE_CARD_ATTR : RECIPES_ROUTE_RECIPE_OPEN_ATTR) === listFocusRecipeId) {
         if (isNavigation) pendingListCardFocusRecipeId = null;
         // When continuity owns an exact scroll offset, the focus handoff must
         // not ask the browser to reveal the row again after restoration. That
         // deferred reveal otherwise wins over the explicit offset on native
         // Back and leaves the row merely visible rather than in its old place.
         card.focus?.({
-          preventScroll: pendingListScrollRestore !== undefined || !isNavigation,
+          preventScroll: workspace || pendingListScrollRestore !== undefined || !isNavigation,
         });
-      } else if (isNavigation && !loading) {
+      } else if (!loading && (isNavigation || workspace)) {
         pendingListCardFocusRecipeId = null;
+        const firstRow = workspace ? listFocusTarget(page.entries[0]?.recipe_id ?? '', true) : null;
+        const search = workspace ? routeRoot.querySelector?.<HTMLElement>(`[${RECIPES_ROUTE_SEARCH_ATTR}]`) : null;
         const heading = routeRoot.querySelector?.(
           `[${RECIPES_ROUTE_HEADING_ATTR}]`,
         ) as HTMLElement | null | undefined;
-        heading?.focus?.({ preventScroll: true });
+        focusListTarget(firstRow ?? search ?? heading);
+      }
+    } else if (focusedPreviewId !== null) {
+      const inspector = workspace && preview?.recipe_id === focusedPreviewId ? workspacePreview() : null;
+      const control = focusedPreviewAction !== null
+        ? inspector?.querySelector<HTMLElement>(`[${RECIPES_ROUTE_ACTION_ATTR}="${focusedPreviewAction}"]`)
+        : focusedPreviewLink !== undefined ? inspector?.querySelector<HTMLElement>(`[${focusedPreviewLink}]`) : null;
+      if (!focusListTarget(control) && !focusListTarget(inspector?.querySelector<HTMLElement>(`[${RECIPES_ROUTE_RECIPE_OPEN_ATTR}]`))) {
+        focusListTarget(listFocusTarget(focusedPreviewId, workspace)
+          ?? routeRoot.querySelector?.<HTMLElement>(`[${RECIPES_ROUTE_SEARCH_ATTR}]`));
       }
     } else if (focusedSearchSelection !== null) {
       const search = routeRoot.querySelector?.(
@@ -3492,9 +3703,7 @@ export const bootstrapRecipesRoute = (
       if (control !== null && control !== undefined) {
         control.focus?.({ preventScroll: true });
       } else {
-        const firstCard = routeRoot.querySelector?.(
-          `[${RECIPES_ROUTE_RECIPE_OPEN_ATTR}]`,
-        ) as HTMLElement | null | undefined;
+        const firstCard = listFocusTarget(page.entries[0]?.recipe_id ?? '', workspace);
         const heading = routeRoot.querySelector?.(
           `[${RECIPES_ROUTE_HEADING_ATTR}]`,
         ) as HTMLElement | null | undefined;
@@ -3544,9 +3753,16 @@ export const bootstrapRecipesRoute = (
         ) as HTMLElement | null | undefined;
       (target ?? fallback)?.focus?.({ preventScroll: true });
     }
-    if (!loading && pendingListScrollRestore !== undefined) {
-      restoreListScroll(scrollRoot, pendingListScrollRestore);
+    const index = workspaceList();
+    if (index) restoreListScroll(index, !loading ? pendingWorkspaceScrollRestore ?? previousIndexScroll : previousIndexScroll);
+    if (workspace && preview && preview.recipe_id === previousPreviewId) {
+      const body = workspacePreview()?.querySelector<HTMLElement>('.recipes-preview-body');
+      if (body) restoreListScroll(body, previousPreviewScroll);
+    }
+    restoreListScroll(scrollRoot, !loading ? pendingListScrollRestore ?? previousPageScroll : previousPageScroll);
+    if (!loading) {
       pendingListScrollRestore = undefined;
+      pendingWorkspaceScrollRestore = undefined;
     }
   };
 
@@ -3928,7 +4144,19 @@ export const bootstrapRecipesRoute = (
     opener: HTMLElement | null,
   ): void => {
     const entry = recipes.find((candidate) => candidate.recipe_id === recipeId);
-    if (entry === undefined || listPreview === null) return;
+    if (entry === undefined) return;
+    if (workspaceList() !== null) {
+      if (workspaceRecipeId !== recipeId) {
+        workspaceRecipeId = recipeId;
+        render();
+      }
+      const row = listFocusTarget(recipeId);
+      focusListTarget(row);
+      row?.scrollIntoView?.({ block: 'nearest' });
+      rememberRecipeList(recipeId);
+      return;
+    }
+    if (listPreview === null) return;
     rememberRecipeList(recipeId);
     const actionKind = classifyRecipeAction(entry.recipe);
     const packRefs = recipePackRefs(entry.recipe);
@@ -3968,12 +4196,35 @@ export const bootstrapRecipesRoute = (
     }, opener);
   };
 
+  const closeWorkspacePreview = (): void => {
+    const id = workspaceRecipeId;
+    if (id === null) return;
+    workspaceRecipeId = null;
+    render();
+    focusListTarget(listFocusTarget(id));
+    rememberRecipeList(id);
+  };
+
+  const onDesktopMediaChange = (): void => {
+    if (disposed || selectedRecipeId !== null) return;
+    const sheetRecipe = listPreview?.activeId();
+    if (desktopMedia?.matches && sheetRecipe) {
+      listPreview?.close();
+      workspaceRecipeId = sheetRecipe;
+      pendingListCardFocusRecipeId = sheetRecipe;
+    }
+    render();
+  };
+
   const openRecipe = (recipe_id: string): void => {
     if (!recipes.some((r) => r.recipe_id === recipe_id)) return;
     // The sheet is non-modal, so an explicit Open behind it remains reachable.
     // Entering durable detail retires the preview instead of stacking layers.
     listPreview?.close();
-    if (selectedRecipeId === null) rememberRecipeList(recipe_id);
+    if (selectedRecipeId === null) {
+      if (workspaceList() && listFocusTarget(recipe_id)) workspaceRecipeId = recipe_id;
+      rememberRecipeList(recipe_id);
+    }
     pendingDetailFocusRecipeId = recipe_id;
     pendingListCardFocusRecipeId = null;
     pendingListControlFocus = null;
@@ -4039,6 +4290,7 @@ export const bootstrapRecipesRoute = (
     pendingListCardFocusRecipeId = selectedRecipeId ?? remembered?.focusedId ?? null;
     pendingListControlFocus = null;
     pendingListScrollRestore = remembered?.scroll;
+    pendingWorkspaceScrollRestore = remembered?.listScroll;
     pendingDetailFocusRecipeId = null;
     detailVisitGeneration += 1;
     resetDishState();
@@ -4143,10 +4395,9 @@ export const bootstrapRecipesRoute = (
     const routeRecipeIdAtOpen = selectedRecipeId;
     const activeBeforeOpen = doc.activeElement as HTMLElement | null | undefined;
     listPreview?.close();
-    const detailRunReturnRecipeId = routeRecipeIdAtOpen === recipe_id
-      && activeBeforeOpen?.getAttribute?.(RECIPES_ROUTE_RUN_BUTTON_ATTR) === recipe_id
-        ? recipe_id
-        : null;
+    const openedFromRunButton = activeBeforeOpen?.getAttribute?.(RECIPES_ROUTE_RUN_BUTTON_ATTR) === recipe_id;
+    const returnToDetail = openedFromRunButton && routeRecipeIdAtOpen === recipe_id;
+    const returnToPreview = openedFromRunButton && workspacePreview()?.contains(activeBeforeOpen ?? null) === true;
     const resolvedOrigin = origin
       ?? (routeRecipeIdAtOpen === recipe_id ? 'recipe-detail' : 'related-recipes');
     const activePanelAtOpen =
@@ -4162,21 +4413,17 @@ export const bootstrapRecipesRoute = (
         ? recipe_id
         : null;
     const runRecordRefSearch = recordRefSearchFor(entry.recipe);
-    /** Hand focus back to the detail's Run button the dialog was opened from. */
+    /** Find the opener again if the route repainted while the dialog was open. */
     const returnFocusToRunButton = (): void => {
-      if (
-        detailRunReturnRecipeId !== null
-        && selectedRecipeId === detailRunReturnRecipeId
-      ) {
-        const replacement = routeRoot.querySelector?.(
+      if (disposed) return;
+      if (returnToDetail && selectedRecipeId === recipe_id) {
+        const replacement = routeRoot.querySelector?.<HTMLElement>(
           `[${RECIPES_ROUTE_RUN_BUTTON_ATTR}]`,
-        ) as HTMLElement | null | undefined;
-        if (
-          replacement?.getAttribute?.(RECIPES_ROUTE_RUN_BUTTON_ATTR)
-            === detailRunReturnRecipeId
-        ) {
-          replacement.focus?.({ preventScroll: true });
-        }
+        );
+        if (replacement?.getAttribute?.(RECIPES_ROUTE_RUN_BUTTON_ATTR) === recipe_id) focusListTarget(replacement);
+      } else if (returnToPreview && selectedRecipeId === null && workspaceRecipeId === recipe_id) {
+        const button = workspacePreview()?.querySelector<HTMLElement>(`[${RECIPES_ROUTE_RUN_BUTTON_ATTR}]`);
+        if (!focusListTarget(button)) focusListTarget(listFocusTarget(recipe_id));
       }
     };
     /** Show a finished run as the route's current result. */
@@ -5153,7 +5400,11 @@ export const bootstrapRecipesRoute = (
       return;
     }
     const target = findActionTarget(ev.target);
-    if (target === null) return;
+    if (target === null) {
+      const manage = (ev.target as HTMLElement | null)?.closest?.(`[${RECIPES_ROUTE_AUTOMATION_LINK_ATTR}]`);
+      if (manage && workspacePreview()?.contains(manage) && workspaceRecipeId !== null) rememberRecipeList(workspaceRecipeId);
+      return;
+    }
     const action =
       target.getAttribute(RECIPES_ROUTE_ACTION_ATTR)
       ?? target.getAttribute(SHARED_ACTION_ATTR);
@@ -5192,6 +5443,7 @@ export const bootstrapRecipesRoute = (
         recipeFilter = { ...recipeFilter, trigger: recipeFilter.trigger === next ? null : next };
       }
       recipePage = 1;
+      resetWorkspaceScroll();
       rememberRecipeList();
       render();
       return;
@@ -5200,12 +5452,13 @@ export const bootstrapRecipesRoute = (
       const nextPage = Number(target.getAttribute('data-page'));
       if (Number.isInteger(nextPage) && nextPage > 0) {
         recipePage = nextPage;
+        resetWorkspaceScroll();
         rememberRecipeList();
         render();
-        const section = routeRoot.querySelector?.(
-          `[${RECIPES_ROUTE_SECTION_ATTR}="recipes"]`,
-        ) as HTMLElement | null;
-        section?.scrollIntoView?.({ block: 'start', behavior: 'smooth' });
+        if (workspaceList() === null) {
+          const section = routeRoot.querySelector?.<HTMLElement>(`[${RECIPES_ROUTE_SECTION_ATTR}="recipes"]`);
+          section?.scrollIntoView?.({ block: 'start', behavior: 'smooth' });
+        }
       }
       return;
     }
@@ -5217,6 +5470,10 @@ export const bootstrapRecipesRoute = (
     if (action === 'preview-recipe') {
       const recipeId = target.getAttribute(RECIPES_ROUTE_RECIPE_ID_ATTR);
       if (recipeId !== null) previewRecipe(recipeId, target);
+      return;
+    }
+    if (action === 'close-workspace-preview') {
+      closeWorkspacePreview();
       return;
     }
     if (action === 'open-recipe-list') {
@@ -5412,6 +5669,7 @@ export const bootstrapRecipesRoute = (
     ) {
       recipeFilter = { ...recipeFilter, query: target0.value ?? '' };
       recipePage = 1;
+      resetWorkspaceScroll();
       rememberRecipeList();
       render();
     }
@@ -5419,8 +5677,16 @@ export const bootstrapRecipesRoute = (
   };
 
   const onKeyDown = (ev: Event): void => {
-    const target = ev.target as HTMLElement | null;
-    if (target === null || typeof target.closest !== 'function') return;
+    const event = ev as KeyboardEvent;
+    const target = event.target as HTMLElement | null;
+    if (target === null || typeof target.closest !== 'function' || event.defaultPrevented || event.isComposing) return;
+    const index = workspaceList();
+    if (event.key === 'Escape' && workspaceRecipeId !== null
+      && (index?.contains(target) || workspacePreview()?.contains(target))) {
+      event.preventDefault();
+      closeWorkspacePreview();
+      return;
+    }
     const card = target.closest(
       `[${RECIPES_ROUTE_RECIPE_CARD_ATTR}]`,
     ) as HTMLElement | null;
@@ -5429,12 +5695,17 @@ export const bootstrapRecipesRoute = (
     if (card === null || card !== target) return;
     const recipeId = card.getAttribute(RECIPES_ROUTE_RECIPE_CARD_ATTR);
     if (recipeId === null) return;
-    const key = (ev as KeyboardEvent).key;
-    if (key === ' ') {
-      (ev as KeyboardEvent).preventDefault();
+    if (index?.contains(card) && !event.altKey && !event.ctrlKey && !event.metaKey
+      && (event.key === 'ArrowDown' || event.key === 'ArrowUp')) {
+      event.preventDefault();
+      const next = (event.key === 'ArrowDown' ? card.nextElementSibling : card.previousElementSibling) as HTMLElement | null;
+      const nextId = next?.getAttribute(RECIPES_ROUTE_RECIPE_CARD_ATTR);
+      if (nextId) previewRecipe(nextId, next);
+    } else if (event.key === ' ') {
+      event.preventDefault();
       previewRecipe(recipeId, card);
-    } else if (key === 'Enter') {
-      (ev as KeyboardEvent).preventDefault();
+    } else if (event.key === 'Enter') {
+      event.preventDefault();
       openRecipe(recipeId);
     }
   };
@@ -5468,6 +5739,7 @@ export const bootstrapRecipesRoute = (
   routeRoot.addEventListener('click', onClick);
   routeRoot.addEventListener('input', onInput);
   routeRoot.addEventListener('keydown', onKeyDown);
+  desktopMedia?.addEventListener?.('change', onDesktopMediaChange);
 
   const unsubscribers: Array<() => void> = [];
   if (opts.subscribe !== undefined) {
@@ -5628,6 +5900,7 @@ export const bootstrapRecipesRoute = (
       routeRoot.removeEventListener('click', onClick);
       routeRoot.removeEventListener('input', onInput);
       routeRoot.removeEventListener('keydown', onKeyDown);
+      desktopMedia?.removeEventListener?.('change', onDesktopMediaChange);
       // ⛔ The one listener not on routeRoot. Discarding the root drops the
       // other three with it; this one hangs off the DOCUMENT, so a remount
       // without this line stacks a second handler that syncs a panel the page

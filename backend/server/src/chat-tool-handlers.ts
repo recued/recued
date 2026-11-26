@@ -4765,6 +4765,13 @@ const buildExecuteRequest = (
   ) {
     return 'Tier 2 recipe args cannot supply server-owned vault or execution context';
   }
+  // 2026-11-22 (the owner: "go ahead") — and `recipe.run` takes no vault either. Its schema offered one as "per-run
+  //   credential overrides", but the vault is server-owned, as Tier 2 says above, and credentials are the owner's
+  //   connections: a model that took the offer put the owner's keys in its own arguments, which no shipped ingredient
+  //   reads, and the run then lost what a caller's vault switches off (`request.vault === undefined` in execute).
+  if (Object.prototype.hasOwnProperty.call(args, 'vault')) {
+    return 'recipe.run takes no vault: the vault is server-owned, and credentials are the owner\'s connections, never arguments';
+  }
   // Tier 2 (`recipeIdOverride` set) vs Tier 1 (`recipe.run`) read config
   // DIFFERENTLY, because their arg schemas differ. `deriveTier2ArgSchema`
   // (chat-catalog.ts) projects a Tier-2 recipe's `variables` as a FLAT arg
@@ -4793,10 +4800,6 @@ const buildExecuteRequest = (
   const connections = recipeIdOverride !== undefined
     ? (tier2Connections ? args.connections : undefined)
     : args.connections;
-  const vault =
-    args.vault && typeof args.vault === 'object' && !Array.isArray(args.vault)
-      ? (args.vault as Record<string, unknown>)
-      : undefined;
   const context =
     args.context && typeof args.context === 'object' && !Array.isArray(args.context)
       ? (args.context as Record<string, unknown>)
@@ -4805,7 +4808,6 @@ const buildExecuteRequest = (
     ...(recipeId ? { recipe_id: recipeId } : {}),
     ...(inlineRecipe ? { recipe: inlineRecipe } : {}),
     ...(config ? { config } : {}),
-    ...(vault ? { vault } : {}),
     ...(context ? { context } : {}),
     ...(connections !== undefined ? { connections: connections as Record<string, string> } : {}),
     trigger_source: channelTriggerSource(ctx),

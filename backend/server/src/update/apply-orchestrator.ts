@@ -20,7 +20,7 @@ import {
   decideRollback,
   shouldAutoRevert,
 } from './apply-state-machine.js';
-import { updateRevertReason } from './revert-reason.js';
+import { downloadRevertReason, updateRevertReason } from './revert-reason.js';
 import { isDatabaseStillOpenError } from '../database-still-open-error.js';
 import type { UpdateLedger, UpdateLedgerEntry, UpdateLedgerKind } from './update-ledger.js';
 import type { BootFailureCounter } from './boot-failure-counter.js';
@@ -908,7 +908,7 @@ const runApplyLeased = async (
     ports.discardStaged();
     const detail = err instanceof Error ? err.message : 'download error';
     appendEntry(ports, 'apply_reverted', ctx, {
-      trigger: ctx.trigger, detail: `download: ${detail}`, revert_reason: 'download_failed',
+      trigger: ctx.trigger, detail: `download: ${detail}`, revert_reason: downloadRevertReason(err),
     });
     return { status: 'download-failed', detail };
   }
@@ -953,7 +953,8 @@ const runApplyLeased = async (
       ports.discardStaged();
       const detail = err instanceof Error ? err.message : 'download error';
       appendEntry(ports, 'apply_reverted', ctx, {
-        trigger: ctx.trigger, detail: `download (native addon): ${detail}`, revert_reason: 'download_failed',
+        trigger: ctx.trigger, detail: `download (native addon): ${detail}`,
+        revert_reason: downloadRevertReason(err),
       });
       return { status: 'download-failed', detail: `native addon: ${detail}` };
     }

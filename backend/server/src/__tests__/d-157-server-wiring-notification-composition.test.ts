@@ -280,6 +280,21 @@ describe('composeNotificationBlock', () => {
     });
   });
 
+  it('keeps a durable notification identity and local link without writing duplicate history', async () => {
+    const bus = eventBus();
+    const { block, auditLog: history } = composeHarness({ eventBus: bus });
+    const persist = vi.spyOn(history, 'logActivity');
+    const hash = '#mail/reply-watch/mfw_00000000-0000-4000-8000-000000000001/draft/mad_00000000-0000-4000-8000-000000000002';
+
+    await block.notify({ title: 'Follow-up draft ready', text: 'Open it to review.', link_url: 'https://recued.example/' + hash }, undefined, {
+      persisted_activity_id: 'mail-follow-up:stable-id', ui_link_url: hash,
+    });
+
+    expect(bus.emit).toHaveBeenCalledExactlyOnceWith({ kind: 'notification.notify', activity_id: 'mail-follow-up:stable-id',
+      title: 'Follow-up draft ready', text: 'Open it to review.', link_url: hash });
+    expect(persist).not.toHaveBeenCalled();
+  });
+
   it('omits title when a notify message has no title field', async () => {
     const bus = eventBus();
     const { block } = composeHarness({ eventBus: bus });

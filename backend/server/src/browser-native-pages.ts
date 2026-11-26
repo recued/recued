@@ -1,15 +1,12 @@
 import { createHmac, randomBytes } from 'node:crypto';
-import type { ToolEntry } from '@recued/contracts';
+import { BROWSER_TOOLKIT_RECIPE_SLUGS, type ToolEntry } from '@recued/contracts';
 import type { ChatMainTurnTool } from './chat-orchestrator.js';
 import { describeBrowserData } from './bridges/browser-data-pipeline.js';
 
 type ObjectValue = Record<string, any>;
 const object = (v: unknown): v is ObjectValue => v !== null && typeof v === 'object' && !Array.isArray(v);
 const pageToken = /^p-[A-Za-z0-9_-]{12}$/;
-const recipes = new Set(['list-browser-bridges', 'list-browser-tabs', 'open-web-page', 'inspect-web-page', 'read-web-text',
-  'read-web-element', 'wait-for-web-element', 'read-web-table', 'save-web-file', 'screenshot-web-page', 'ask-web-page',
-  'scroll-web-page', 'type-into-web-page', 'click-web-element', 'press-on-web-page', 'act-on-web-page']);
-const browserTool = (name: string) => /^(recued-core|kitchen)\//.test(name) && recipes.has(name.split('/')[1]!);
+const browserTool = (name: string) => /^(recued-core|kitchen)\//.test(name) && BROWSER_TOOLKIT_RECIPE_SLUGS.has(name.split('/')[1]!);
 export const nativeBrowserPageKey = (tools?: readonly ChatMainTurnTool[]) => tools && !tools.some(tool => browserTool(tool.recipe_slug))
   ? undefined : randomBytes(16).toString('hex');
 

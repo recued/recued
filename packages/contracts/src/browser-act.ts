@@ -34,7 +34,7 @@
  *  popular), and a wrong record looks right. None or several matching stops the sequence, listing
  *  the suggestions, so the model picks one by name. */
 
-import { BRIDGE_SCROLL_TO, parseBridgeKey, type BridgeScrollTo } from './bridge.js';
+import { BRIDGE_SCROLL_TO, BRIDGE_TEXT_MAX_CHARS, BRIDGE_UPLOAD_MAX_FILES, parseBridgeKey, type BridgeScrollTo } from './bridge.js';
 import { BROWSER_COLLECT_KEYS, parseBrowserCollectSpec, type BrowserCollectSpec, type BrowserCollectViolation } from './browser-collect.js';
 import { BROWSER_DATA_TRANSFORMS, parseBrowserDataStep, type BrowserDataSchemaStep, type BrowserDataStep, type BrowserDataTransform } from './browser-data.js';
 
@@ -136,7 +136,7 @@ interface BrowserActThenRead {
 interface BrowserActTab {
   /** A page handle: from List browser tabs, Open a web page, a read, or an earlier answer. */
   readonly page?: string;
-  /** Or an address: the tab showing it ({@link browserAddressKey}), else a new tab opened for it. */
+  /** Or an address: the tab showing it ({@link browserDestinationKey}), else a new tab opened for it. */
   readonly url?: string;
 }
 
@@ -152,11 +152,15 @@ const secretOf = (value: unknown): BrowserActSecret | undefined => typeof value 
 /** Slice X — where a `scroll` step goes, as Scroll a web page's `to`. */
 export type BrowserActScrollTo = BridgeScrollTo;
 
+export type BrowserDragTarget = { readonly ref: string; readonly selector?: never }
+  | { readonly selector: string; readonly ref?: never };
+
 export type BrowserActStep = BrowserActTab & (
   /** Types `value` into the element, as Type into a web page does (a list takes an option, a
    *  checkbox or radio button `true` or `false`). With `submit`, then sends its form. */
   | (BrowserActElement & BrowserActChecks & BrowserActThenRead & { readonly do: 'type'; readonly value: string; readonly secret?: undefined;
       readonly submit?: boolean;
+      readonly delivery?: 'paste';
       /** Slice L — then picks the field's suggestion with this text, as a person clicks one in the list
        *  that shows as they type. */
       readonly pick?: string })
@@ -164,8 +168,8 @@ export type BrowserActStep = BrowserActTab & (
    *  one Recued remembers for the field and its site, else what the owner gives when asked at this
    *  step. */
   | (BrowserActElement & BrowserActChecks & BrowserActThenRead & { readonly do: 'type'; readonly secret: BrowserActSecret; readonly value?: undefined;
-      readonly submit?: boolean; readonly pick?: undefined })
-  | (BrowserActElement & BrowserActChecks & BrowserActThenRead & { readonly do: 'click' })
+      readonly submit?: boolean; readonly pick?: undefined; readonly delivery?: undefined })
+  | (BrowserActElement & BrowserActChecks & BrowserActThenRead & { readonly do: 'click'; readonly count?: 2; readonly download_wait?: number })
   /** Slice U — presses `key` in the element, as Press a key on a web page does (Enter in a field
    *  sends its form; Escape closes a dialog; the page's own handlers hear the rest). */
   | (BrowserActElement & BrowserActChecks & BrowserActThenRead & { readonly do: 'press'; readonly key: string })
@@ -192,8 +196,8 @@ export type BrowserActStep = BrowserActTab & (
    *  40,000 characters of its text, as Ask a web page answers one, `from` a line on a long page; the
    *  asks of several tabs side by side, where three Ask a web page calls ran one after another (E). */
   | { readonly do: 'ask'; readonly question: string; readonly from?: number }
-  /** Slice X — scrolls the tab's page, or the panel an element names, a screen (`to`, next by
-   *  default) or to one (`screen`, from 1), as Scroll a web page does. Changes nothing. */
+  /** Scrolls the tab's page or an element's panel. Left and right move horizontally.
+   *  `screen` counts down from the top. */
   | (BrowserActElement & { readonly do: 'scroll'; readonly to?: BrowserActScrollTo; readonly screen?: number })
   /** Slice X (Bridge 0.0.8) — loads `address` in the tab, as following a link would. */
   | (BrowserActThenRead & { readonly do: 'go'; readonly address: string })
@@ -203,14 +207,15 @@ export type BrowserActStep = BrowserActTab & (
   | { readonly do: 'close' }
   /** Slice X (Bridge 0.0.8) — points at the element, for a menu that opens under the pointer. */
   | (BrowserActElement & BrowserActThenRead & { readonly do: 'hover' })
+  | (BrowserActElement & BrowserActThenRead & { readonly do: 'seek'; readonly at_seconds: number })
+  | (BrowserDragTarget & BrowserActThenRead & { readonly do: 'drag'; readonly drop: BrowserDragTarget })
   /** D-335 slice AP (2026-11-07) — saves a file the page links to among the owner's files: the link (an
    *  element by ref, selector or text, its `href` or `src`) or the file's `address`, fetched as the page
    *  would fetch it. Changes nothing on the page; answers the file's ref beside the tab's reads. */
   | (BrowserActElement & { readonly do: 'download'; readonly address?: string })
-  /** D-335 slice AQ (2026-11-07) — puts one of the owner's files (`file`, its `file:` ref) into the file
-   *  field the element names, as choosing it there would. Always asked about, naming the file: it leaves
-   *  the owner's files for the site, which no pass stands in for. */
-  | (BrowserActElement & { readonly do: 'upload'; readonly file: string })
+  /** Selects files in an input or drops them onto an observed area. Approval names every file. */
+  | (BrowserActElement & { readonly do: 'upload'; readonly delivery?: 'drop' } & ({ readonly file: string; readonly files?: never }
+    | { readonly files: readonly string[]; readonly file?: never }))
 );
 
 /** The owner: "20 steps is fine". */
@@ -232,7 +237,6 @@ export const BROWSER_ACT_PICK_SECONDS = 5;
 /** The most of a suggestion's text `pick` names. */
 const MAX_PICK = 200;
 /** The longest a typed value or a selector may be. */
-const MAX_VALUE = 20_000;
 const MAX_SELECTOR = 1_000;
 
 /** Slice X — the longest address a step names. */
@@ -258,8 +262,8 @@ const TAB_KEYS = ['page', 'url'];
 /** Slice Y — the ways a step names its element. */
 const ELEMENT_KEYS = ['ref', 'selector', 'text', 'role'];
 const STEP_KEYS: Readonly<Record<BrowserActStep['do'], readonly string[]>> = {
-  type: ['do', ...ELEMENT_KEYS, 'within', 'value', 'secret', 'submit', 'pick', 'success_when', 'fail_when', 'then_read', 'then_read_form', ...TAB_KEYS],
-  click: ['do', ...ELEMENT_KEYS, 'within', 'success_when', 'fail_when', 'then_read', 'then_read_form', ...TAB_KEYS],
+  type: ['do', ...ELEMENT_KEYS, 'within', 'value', 'secret', 'delivery', 'submit', 'pick', 'success_when', 'fail_when', 'then_read', 'then_read_form', ...TAB_KEYS],
+  click: ['do', ...ELEMENT_KEYS, 'within', 'count', 'download_wait', 'success_when', 'fail_when', 'then_read', 'then_read_form', ...TAB_KEYS],
   press: ['do', ...ELEMENT_KEYS, 'key', 'success_when', 'fail_when', 'then_read', 'then_read_form', ...TAB_KEYS],
   submit: ['do', ...ELEMENT_KEYS, 'success_when', 'fail_when', 'then_read', 'then_read_form', ...TAB_KEYS],
   wait: ['do', 'seconds', 'selector', 'until', 'text', 'url_includes', 'fail_when', ...TAB_KEYS],
@@ -274,14 +278,16 @@ const STEP_KEYS: Readonly<Record<BrowserActStep['do'], readonly string[]>> = {
   reload: ['do', 'then_read', 'then_read_form', ...TAB_KEYS],
   close: ['do', ...TAB_KEYS],
   hover: ['do', ...ELEMENT_KEYS, 'then_read', 'then_read_form', ...TAB_KEYS],
+  seek: ['do', ...ELEMENT_KEYS, 'at_seconds', 'then_read', 'then_read_form', ...TAB_KEYS],
+  drag: ['do', 'ref', 'selector', 'drop', 'then_read', 'then_read_form', ...TAB_KEYS],
   download: ['do', ...ELEMENT_KEYS, 'address', ...TAB_KEYS],
-  upload: ['do', ...ELEMENT_KEYS, 'file', ...TAB_KEYS],
+  upload: ['do', ...ELEMENT_KEYS, 'file', 'files', 'delivery', ...TAB_KEYS],
 };
 /** Slice Y — the longest text a step names an element by, and its role. */
 const MAX_ELEMENT_TEXT = 200;
 const MAX_ROLE = 40;
 /** The kinds, as an error names them. */
-const KINDS_SAID = 'type, click, press, submit, wait, read, collect, data, table, ask, scroll, go, back, reload, close, hover, download or upload';
+const KINDS_SAID = 'type, click, press, submit, wait, read, collect, data, table, ask, scroll, go, back, reload, close, hover, drag, seek, download or upload';
 /** The keys other browser tools name a step's kind by, read as "do" when a step has no "do" and
  *  exactly one of them holds a kind. ⛔ Measured (2026-11-04, `d-335-toolkit-measure.mjs` task C,
  *  qwen3.7-plus): in 3 of 3 runs every sequence was refused, its kind under `"type"` (3 calls),
@@ -329,16 +335,39 @@ const elementArgumentIssues = (value: { readonly ref?: unknown; readonly selecto
 
 const typeInputIssues = (value: Record<string, unknown>): ActArgumentIssue[] => {
   const issues: ActArgumentIssue[] = [];
+  if (value.delivery !== undefined) {
+    if (value.delivery !== 'paste') issues.push({ field: 'delivery', code: 'invalid_value', message: 'type delivery is "paste" or omitted' });
+    else if (value.secret !== undefined || value.pick !== undefined || value.submit === true || value.value === '') {
+      issues.push({ field: 'delivery', code: 'invalid_value', message: 'paste needs nonempty text in value and a separate step for any submit' });
+    }
+  }
   if (value.secret !== undefined) {
     if (value.value !== undefined) issues.push({ field: 'value', code: 'invalid_value',
       message: 'give value, the text to type, or secret, what kind of secret it is, not both' });
     if (secretOf(value.secret) === undefined) issues.push({ field: 'secret', code: 'invalid_value',
       message: `secret is the kind of secret the field takes: ${BROWSER_ACT_SECRETS.map((kind) => `"${kind}"`).join(', ')}; never the secret itself` });
     if (value.pick !== undefined) issues.push({ field: 'pick', code: 'invalid_value', message: 'a secret is typed, never picked from suggestions' });
-  } else if (typeof value.value !== 'string' || value.value.length > MAX_VALUE) issues.push({ field: 'value',
+  } else if (typeof value.value !== 'string' || value.value.length > BRIDGE_TEXT_MAX_CHARS) issues.push({ field: 'value',
     code: value.value === undefined ? 'required' : 'invalid_value', message: 'value is the text to type' });
   if (value.submit !== undefined && typeof value.submit !== 'boolean') issues.push({ field: 'submit', code: 'invalid_type', message: 'submit is true or false' });
   return issues;
+};
+
+export const readBrowserDragTarget = (value: unknown): BrowserDragTarget | undefined => {
+  if (!isRecord(value) || Object.keys(value).length !== 1) return undefined;
+  if (typeof value.ref === 'string' && /^e[1-9]\d{0,8}$/.test(value.ref)) return { ref: value.ref };
+  if (typeof value.selector === 'string' && text(value.selector, MAX_SELECTOR)) return { selector: value.selector.trim() };
+  return undefined;
+};
+
+/** Canonical references in selection order. Validate the whole selection before looking up any file. */
+export const browserActUploadRefs = (input: { file?: unknown; files?: unknown }): string[] | undefined => {
+  if (input.file !== undefined && input.files !== undefined) return undefined;
+  const values: unknown[] = input.files === undefined ? [input.file] : Array.isArray(input.files) ? Array.from(input.files) : [];
+  if (values.length === 0 || values.length > BRIDGE_UPLOAD_MAX_FILES
+    || !values.every((value): value is string => typeof value === 'string' && /^file:[0-9a-f]{32}$/.test(value.trim()))) return undefined;
+  const refs = values.map(value => value.trim());
+  return new Set(refs).size === refs.length ? refs : undefined;
 };
 
 /** Whether a step sends a form: the Bridge's `submit` action, which an older Bridge lacks. */
@@ -361,13 +390,22 @@ export const browserActStepMayMove = (step: BrowserActStep): boolean => {
 };
 
 /** Slice X — whether a step changes something in the owner's browser, which the batch's one ask
- *  covers: typing, a click, a key, a sent form, going to an address, back, reloading or closing the
- *  tab. Reading, scrolling, waiting and pointing change nothing, so a batch of only those, on tabs
- *  already open, asks nothing ({@link browserActReadsOnly}). */
+ *  covers: typing, a click, a key, a sent form, back, reloading or closing the tab. Reading,
+ *  collecting, going to an address, scrolling, waiting and pointing change nothing there, so a batch
+ *  of only those asks nothing ({@link browserActReadsOnly}), on tabs open or ones it opens (opening a
+ *  page is a read, D-335 amendment 2026-11-23). */
 export const browserActStepWrites = (step: BrowserActStep): boolean =>
   step.do !== 'read' && step.do !== 'ask' && step.do !== 'scroll' && step.do !== 'wait' && step.do !== 'hover'
   // Slice AP — saving a file a page links to changes nothing there.
-  && step.do !== 'download' && step.do !== 'data' && step.do !== 'table' && !(step.do === 'collect' && step.max_pages === 1);
+  && step.do !== 'download' && step.do !== 'data' && step.do !== 'table'
+  // 2026-11-23 (the owner: "make Collects that turn pages read too") — a collect reads across pages as well: it
+  //   turns them only by the page's own Next link, an address on the same site, as opening a page does. So one that
+  //   turns pages asks no more than one that stays, though it leaves its tab on the last page it read.
+  && step.do !== 'collect'
+  // 2026-11-23 (the owner: "make the go read no ask default too") — going to an address loads a page, as opening one
+  //   does, in a tab already open: what the tab showed is left, as a collect leaves it. Back and reloading stay writes
+  //   (a reload can send a form again), as closing does.
+  && step.do !== 'go';
 
 /** D-335 slice AQ — whether a batch puts one of the owner's files into a page, which is always asked
  *  about: no pass or switch stands in for a file leaving the owner's files. */
@@ -384,7 +422,7 @@ export const browserActCallUploads = (input: unknown): boolean => {
   return parsed.ok && browserActUploads(parsed.steps);
 };
 
-/** Slice X — whether a batch's steps only read, scroll, wait and point. */
+/** Slice X — whether a batch's steps only read, collect, go to addresses, scroll, wait and point. */
 export const browserActReadsOnly = (steps: readonly BrowserActStep[]): boolean =>
   !steps.some(browserActStepWrites);
 
@@ -392,11 +430,7 @@ export const browserActReadsOnly = (steps: readonly BrowserActStep[]): boolean =
 export const browserActNamesTabs = (steps: readonly BrowserActStep[]): boolean =>
   steps.some((step) => step.page !== undefined || step.url !== undefined);
 
-/** Slice X — an address as a tab showing it is matched: host without `www.` and its port, path
- *  without a trailing slash and with its escapes undone, and query; the scheme (a site that moved
- *  from http to https is the same page) and the fragment ignored. Undefined for an address that is
- *  not http or https. Two addresses with one key are the same page. */
-export const browserAddressKey = (address: string): string | undefined => {
+const normalizedBrowserAddress = (address: string, includeFragment: boolean): string | undefined => {
   let url: URL;
   try {
     url = new URL(address.trim());
@@ -411,13 +445,24 @@ export const browserAddressKey = (address: string): string | undefined => {
   } catch {
     // An escape that does not decode stays as it is, on both sides.
   }
-  return `${host}${url.port === '' ? '' : `:${url.port}`}${path}${url.search}`;
+  return `${host}${url.port === '' ? '' : `:${url.port}`}${path}${url.search}${includeFragment ? url.hash : ''}`;
 };
 
-/** Slice X — whether two addresses name one page ({@link browserAddressKey}). */
+/** HTTP/S document address, normalized across scheme, www, path escapes and trailing slash. */
+export const browserAddressKey = (address: string): string | undefined => normalizedBrowserAddress(address, false);
+
+/** A destination keeps its fragment, which may select a different view in the same document. */
+export const browserDestinationKey = (address: string): string | undefined => normalizedBrowserAddress(address, true);
+
+/** Whether two addresses name one document, regardless of fragment. */
 export const browserAddressesMatch = (a: string, b: string): boolean => {
   const key = browserAddressKey(a);
   return key !== undefined && key === browserAddressKey(b);
+};
+
+export const browserDestinationsMatch = (a: string, b: string): boolean => {
+  const key = browserDestinationKey(a);
+  return key !== undefined && key === browserDestinationKey(b);
 };
 
 /** Whether a step's `success_when` waits for something on the page: `shows`, `gone` or `text`. */
@@ -466,7 +511,8 @@ export const browserActStepWaitSeconds = (step: BrowserActStep): number => {
   const element = browserActWaitsForElement(step.success_when) ? browserActStepCheckSeconds(step) : 0;
   // Slice L — and the wait for the suggestion a pick names.
   const pick = step.do === 'type' && step.pick !== undefined ? BROWSER_ACT_PICK_SECONDS : 0;
-  return (browserActStepWatchSeconds(step) ?? 0) + element + pick + then;
+  const download = step.do === 'click' ? step.download_wait ?? 0 : 0;
+  return (browserActStepWatchSeconds(step) ?? 0) + element + pick + then + download;
 };
 
 /** D-347 follow-up (2026-11-08) — the step before a `{"do":"wait","page_changes":true}`, with that
@@ -814,11 +860,14 @@ const parseBrowserActStepsInner = (
     // An element: a ref, a selector or (slice Y) its text. A scroll may name one (a panel) or none
     // (the page). Slice AE: a key pressed naming none is pressed in the field the step before typed
     // into, on the same tab, when that typing left the page where it was (E's search: "Enter").
+    // Escape can also go to the live focus, including after a click opens a dialog.
     const before = steps[steps.length - 1];
-    const typedBefore = kind === 'press' && value.ref === undefined && value.selector === undefined && value.text === undefined
+    const untargetedPress = kind === 'press' && value.ref === undefined && value.selector === undefined && value.text === undefined;
+    const typedBefore = untargetedPress
       && before?.do === 'type' && before.submit !== true && before.pick === undefined
       && tab.page === undefined && tab.url === undefined ? before : undefined;
-    const elementOf = typedBefore ?? value;
+    const elementOf = typedBefore ?? (untargetedPress && parseBridgeKey(value.key)?.name === 'Escape'
+      ? { ...value, selector: ':focus' } : value);
     const hasRef = elementOf.ref !== undefined, hasSelector = elementOf.selector !== undefined, hasText = elementOf.text !== undefined;
     const targetIssue = elementArgumentIssues(elementOf, kind, value.role)[0];
     if (targetIssue) return fail(`${at}: ${targetIssue.message}`);
@@ -839,7 +888,7 @@ const parseBrowserActStepsInner = (
     if (kind === 'scroll') {
       // Slice X — a screen at a time, as Scroll a web page does.
       if (value.to !== undefined && !(BRIDGE_SCROLL_TO as readonly unknown[]).includes(value.to)) {
-        return fail(`${at}: to is next (the default), previous, top or bottom`);
+        return fail(`${at}: to is next (the default), previous, top, bottom, left or right`);
       }
       if (value.screen !== undefined && !(typeof value.screen === 'number' && Number.isSafeInteger(value.screen)
         && value.screen > 0 && value.screen <= MAX_SCREEN)) {
@@ -861,16 +910,41 @@ const parseBrowserActStepsInner = (
       steps.push(step);
       continue;
     }
+    if (kind === 'seek') {
+      const seconds = value.at_seconds;
+      if (typeof seconds !== 'number' || !Number.isFinite(seconds) || seconds < 0) {
+        return fail(`${at}: at_seconds must be a finite, nonnegative media timestamp`);
+      }
+      const step: BrowserActStep = { ...tab, do: 'seek', ...element, at_seconds: seconds, ...thenRead };
+      waiting += browserActStepWaitSeconds(step);
+      steps.push(step);
+      continue;
+    }
+    if (kind === 'drag') {
+      const source = readBrowserDragTarget(hasRef ? { ref: element.ref } : { selector: element.selector });
+      const drop = readBrowserDragTarget(value.drop);
+      if (!source || !drop) return fail(`${at}: drag needs an observed source and a drop object with exactly one ref or selector`);
+      if (source.ref !== undefined ? source.ref === drop.ref : source.selector === drop.selector) {
+        return fail(`${at}: the drag source and drop target must be different elements`);
+      }
+      const step: BrowserActStep = { ...tab, do: 'drag', ...source, drop, ...thenRead };
+      waiting += browserActStepWaitSeconds(step);
+      steps.push(step);
+      continue;
+    }
     if (kind === 'download') {
       steps.push({ ...tab, do: 'download', ...element });
       continue;
     }
     if (kind === 'upload') {
-      // Slice AQ — one of the owner's files, by the ref a download, file.search or an attachment answered.
-      if (typeof value.file !== 'string' || !/^file:[0-9a-f]{32}$/.test(value.file.trim())) {
-        return fail(`${at}: malformed upload file reference: expected file: followed by exactly 32 lowercase hex digits; copy the entire canonical attachment/download/file.search reference. No file lookup or upload ran`);
+      if (value.delivery !== undefined && value.delivery !== 'drop') return fail(`${at}: delivery must be "drop" or omitted`);
+      const refs = browserActUploadRefs(value);
+      if (!refs) {
+        return fail(`${at}: malformed upload file reference: expected file: followed by exactly 32 lowercase hex digits. Use file for one or files for a list of up to ${BRIDGE_UPLOAD_MAX_FILES} distinct references. No file lookup or upload ran`);
       }
-      steps.push({ ...tab, do: 'upload', ...element, file: value.file.trim() });
+      const delivery = value.delivery === 'drop' ? { delivery: 'drop' as const } : {};
+      steps.push(value.files === undefined ? { ...tab, do: 'upload', ...element, ...delivery, file: refs[0]! }
+        : { ...tab, do: 'upload', ...element, ...delivery, files: refs });
       continue;
     }
 
@@ -928,6 +1002,7 @@ const parseBrowserActStepsInner = (
       step = secret !== undefined
         ? { ...tab, do: 'type', ...named, secret, ...(value.submit === true ? { submit: true } : {}), ...checks, ...thenRead }
         : { ...tab, do: 'type', ...named, value: value.value as string, ...(value.submit === true ? { submit: true } : {}),
+          ...(value.delivery === 'paste' ? { delivery: 'paste' as const } : {}),
           ...(value.pick !== undefined ? { pick: value.pick as string } : {}), ...checks, ...thenRead };
     } else if (kind === 'press') {
       // Slice U — a key, as Press a key on a web page reads it.
@@ -937,8 +1012,19 @@ const parseBrowserActStepsInner = (
           + 'after any of Control, Meta, Alt and Shift joined with + (Control+Enter)');
       }
       step = { ...tab, do: 'press', ...named, key: key.name, ...checks, ...thenRead };
+    } else if (kind === 'click') {
+      if (value.count !== undefined && value.count !== 1 && value.count !== 2) {
+        return fail(`${at}: a click count must be 1 or 2`);
+      }
+      const downloadWait = value.download_wait;
+      if (downloadWait !== undefined && !seconds(downloadWait)) {
+        return fail(`${at}: download_wait is a number of seconds above 0, at most ${BROWSER_ACT_MAX_WAIT_SECONDS}`);
+      }
+      step = { ...tab, do: 'click', ...named, ...checks, ...thenRead,
+        ...(value.count === 2 ? { count: 2 as const } : {}),
+        ...(downloadWait !== undefined ? { download_wait: downloadWait } : {}) };
     } else {
-      step = { ...tab, do: kind as 'click' | 'submit', ...named, ...checks, ...thenRead };
+      step = { ...tab, do: 'submit', ...named, ...checks, ...thenRead };
     }
     waiting += browserActStepWaitSeconds(step);
     steps.push(step);

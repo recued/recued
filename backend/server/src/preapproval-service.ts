@@ -3,7 +3,7 @@
 import { randomUUID } from 'node:crypto';
 import {
   PREAPPROVAL_PROTOCOL_VERSION, RpcError, parsePreparePreapproval, evaluateScopeRestrictions,
-  SEND_COMPOSED_MAIL_RECIPE_ID, normalizeMailSend, parsePreapprovalJson, type MailDraft,
+  SEND_COMPOSED_MAIL_RECIPE_ID, parseMailFollowUpPreference, normalizeMailSend, mailDraftRecipeConfig, parsePreapprovalJson, type MailDraft,
   parsePreapprovalContinuation, type PreapprovalContinuationRequest,
   type PreparePreapproval, type PreapprovalCapabilities,
 } from '@recued/contracts';
@@ -23,6 +23,7 @@ import type { PreapprovalStorage } from './storage/preapproval-storage.js';
 import type { createPreapprovalActivations } from './storage/preapproval-activations.js';
 import type { createPreapprovalMail } from './preapproval-mail.js';
 import type { MailDraftService } from './mail-draft-service.js';
+import type { MailFollowUpSendService } from './mail-follow-up-send-service.js';
 import { createSingleOperationAdmission } from './single-operation-admission.js';
 import { createPreapprovalAi } from './preapproval-ai.js';
 import { createPreapprovalResources } from './preapproval-resources.js';
@@ -34,7 +35,7 @@ export interface PreapprovalServiceDeps {
   sources: PreapprovalRecipeSourceDeps;
   activations: ReturnType<typeof createPreapprovalActivations>;
   authority: PreapprovalAdmissionDeps['authority'];
-  execution: PreapprovalAdmissionDeps['execution'];
+  execution: PreapprovalAdmissionDeps['execution'] & { mailFollowUpSend?: MailFollowUpSendService };
   profiles: PreapprovalAdmissionDeps['profiles'];
   recordsReachable?: PreapprovalAdmissionDeps['recordsReachable'];
   describeDomain?: PreapprovalBindingIdentityDeps['describeDomain'];
@@ -122,7 +123,7 @@ export const createPreapprovalService = (deps: PreapprovalServiceDeps) => {
             content_hash: preapprovalHash(draft.content), contract_id: draft.origin_contract_id })) stale('The saved draft changed.');
           source.dependencies.push(pin);
         }
-        source.bound_dish = { config_overlay: structuredClone(draft.content) };
+        source.bound_dish = { config_overlay: mailDraftRecipeConfig(structuredClone(draft.content)) };
         return source;
       },
       dispatch: { profiles: { get: name => readCurrentConnectionOperationProfile(deps.profiles, name) },
@@ -312,6 +313,14 @@ export const createPreapprovalService = (deps: PreapprovalServiceDeps) => {
         : { activation_kinds: [], bindings: [], child_calls: [], decision_channels: [] };
       return { protocol_version: PREAPPROVAL_PROTOCOL_VERSION, ...wired, limits: deps.storage.repository.limits() };
     },
+    async scheduledMailCondition(plan: PreparedFutureExecution) {
+      if (plan.request.subject.kind !== 'mail_draft' || plan.request.subject.send_if_no_reply !== true) return undefined;
+      if (plan.mail_condition && deps.execution.mailFollowUpSend)
+        return deps.execution.mailFollowUpSend.scheduledConditionAtDispatch(plan.mail_condition);
+      return () => ({
+        outcome: { kind: 'review' as const }, message: 'The original reply check is unavailable. The follow-up was held for review.',
+      });
+    },
     async prepare(raw: PreparePreapproval, origin: PreapprovalOrigin) {
       const request = parsePreparePreapproval(raw);
       if (!deps.storage.isReady() || !deps.executionCapabilities().activation_kinds.includes(request.activation.kind)) {
@@ -334,6 +343,22 @@ export const createPreapprovalService = (deps: PreapprovalServiceDeps) => {
         draft = await deps.storage.drafts.get({ draft_id: request.subject.draft_id }, deps.drafts.principal(origin, 'get'));
         if (draft.revision !== request.subject.draft_revision) stale('The saved draft changed.');
       }
+      let scheduledTask: { title: string; current(): void } | undefined;
+      let scheduledCondition: Awaited<ReturnType<MailFollowUpSendService['prepareScheduledCondition']>> | undefined;
+      if (request.subject.kind === 'mail_draft' && request.subject.send_if_no_reply === true) {
+        if (!draft || request.activation.kind !== 'one_shot' || origin.mode !== 'owner' || origin.entry !== 'owner_ui' || !origin.credential_id)
+          throw new RpcError('preapproval_unsupported', 'A conditional send requires a saved follow-up scheduled once by the paired owner.', 409);
+        const followUp = deps.execution.mailFollowUpSend;
+        if (!followUp) throw new RpcError('preapproval_unsupported', 'Conditional follow-up scheduling is unavailable on this server.', 503);
+        scheduledCondition = await followUp.prepareScheduledCondition(draft, origin.credential_id);
+      }
+      if (draft?.content.follow_up !== undefined && parseMailFollowUpPreference(draft.content.follow_up).continue_task) {
+        if (request.activation.kind !== 'one_shot' || origin.mode !== 'owner' || origin.entry !== 'owner_ui' || !origin.credential_id)
+          throw new RpcError('preapproval_unsupported', 'Scheduled task tracking requires a one-off email reviewed by the paired owner.', 409);
+        const followUp = deps.execution.mailFollowUpSend;
+        if (!followUp?.validateScheduledTask) throw new RpcError('preapproval_unsupported', 'Scheduled task tracking is unavailable on this server.', 503);
+        scheduledTask = await followUp.validateScheduledTask(draft.content, origin.credential_id, draft.draft_id);
+      }
       const plan = db.transaction(() => {
         assertActivationAuthority(origin, request);
         const root = request.subject.kind === 'recipe' ? request.subject : draftCarrier();
@@ -354,11 +379,52 @@ export const createPreapprovalService = (deps: PreapprovalServiceDeps) => {
             || preapprovalHash(normalizeMailSend(send.input)) !== preapprovalHash(normalizeMailSend(draft.content))) {
             stale('The installed mail carrier cannot preserve this saved draft. Update it before scheduling.');
           }
+          if (scheduledCondition) {
+            scheduledCondition.current();
+            result.mail_condition = scheduledCondition.condition;
+            const recipients = scheduledCondition.waitedFor ?? 'the original To or Cc recipients';
+            result.interaction_notes.push(
+              `Skip if they’ve replied. Recued checks the original conversation for a verified human reply from ${recipients} before sending. ` +
+              'Stale mailbox sync or an unclear conversation holds the follow-up for review.',
+            );
+          } else if (draft.reply_watch_id && !draft.delivery_replacement) {
+            result.interaction_notes.push('Send at the scheduled time, even if someone replies first.');
+          }
+          if (draft.content.follow_up !== undefined) {
+            if (request.activation.kind !== 'one_shot' || origin.mode !== 'owner' || origin.entry !== 'owner_ui' || !origin.credential_id)
+              throw new RpcError('preapproval_unsupported', 'Scheduled reply watches require a one-off email scheduled by the paired owner.', 409);
+            const followUp = deps.execution.mailFollowUpSend;
+            if (!followUp) throw new RpcError('preapproval_unsupported', 'Scheduled reply watches are unavailable on this server.', 503);
+            const preference = followUp.validateScheduled(draft.content, origin.credential_id);
+            scheduledTask?.current();
+            result.mail_follow_up = preference;
+            const hours = preference.after_ms / 3600000;
+            const interval = `${hours} ${hours === 1 ? 'hour' : 'hours'}`;
+            result.interaction_notes.push(
+              `Watch for a reply from To and Cc recipients. Check ${interval} after this email is actually sent and prepare a follow-up draft for review if nobody has replied. ` +
+              'The watch starts after the exact sent email is verified.' +
+              (preference.notify_on_reply ? ' Notify you when a recipient replies.' : ''),
+            );
+            if (scheduledTask) {
+              const replacement = preference.continue_task?.replacement_hash !== undefined;
+              const message = replacement ? 'replacement' : 'follow-up';
+              const currentLink = replacement ? 'the original failure' : 'its current reply watch';
+              const changes = replacement ? 'the task or failure report' : 'the task or its link';
+              result.interaction_notes.push(
+                `Keep tracking “${scheduledTask.title}” only after this ${message} is sent and its exact Sent copy is verified. ` +
+                `Until then the task stays linked to ${currentLink}. If ${changes} changes, ` +
+                (scheduledCondition ? 'the send still depends on the reply check. ' : 'the approved email still follows this schedule. ') +
+                'Task tracking stays in place and its request needs review.',
+              );
+            }
+          }
           result.interaction_notes.push('Approval keeps an independent copy of this draft. Later edits or deletion of the original will not change the scheduled message.');
         }
         return result;
       }).immediate();
       await deps.mail?.checkReady(plan);
+      scheduledTask?.current();
+      scheduledCondition?.current();
       return deps.storage.repository.prepare(plan, origin.entry === 'kernel');
     },
   };

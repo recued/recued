@@ -1,7 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { expect, test, type Page } from '@playwright/test';
-import { renderApprovalLinkUnavailableHtml } from '../../../backend/server/src/ports/reception/handlers/approval-link-render.js';
+import { renderReceptionLinkUnavailableHtml } from '../../../backend/server/src/ports/reception/handlers/reception-page-render.js';
 import { lookupReceptionStaticAsset } from '../../../backend/server/src/ports/reception/static-assets.js';
 import { installCustomerWorkFixture } from './fixtures/customer-work.js';
 import { HARNESS_ORIGIN } from './helpers/harness-origin.js';
@@ -216,11 +216,11 @@ test('renders the neutral unavailable page on mobile with the shipped public sty
     const asset = lookupReceptionStaticAsset(new URL(route.request().url()).pathname);
     await route.fulfill(asset ? { contentType: asset.content_type, body: asset.bytes } : { status: 404 });
   });
-  await page.route('**/reception/approve/expired-fixture*', route => route.fulfill({ status: 410, contentType: 'text/html', body: renderApprovalLinkUnavailableHtml() }));
+  await page.route('**/reception/approve/expired-fixture*', route => route.fulfill({ status: 410, contentType: 'text/html', body: renderReceptionLinkUnavailableHtml() }));
   const response = await page.goto(`${HARNESS_ORIGIN}/reception/approve/expired-fixture?t=fixture-token`);
   expect(response!.status()).toBe(410);
   await expect(page.getByRole('heading', { name: 'This link is unavailable', exact: true })).toBeVisible();
-  await expect(page.getByText('Ask the business that sent it for a new link.', { exact: true })).toBeVisible();
+  await expect(page.getByText('Ask the sender for a new link.', { exact: true })).toBeVisible();
   expect(await page.locator('body').innerText()).not.toContain('fixture-token');
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(390);
   await page.screenshot({ path: info.outputPath('unavailable-link-mobile.png') });

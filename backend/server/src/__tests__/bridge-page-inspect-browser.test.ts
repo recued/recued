@@ -768,6 +768,180 @@ describe('D-335 slice A — the Bridge reads a page for an AI, in real Chrome', 
       error: { code: 'value_not_applied', message: 'It is disabled, so no key was pressed in it.' } });
   }, 120_000);
 
+  it('ordinary: Space on a link scrolls its panel and Enter follows it', async () => {
+    const { inspect, send, fixture } = await open('ordinary', '/keys');
+    await fixture.page.evaluate(() => {
+      document.body.innerHTML = `<main>
+        <div id="panel" style="height:160px;overflow:auto">
+          <a id="terms" href="/second">Terminology</a><div style="height:700px">Terms</div>
+        </div>
+        <div style="height:900px">Other content</div>
+      </main>`;
+    });
+    const read = await inspect({});
+    const page = String(read.outputs!.page);
+    const ref = refFor(htmlOf(read), 'terms')!;
+    const panelTop = () => fixture.page.locator('#panel').evaluate(panel => panel.scrollTop);
+    expect(await send('press', { page, ref, key: 'Space' })).toMatchObject({ status: 'ok' });
+    expect(await panelTop()).toBeGreaterThan(0);
+    expect(await fixture.page.evaluate(() => ({ focus: document.activeElement?.id, top: scrollY }))).toEqual({ focus: 'terms', top: 0 });
+    expect(await send('press', { page, ref, key: 'Shift+Space' })).toMatchObject({ status: 'ok' });
+    expect(await panelTop()).toBe(0);
+    await fixture.page.locator('#terms').evaluate(link => link.addEventListener('keydown', event => event.preventDefault(), { once: true }));
+    await send('press', { page, ref, key: 'Space' });
+    expect(await panelTop()).toBe(0);
+    expect(await send('press', { page, ref, key: 'Enter' })).toMatchObject({ status: 'ok' });
+    await fixture.page.waitForURL(/\/second$/);
+  }, 120_000);
+
+  it('ordinary: Home and End move or extend native text selection with the saved anchor', async () => {
+    const { inspect, send, fixture } = await open('ordinary', '/keys');
+    await fixture.page.evaluate(() => {
+      document.body.innerHTML = '<input id="handoff" value="Check the existing route.">'
+        + '<textarea id="wrapped-note" style="width:12ch">First line wraps.\nSecond line.</textarea>';
+    });
+    const read = await inspect({});
+    const page = String(read.outputs!.page);
+    const html = htmlOf(read);
+    const place = (id: string, start: number, end = start, direction: 'none' | 'backward' = 'none') =>
+      fixture.page.locator('#' + id).evaluate((field: HTMLInputElement | HTMLTextAreaElement, position) => {
+        field.focus();
+        field.setSelectionRange(position.start, position.end, position.direction);
+      }, { start, end, direction });
+    const selection = (id: string) => fixture.page.locator('#' + id).evaluate((field: HTMLInputElement | HTMLTextAreaElement) => ({
+      start: field.selectionStart, end: field.selectionEnd, direction: field.selectionDirection, value: field.value,
+    }));
+    for (const [id, key, start, end, direction] of [
+      ['handoff', 'Shift+End', 5, 5, 'none'], ['handoff', 'Shift+Home', 5, 10, 'backward'],
+      ['handoff', 'Home', 5, 10, 'backward'], ['handoff', 'End', 5, 5, 'none'],
+      ['wrapped-note', 'Shift+End', 3, 3, 'none'],
+    ] as const) {
+      await place(id, start, end, direction);
+      await fixture.page.keyboard.press(key);
+      const native = await selection(id);
+      await place(id, start, end, direction);
+      expect(await send('press', { page, ref: refFor(html, id)!, key })).toMatchObject({ status: 'ok' });
+      expect(await selection(id)).toEqual(native);
+    }
+    await place('handoff', 5);
+    await fixture.page.locator('#handoff').evaluate(field =>
+      field.addEventListener('keydown', event => event.preventDefault(), { once: true }));
+    const before = await selection('handoff');
+    expect(await send('press', { page, ref: refFor(html, 'handoff')!, key: 'Shift+End' })).toMatchObject({ status: 'ok' });
+    expect(await selection('handoff')).toEqual(before);
+  }, 120_000);
+
+  it('ordinary: Tab and Shift+Tab respect positive tab order and preserve ties', async () => {
+    const { inspect, send, fixture } = await open('ordinary', '/keys');
+    await fixture.page.evaluate(() => {
+      document.body.innerHTML = `<main>
+        <input id="default-a">
+        <input id="third" tabindex="3">
+        <input id="start" tabindex="1">
+        <input id="disabled" tabindex="2" disabled>
+        <input id="tie-a" tabindex="2">
+        <input id="negative" tabindex="-1">
+        <input id="tie-b" tabindex="2">
+        <input id="default-b" tabindex="0">
+      </main>`;
+    });
+    const read = await inspect({});
+    const page = String(read.outputs!.page);
+    const html = htmlOf(read);
+    for (const [from, key, to] of [
+      ['start', 'Tab', 'tie-a'], ['tie-a', 'Tab', 'tie-b'], ['tie-b', 'Shift+Tab', 'tie-a'],
+      ['tie-b', 'Tab', 'third'], ['third', 'Tab', 'default-a'], ['default-a', 'Tab', 'default-b'],
+    ]) {
+      expect(await send('press', { page, ref: refFor(html, from!)!, key })).toMatchObject({ status: 'ok', outputs: { pressed: key } });
+      expect(await fixture.page.evaluate(() => document.activeElement?.id)).toBe(to);
+    }
+  }, 120_000);
+
+  it('ordinary: Tab uses the checked radio in each form or tree and preserves the choice', async () => {
+    const { inspect, send, fixture } = await open('ordinary', '/keys');
+    await fixture.page.evaluate(() => {
+      document.body.innerHTML = `<input id="before">
+        <form><input id="walkup" type="radio" name="intake" checked>
+          <input id="scheduled" type="radio" name="intake"><input id="vehicle"></form>
+        <form><input id="archive-first" type="radio" name="intake">
+          <input id="archive-checked" type="radio" name="intake" checked></form>
+        <input id="outside-checked" type="radio" name="intake" checked>
+        <input id="outside-other" type="radio" name="intake"><div id="component"></div><input id="after">`;
+      const shadow = document.querySelector('#component')!.attachShadow({ mode: 'open' });
+      shadow.innerHTML = `<input id="closed-choice" type="radio" name="intake" checked disabled>
+        <input id="inner-first" type="radio" name="intake"><input id="inner-other" type="radio" name="intake">`;
+    });
+    const read = await inspect({});
+    const page = String(read.outputs!.page);
+    const html = htmlOf(read);
+    const focused = () => fixture.page.evaluate(() => {
+      const node = document.activeElement;
+      return node?.shadowRoot?.activeElement?.id ?? node?.id;
+    });
+    for (const [from, key, to] of [
+      ['before', 'Tab', 'walkup'], ['walkup', 'Tab', 'vehicle'], ['vehicle', 'Shift+Tab', 'walkup'],
+      ['scheduled', 'Shift+Tab', 'walkup'], ['vehicle', 'Tab', 'archive-checked'],
+      ['archive-checked', 'Tab', 'outside-checked'], ['outside-checked', 'Tab', 'inner-first'],
+      ['inner-first', 'Tab', 'after'],
+    ] as const) {
+      await fixture.page.locator('#' + from).focus();
+      await fixture.page.keyboard.press(key);
+      expect(await focused()).toBe(to);
+      await fixture.page.locator('#' + from).focus();
+      expect(await send('press', { page, ref: refFor(html, from)!, key })).toMatchObject({ status: 'ok' });
+      expect(await focused()).toBe(to);
+    }
+    const checked = await fixture.page.locator('input:checked').evaluateAll(inputs => inputs.map(input => input.id));
+    expect(checked.sort()).toEqual(['archive-checked', 'closed-choice', 'outside-checked', 'walkup']);
+  }, 120_000);
+
+  it('ordinary: Tab follows native focus across closed shadow roots, slots, and delegated focus', async () => {
+    const { inspect, send, fixture } = await open('ordinary', '/keys');
+    await fixture.page.evaluate(() => {
+      document.body.innerHTML = `<button id="outside">Background</button><dialog>
+        <input id="start"><div id="component" style="display:contents">
+          <button id="assigned" slot="extra" tabindex="1">Assigned</button><button id="unused">Unassigned</button>
+        </div><input id="finish"></dialog>`;
+      const root = document.querySelector('#component')!.attachShadow({ mode: 'closed' });
+      root.innerHTML = `<div inert><button>Inactive</button></div><input id="first-shadow">
+        <slot name="extra"><button>Replaced fallback</button></slot><div id="delegates" tabindex="0"></div>
+        <slot name="vacant"><button id="fallback">Fallback</button></slot>`;
+      const delegated = root.querySelector('#delegates')!.attachShadow({ mode: 'open', delegatesFocus: true });
+      delegated.innerHTML = '<input id="delegated-input">';
+      for (const scope of [document, root, delegated]) {
+        for (const control of scope.querySelectorAll('button, input')) {
+          control.addEventListener('focus', () => { document.body.dataset.focusedControl = control.id; });
+        }
+      }
+      root.querySelector('#first-shadow')!.addEventListener('keydown', event => {
+        if (document.body.hasAttribute('data-cancel-tab')) event.preventDefault();
+      });
+      document.querySelector('dialog')!.showModal();
+      document.querySelector<HTMLInputElement>('#start')!.focus();
+    });
+    const path = [
+      ['start', 'Tab', 'first-shadow'], ['first-shadow', 'Tab', 'assigned'], ['assigned', 'Tab', 'delegated-input'],
+      ['delegated-input', 'Tab', 'fallback'], ['fallback', 'Tab', 'finish'], ['finish', 'Shift+Tab', 'fallback'],
+      ['fallback', 'Shift+Tab', 'delegated-input'], ['delegated-input', 'Shift+Tab', 'assigned'],
+      ['assigned', 'Shift+Tab', 'first-shadow'], ['first-shadow', 'Shift+Tab', 'start'],
+    ] as const;
+    const focused = () => fixture.page.evaluate(() => document.body.dataset.focusedControl);
+    for (const [, key, to] of path) {
+      await fixture.page.keyboard.press(key);
+      expect(await focused()).toBe(to);
+    }
+    const read = await inspect({});
+    const page = String(read.outputs!.page);
+    const html = htmlOf(read);
+    for (const [from, key, to] of path) {
+      expect(await send('press', { page, ref: refFor(html, from)!, key })).toMatchObject({ status: 'ok' });
+      expect(await focused()).toBe(to);
+    }
+    await fixture.page.evaluate(() => document.body.setAttribute('data-cancel-tab', ''));
+    expect(await send('press', { page, ref: refFor(html, 'first-shadow')!, key: 'Tab' })).toMatchObject({ status: 'ok' });
+    expect(await focused()).toBe('first-shadow');
+  }, 120_000);
+
   // D-335 slice W — before it acts on an element, the Bridge works out what finds it again another
   // day, by the picker's rules, and answers it with the element as an ask names it, to a server that asks.
   it('ordinary: an id, past a generated one, a test hook, a name, a place; none inside a component', async () => {
@@ -966,6 +1140,32 @@ describe('D-335 slice A — the Bridge reads a page for an AI, in real Chrome', 
     expect(await send('fill', { page, ref: openField, value: 'typed in a card' })).toMatchObject({ status: 'ok', outputs: { filled: true } });
     expect(await fixture.page.evaluate(() => (document.querySelector('open-card')!.shadowRoot!.querySelector('#open-field') as HTMLInputElement).value))
       .toBe('typed in a card');
+  }, 60_000);
+
+  it.each([false, true])('ordinary: clicks an exposed point and rechecks it after hover (%s)', async coverOnHover => {
+    const { inspect, send, fixture } = await open('ordinary', '/page');
+    await fixture.page.evaluate(coverOnHover => {
+      document.body.innerHTML = `<main>
+        <div style="position:relative;width:280px">
+          <button id="save-draft" type="button" style="width:100%;height:48px">Save draft</button>
+          <span id="badge" style="position:absolute;inset:10px 100px;background:white">Ready</span>
+        </div>
+        <output id="clicked"></output>
+      </main>`;
+      const target = document.querySelector<HTMLButtonElement>('#save-draft')!;
+      const badge = document.querySelector<HTMLElement>('#badge')!;
+      const receipt = document.querySelector('#clicked')!;
+      target.addEventListener('click', event => {
+        receipt.append(document.elementFromPoint(event.clientX, event.clientY)?.id ?? 'outside');
+      });
+      badge.addEventListener('click', () => receipt.append('badge'));
+      if (coverOnHover) target.addEventListener('pointermove', () => { badge.style.inset = '0'; }, { once: true });
+    }, coverOnHover);
+    const read = await inspect({});
+    const actual = await send('click', { page: read.outputs!.page, ref: refFor(htmlOf(read), 'save-draft')! });
+    expect(actual).toMatchObject(coverOnHover ? { status: 'error', error: { code: 'delivery_uncertain' } }
+      : { status: 'ok', outputs: { clicked: true } });
+    expect(await fixture.page.locator('#clicked').textContent()).toBe(coverOnHover ? '' : 'save-draft');
   }, 60_000);
 
   // D-347 follow-up 18 (2026-11-08) — a click waits for what covers its element to go: the banner it names

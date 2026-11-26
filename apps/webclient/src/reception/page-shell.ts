@@ -337,6 +337,7 @@ export const createReceptionPageShell = (
    *  each `refetchDetail` + by `closeDetail`; a refetch writes only while its
    *  token is still current. */
   let detailRequestSeq = 0;
+  let previewRequestSeq = 0;
   let detailLog: { endpoint_id: string; entries: ReadonlyArray<import('@recued/contracts').AccessLogEntry> } | null = null;
   /** Captured one-shot share URLs keyed by endpoint id — the share URL
    *  is never re-readable, so `openDetail` can only surface Share Cards
@@ -477,14 +478,11 @@ export const createReceptionPageShell = (
     });
   };
 
-  const runPreviewDraft = async (
+  const runPreviewDraft = (
     dispatch: ReceptionEndpointPreviewDispatch,
-    publish = true,
   ): Promise<ReceptionEndpointPreviewResult> => {
     const { op, ...payload } = dispatch;
-    const result = await deps.call(op, payload);
-    if (publish) setState({ view_as_visitor: buildViewAsVisitorModel({ result, now: deps.now() }) });
-    return result;
+    return deps.call(op, payload);
   };
 
   // ── Broadcast handlers ────────────────────────────────────────
@@ -664,7 +662,7 @@ export const createReceptionPageShell = (
     approvalTargets: () => run(() => deps.call('reception.approval.targets', undefined)),
     // Authoring owns its preview. Publishing it as the inventory's current
     // view would replace the just-created endpoint detail and its share URL.
-    runPreview: (dispatch) => run(() => runPreviewDraft(dispatch, false)),
+    runPreview: (dispatch) => run(() => runPreviewDraft(dispatch)),
 
     createEndpoint: (dispatch) =>
       run(async () => {
@@ -686,26 +684,35 @@ export const createReceptionPageShell = (
       }),
 
     // ── Satellite: View-As-Visitor ────────────────────────────────
-    previewEndpointAsVisitor: (endpoint_id) =>
-      run(async () => {
-        if (endpoints === null) await refetchEndpoints();
-        const summary = endpoints?.find((e) => e.endpoint_id === endpoint_id);
-        if (!summary) {
-          throw new RpcError(
-            'endpoint_not_found',
-            `reception page shell: endpoint '${endpoint_id}' is not in the loaded list — call loadPage() first`,
-            404,
-            'reception.endpoint.preview_draft',
-          );
+    previewEndpointAsVisitor: (endpoint_id) => {
+      // The shell outlives the Endpoints mount. A retired read cannot replace the next view.
+      const seq = ++previewRequestSeq;
+      const current = () => !disposed && seq === previewRequestSeq;
+      return run(async () => {
+        try {
+          if (endpoints === null) await refetchEndpoints();
+          if (!current()) return;
+          const summary = endpoints?.find((e) => e.endpoint_id === endpoint_id);
+          if (!summary) {
+            throw new RpcError(
+              'endpoint_not_found',
+              `reception page shell: endpoint '${endpoint_id}' is not in the loaded list — call loadPage() first`,
+              404,
+              'reception.endpoint.preview_draft',
+            );
+          }
+          const dispatch = buildEndpointPreviewDispatch(previewDispatchArgsFromSummary(summary));
+          const result = await runPreviewDraft(dispatch);
+          if (current()) setState({ view_as_visitor: buildViewAsVisitorModel({ result, now: deps.now() }) });
+        } catch (error) {
+          if (current()) throw error;
         }
-        const dispatch = buildEndpointPreviewDispatch(
-          previewDispatchArgsFromSummary(summary),
-        );
-        await runPreviewDraft(dispatch);
-      }),
+      });
+    },
 
     closeViewAsVisitor: () => {
-      setState({ view_as_visitor: null });
+      previewRequestSeq += 1;
+      if (state.view_as_visitor !== null) setState({ view_as_visitor: null });
     },
 
     // ── Satellite: Abuse Inbox ────────────────────────────────────
@@ -759,7 +766,7 @@ export const createReceptionPageShell = (
         }
         for (const { draft, preview } of plan.drafts.slice(progress.created.length)) {
           if (stopped()) return finish(true);
-          const previewResult = await runPreviewDraft(preview, false);
+          const previewResult = await runPreviewDraft(preview);
           if (stopped()) return finish(true);
           const { op, ...payload } = buildEndpointCreateDispatch({
             kind: draft.kind, packet_declaration: draft.packet_declaration,

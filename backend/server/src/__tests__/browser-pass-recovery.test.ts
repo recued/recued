@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { BROWSER_PASS_ALWAYS_OPTION_ID, BROWSER_PASS_SESSION_OPTION_ID, BROWSER_PASS_REQUEST_OPTION_ID,
+import { BROWSER_PASS_ALWAYS_OPTION_ID, BROWSER_PASS_SESSION_OPTION_ID, BROWSER_PASS_REQUEST_OPTION_ID, BROWSER_PASS_JOB_OPTION_ID,
   BROWSER_PASS_SESSION_TTL_MS, BROWSER_REQUEST_PASS_TTL_MS,
   type BrowserPassAnswerKind, type BrowserPassOffer, type Checkpoint, type RecipeDefinition } from '@recued/contracts';
 import { buildPreflightAsk, createPreflightAnswerHandler } from '@recued/gateway';
@@ -58,10 +58,10 @@ describe('browser-pass decisions across SQLite recovery', () => {
     const block = createNotificationBlock({ askStore: asks, channels: [ui],
       settingsStore: createNotificationSettingsStore(createSQLiteCollection<NotificationSettings>(db, 'settings')) });
     block.registerAskHandler('gateway.preflight', createPreflightAnswerHandler({ checkpointStore: checkpoints, resumer }));
-    const seed = async (index = 1, legacy = false) => {
+    const seed = async (index = 1, legacy = false, offer: BrowserPassOffer = OFFER) => {
       const cp: Checkpoint = { ...approval(index), recipe_id: recipe.recipe_id, recipe_source_hash: 'a'.repeat(64),
         gated_step_id: 'write', created_at: clock, step_state: {},
-        preflight_context: { browser_pass: OFFER, tool_slug: 'dom-click', gated_action_settlement_mode: 'returned_result' } };
+        preflight_context: { browser_pass: offer, tool_slug: 'dom-click', gated_action_settlement_mode: 'returned_result' } };
       await checkpoints.write(cp);
       await audit.append({ run_id: cp.run_id, recipe_id: recipe.recipe_id, recipe_hash: 'a'.repeat(64), started_at: clock,
         finished_at: clock, duration_ms: 0, commit_status: 'awaiting_approval', checkpoint_id: cp.checkpoint_id,
@@ -73,7 +73,8 @@ describe('browser-pass decisions across SQLite recovery', () => {
       return block.ask(ask.message, ask.options, ask.handler);
     };
     const answer = (ask_id: string, kind: BrowserPassAnswerKind) => block.submitAnswer({ ask_id, via: 'ui',
-      option: kind === 'always' ? BROWSER_PASS_ALWAYS_OPTION_ID : kind === 'session' ? BROWSER_PASS_SESSION_OPTION_ID : BROWSER_PASS_REQUEST_OPTION_ID });
+      option: kind === 'always' ? BROWSER_PASS_ALWAYS_OPTION_ID : kind === 'session' ? BROWSER_PASS_SESSION_OPTION_ID
+        : kind === 'job' ? BROWSER_PASS_JOB_OPTION_ID : BROWSER_PASS_REQUEST_OPTION_ID });
     const end = async (kind: BrowserPassAnswerKind) => {
       if (kind === 'request') await rpc['collection.contract.setRequestPass']({ session_id: 'recovery', allow: false });
       else await rpc['collection.contract.revokeBrowserPass']({ pass_id: passes.listPasses(clock)[0]!.pass_id });
@@ -107,6 +108,31 @@ describe('browser-pass decisions across SQLite recovery', () => {
     expect((await env.asks.get(ask_id))?.status).toBe('answered');
     expect((await env.receipts.getByCheckpoint('held-1'))?.status).toBe('awaiting_approval');
     expect(await env.checkpoints.get('held-1')).not.toBeNull();
+  });
+
+  // D-402 (2026-11-23) — an AI app's answer "until this job ends": a session pass whose conversation is its job, ending
+  //   when the job does at the latest, kept as the session pass it is.
+  it('keeps an AI app\'s pass until its job ends under the job, and no other conversation', async () => {
+    const env = open();
+    const job = { channel_session_id: 'job:j-1', expires_at: NOW + 20 * 60_000 };
+    const APP_OFFER: BrowserPassOffer = { key: { ...OFFER.key, principal: { kind: 'ai_app', contract_id: 'k-app' } },
+      host: OFFER.host, channel_session_id: 'mcp:tok-1', job };
+    const { ask_id } = await env.seed(1, false, APP_OFFER);
+    const ask = await env.asks.get(ask_id);
+    const ids = ask!.options.map((option) => option.id);
+    expect(ids.indexOf(BROWSER_PASS_JOB_OPTION_ID)).toBe(ids.indexOf(BROWSER_PASS_SESSION_OPTION_ID) - 1);
+    expect(ask!.message.text).toContain('“Allow on example.invalid until this job ends” stops asking about');
+    await env.answer(ask_id, 'job');
+    expect(env.sites()).toEqual([expect.objectContaining({ expires_at: job.expires_at, uses: 0 })]);
+    expect(env.decisions()[0]).toMatchObject({ kind: 'session', selection_ref: env.sites()[0]!.pass_id });
+    expect(env.passes.use(APP_OFFER.key, 'mcp:tok-1', clock)).toBeUndefined();
+    expect(env.passes.use(APP_OFFER.key, 'job:j-2', clock)).toBeUndefined();
+    expect(env.passes.use(APP_OFFER.key, 'job:j-1', clock)).toMatchObject({ channel_session_id: 'job:j-1', uses: 1 });
+    clock = job.expires_at;
+    expect(env.passes.use(APP_OFFER.key, 'job:j-1', clock)).toBeUndefined();
+    // The owner's chats have no job: an offer of theirs carrying one offers no such answer.
+    const chat = await env.seed(2, false, { ...OFFER, job } as BrowserPassOffer);
+    expect((await env.asks.get(chat.ask_id))!.options.map((option) => option.id)).not.toContain(BROWSER_PASS_JOB_OPTION_ID);
   });
 
   it('preserves an ended request pass after its committed grant acknowledgement was lost', async () => {

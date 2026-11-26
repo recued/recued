@@ -5,7 +5,10 @@ import { clickActionGlyph } from './helpers/action-glyph.js';
 /** Recipes browser journeys against the deterministic full-app harness. */
 installFullAppHooks();
 
-test('Recipes hands focus into detail and back to the exact card', async ({ page }) => {
+const RECIPE_WORKSPACE = 'data-recued-recipes-workspace';
+
+test('Recipes hands focus into detail and back to the exact desktop row', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 720 });
   await page.goto(`${HARNESS_URL}?recipes=installed`);
   await page.waitForFunction(() => window.__app?.ready === true);
   await page.evaluate(() => window.__app.setHash('#recipes'));
@@ -14,9 +17,7 @@ test('Recipes hands focus into detail and back to the exact card', async ({ page
   await expect(card).toBeVisible();
   const recipeId = await card.getAttribute('data-recued-recipes-card');
   expect(recipeId).not.toBeNull();
-  const open = card.getByRole('button', { name: /Open .+ details/ });
-
-  await open.focus();
+  await card.focus();
   await page.keyboard.press('Enter');
   const detail = page.locator(`[data-recued-recipes-detail="${recipeId}"]`);
   await expect(detail).toBeVisible();
@@ -37,7 +38,7 @@ test('Recipes hands focus into detail and back to the exact card', async ({ page
   await back.focus();
   await page.keyboard.press('Enter');
   await expect(detail).toHaveCount(0);
-  await expect(open).toBeFocused();
+  await expect(card).toBeFocused();
 
   await page.evaluate(() => window.__app.fireMessage({
     type: 'server_event',
@@ -47,10 +48,11 @@ test('Recipes hands focus into detail and back to the exact card', async ({ page
       cursor: 62,
     },
   }));
-  await expect(open).toBeFocused();
+  await expect(card).toBeFocused();
 });
 
-test('Recipes uses Space for preview and Enter for durable detail', async ({ page }) => {
+test('Recipes cards use Space for preview and Enter for durable detail', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(`${HARNESS_URL}?recipes=installed#recipes`);
   await page.waitForFunction(() => window.__app?.ready === true);
 
@@ -84,6 +86,7 @@ test('Recipes uses Space for preview and Enter for durable detail', async ({ pag
 });
 
 test('Recipes restores filter, page, focus, and scroll through browser Back', async ({ page }) => {
+  await page.setViewportSize({ width: 1100, height: 620 });
   await page.goto(`${HARNESS_URL}?recipes=paged#recipes`);
   await page.waitForFunction(() => window.__app?.ready === true);
 
@@ -125,6 +128,58 @@ test('Recipes restores filter, page, focus, and scroll through browser Back', as
   ).toBe(savedScroll);
 });
 
+test('Recipes desktop keeps the list beside the preview and restores the exact selection on Back', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await page.goto(`${HARNESS_URL}?recipes=paged#recipes`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  const workspace = page.locator(`[${RECIPE_WORKSPACE}]`);
+  const index = workspace.getByRole('group', { name: 'Installed recipe list' });
+  const search = workspace.getByRole('searchbox', { name: 'Search installed recipes' });
+  const manual = workspace.getByRole('group', { name: 'Filter by type' }).getByRole('button', { name: 'Manual', exact: true });
+  const pager = workspace.getByRole('navigation', { name: 'Installed recipes pages' });
+  await search.fill('Paged recipe');
+  await manual.click();
+  await pager.getByRole('button', { name: /Next/ }).click();
+  await expect(pager).toContainText('Page 2 of 3');
+
+  const preview = workspace.getByRole('region', { name: 'Recipe preview' });
+  const first = index.getByRole('button', { name: 'Paged recipe 40', exact: true });
+  const selected = index.getByRole('button', { name: 'Paged recipe 41', exact: true });
+  await first.scrollIntoViewIfNeeded();
+  await first.press('Space');
+  await expect(preview.getByRole('heading', { name: 'Paged recipe 40', exact: true })).toBeVisible();
+  await first.press('ArrowDown');
+  await expect(selected).toBeFocused();
+  await expect(selected).toHaveAttribute('aria-current', 'true');
+  await expect(preview).toContainText('Deterministic recipe 41.');
+  await expect(preview).toContainText('Readiness');
+  await expect(preview.getByRole('button', { name: 'Run Paged recipe 41', exact: true })).toBeVisible();
+  const scrollPosition = () => workspace.evaluate(root => ({
+    list: root.querySelector('[data-recued-recipes-workspace-list]')?.scrollTop,
+    page: root.closest('[data-recued-webclient-content]')?.scrollTop,
+  }));
+  const savedScroll = await scrollPosition();
+  expect(savedScroll.list).toBeGreaterThan(0);
+
+  await preview.getByRole('button', { name: 'Open Paged recipe 41 details', exact: true }).press('Enter');
+  await expect(page).toHaveURL(/#recipes\/paged-recipe-41$/);
+  await expect(page.getByRole('heading', { name: 'Paged recipe 41', level: 1 })).toBeFocused();
+  await page.goBack();
+
+  await expect(page).toHaveURL(/#recipes$/);
+  await expect(search).toHaveValue('Paged recipe');
+  await expect(manual).toHaveAttribute('aria-pressed', 'true');
+  await expect(pager).toContainText('Page 2 of 3');
+  await expect(selected).toHaveAttribute('aria-current', 'true');
+  await expect(selected).toBeFocused();
+  await expect(preview.getByRole('heading', { name: 'Paged recipe 41', exact: true })).toBeVisible();
+  await expect.poll(scrollPosition).toEqual(savedScroll);
+  await preview.getByRole('button', { name: 'Close preview', exact: true }).press('Escape');
+  await expect(preview.getByText('Select a recipe to preview it.')).toBeVisible();
+  await expect(selected).toBeFocused();
+  await expect.poll(scrollPosition).toEqual(savedScroll);
+});
+
 test('Recipes gives mobile navigation full-size targets', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(`${HARNESS_URL}?recipes=installed`);
@@ -132,6 +187,7 @@ test('Recipes gives mobile navigation full-size targets', async ({ page }) => {
   await page.evaluate(() => window.__app.setHash('#recipes'));
 
   const card = page.locator('[data-recued-recipes-card]').first();
+  await expect(page.locator(`[${RECIPE_WORKSPACE}]`)).toHaveCount(0);
   await expect(card).toBeVisible();
   const listLinks = page.locator(
     '[data-recued-recipes-route] .recipes-actions > .recipes-inline-link',
@@ -295,6 +351,7 @@ test('Recipes contains long live status disclosures on list and detail', async (
 });
 
 test('Recipes gives list Open and Run separate focus ownership', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(`${HARNESS_URL}?recipes=installed`);
   await page.waitForFunction(() => window.__app?.ready === true);
   await page.evaluate(() => window.__app.setHash('#recipes'));
@@ -332,14 +389,15 @@ test('Recipes gives list Open and Run separate focus ownership', async ({ page }
 // fell to the page. Held until the dialog has focus, so the read always lands
 // after it, as it does on a real server.
 test('Recipes keeps the Run dialog focused when its Connection line arrives', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 720 });
   await page.goto(
     `${HARNESS_URL}?recipes=installed&recipe_connections=choice&hold_rpc=packs.connections.recipe`,
   );
   await page.waitForFunction(() => window.__app?.ready === true);
   await page.evaluate(() => window.__app.setHash('#recipes'));
 
-  const run = page.locator('[data-recued-recipes-card="autorun-live-1"]')
-    .getByRole('button', { name: 'Run Watch pipeline', exact: true });
+  await page.locator('[data-recued-recipes-card="autorun-live-1"]').click();
+  const run = page.getByRole('region', { name: 'Recipe preview' }).getByRole('button', { name: 'Run Watch pipeline', exact: true });
   await run.focus();
   await page.keyboard.press('Enter');
 
@@ -352,15 +410,29 @@ test('Recipes keeps the Run dialog focused when its Connection line arrives', as
   ).toBe(1);
   await expect(line).toHaveCount(1);
   await expect(dialog).toBeFocused();
+  await page.evaluate(() => window.__app.fireMessage({
+    type: 'server_event',
+    event: {
+      kind: 'recipe_runnability_changed',
+      recipes: [{ recipe_id: 'autorun-live-1', status: 'runnable', dependencies: [] }],
+      cursor: 67,
+    },
+  }));
+  await expect(page.getByRole('region', { name: 'Recipe preview' }).locator('[data-recued-recipes-runnability]'))
+    .toHaveAttribute('data-recued-recipes-runnability', 'runnable');
+  await expect(dialog).toBeFocused();
+  await page.keyboard.press('Escape');
+  await expect(run).toBeFocused();
 });
 
 test('Recipes offers a missing pack before Run and recovers live', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 720 });
   await page.goto(`${HARNESS_URL}?recipes=installed&recipe_default_run=1`);
   await page.waitForFunction(() => window.__app?.ready === true);
   await page.evaluate(() => window.__app.setHash('#recipes'));
 
-  const card = page.locator('[data-recued-recipes-card="autorun-live-1"]');
-  await expect(card).toBeVisible();
+  await page.locator('[data-recued-recipes-card="autorun-live-1"]').click();
+  const preview = page.getByRole('region', { name: 'Recipe preview' });
   await page.evaluate(() => window.__app.fireMessage({
     type: 'server_event',
     event: {
@@ -381,15 +453,15 @@ test('Recipes offers a missing pack before Run and recovers live', async ({ page
     },
   }));
 
-  await expect(card.locator('.recipes-runnability-pill')).toHaveText(
+  await expect(preview.locator('.recipes-runnability-pill')).toHaveText(
     'Cannot run. Install a Pack',
   );
-  await expect(card).toContainText(
+  await expect(preview).toContainText(
     'Install the officecli pack to make this recipe work.',
   );
-  await expect(card.locator('[data-recued-recipes-run-button]')).toBeDisabled();
+  await expect(preview.locator('[data-recued-recipes-run-button]')).toBeDisabled();
 
-  await card.getByRole('button', {
+  await preview.getByRole('button', {
     name: 'Open Watch pipeline details',
     exact: true,
   }).focus();
@@ -438,9 +510,7 @@ test('Recipes preserves direct default Run focus through execution', async ({ pa
   await page.waitForFunction(() => window.__app?.ready === true);
   await page.evaluate(() => window.__app.setHash('#recipes'));
 
-  await page.locator('[data-recued-recipes-card="autorun-live-1"]')
-    .getByRole('button', { name: 'Open Watch pipeline details', exact: true })
-    .click();
+  await page.locator('[data-recued-recipes-card="autorun-live-1"]').press('Enter');
   const detail = page.locator('[data-recued-recipes-detail="autorun-live-1"]');
   await expect(detail).toBeVisible();
 
@@ -556,9 +626,7 @@ test('Recipes protects editable result work through its save', async ({ page }) 
   await page.waitForFunction(() => window.__app?.ready === true);
   await page.evaluate(() => window.__app.setHash('#recipes'));
 
-  await page.locator('[data-recued-recipes-card="autorun-live-1"]')
-    .getByRole('button', { name: 'Open Watch pipeline details', exact: true })
-    .click();
+  await page.locator('[data-recued-recipes-card="autorun-live-1"]').press('Enter');
   const detail = page.locator('[data-recued-recipes-detail="autorun-live-1"]');
   await detail.getByRole('button', { name: 'Run', exact: true }).click();
   const dialog = page.getByRole('dialog', { name: 'Run a Recipe' });
@@ -666,9 +734,7 @@ test('Recipes owns result search and paging through every repaint', async ({ pag
   await page.waitForFunction(() => window.__app?.ready === true);
   await page.evaluate(() => window.__app.setHash('#recipes'));
 
-  await page.locator('[data-recued-recipes-card="autorun-live-1"]')
-    .getByRole('button', { name: 'Open Watch pipeline details', exact: true })
-    .click();
+  await page.locator('[data-recued-recipes-card="autorun-live-1"]').press('Enter');
   const detail = page.locator('[data-recued-recipes-detail="autorun-live-1"]');
   await detail.getByRole('button', { name: 'Run', exact: true }).click();
   const dialog = page.getByRole('dialog', { name: 'Run a Recipe' });
@@ -760,9 +826,7 @@ test('Recipes restores the replaced detail Run opener after execution', async ({
   await page.waitForFunction(() => window.__app?.ready === true);
   await page.evaluate(() => window.__app.setHash('#recipes'));
 
-  await page.locator('[data-recued-recipes-card="autorun-live-1"]')
-    .getByRole('button', { name: 'Open Watch pipeline details', exact: true })
-    .click();
+  await page.locator('[data-recued-recipes-card="autorun-live-1"]').press('Enter');
   const detail = page.locator('[data-recued-recipes-detail="autorun-live-1"]');
   const opener = detail.getByRole('button', { name: 'Run', exact: true });
   await opener.focus();
@@ -791,9 +855,7 @@ test('Recipes keeps Save settings owned while reading what a first dish starts f
   await page.waitForFunction(() => window.__app?.ready === true);
   await page.evaluate(() => window.__app.setHash('#recipes'));
 
-  await page.locator('[data-recued-recipes-card="autorun-live-1"]')
-    .getByRole('button', { name: 'Open Watch pipeline details', exact: true })
-    .click();
+  await page.locator('[data-recued-recipes-card="autorun-live-1"]').press('Enter');
   const detail = page.locator('[data-recued-recipes-detail="autorun-live-1"]');
   await expect(detail.locator('[data-recued-recipes-action="open-recipe-config"]')).toHaveCount(0);
   const switchOn = detail.locator(
@@ -836,9 +898,7 @@ test('Recipes returns a failed Save settings read to its action with a retryable
   await page.waitForFunction(() => window.__app?.ready === true);
   await page.evaluate(() => window.__app.setHash('#recipes'));
 
-  await page.locator('[data-recued-recipes-card="autorun-live-1"]')
-    .getByRole('button', { name: 'Open Watch pipeline details', exact: true })
-    .click();
+  await page.locator('[data-recued-recipes-card="autorun-live-1"]').press('Enter');
   const detail = page.locator('[data-recued-recipes-detail="autorun-live-1"]');
   const switchOn = detail.locator(
     '[data-recued-running-as-action="save-settings"][data-recued-running-as-recipe="autorun-live-1"]',
@@ -872,9 +932,7 @@ test('Recipes keeps Save settings owned through failure and retry', async ({ pag
   await page.waitForFunction(() => window.__app?.ready === true);
   await page.evaluate(() => window.__app.setHash('#recipes'));
 
-  await page.locator('[data-recued-recipes-card="autorun-live-1"]')
-    .getByRole('button', { name: 'Open Watch pipeline details', exact: true })
-    .click();
+  await page.locator('[data-recued-recipes-card="autorun-live-1"]').press('Enter');
   const detail = page.locator('[data-recued-recipes-detail="autorun-live-1"]');
   await detail.locator(
     '[data-recued-running-as-action="save-settings"]'
@@ -960,6 +1018,7 @@ test('Recipes keeps Save settings owned through failure and retry', async ({ pag
 });
 
 test('Recipes preserves related auto-run action ownership', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 720 });
   await page.route('https://recued.com/catalog/**', async (route) => {
     await route.fulfill({ json: [] });
   });
@@ -972,13 +1031,22 @@ test('Recipes preserves related auto-run action ownership', async ({ page }) => 
   const reactiveCard = page.locator(
     '[data-recued-recipes-card="autorun-live-1"]',
   );
-  await expect(reactiveCard.locator('[data-recued-recipes-run-button]'))
+  await reactiveCard.click();
+  const preview = page.getByRole('region', { name: 'Recipe preview' });
+  await expect(preview.locator('[data-recued-recipes-run-button]'))
     .toHaveCount(0);
-  await expect(reactiveCard.getByRole('link', {
+  const manage = preview.getByRole('link', {
     name: 'Manage automation for Watch pipeline',
     exact: true,
-  })).toHaveAttribute('href', '#automation/autorun-live-1');
-  await reactiveCard.getByRole('button', {
+  });
+  await manage.click();
+  await expect(page).toHaveURL(/#automation\/autorun-live-1$/);
+  await expect(page.getByRole('heading', { level: 1, name: 'Automation', exact: true })).toBeVisible();
+  await page.goBack();
+  await expect(page).toHaveURL(/#recipes$/);
+  await expect(reactiveCard).toBeFocused();
+  await expect(manage).toBeVisible();
+  await preview.getByRole('button', {
     name: 'Open Watch pipeline details',
     exact: true,
   }).click();
@@ -1168,9 +1236,7 @@ test('Recipes keeps workflow-pack recovery focused and single-flight', async ({ 
   await page.goto(`${HARNESS_URL}?recipes=related-autorun`);
   await page.waitForFunction(() => window.__app?.ready === true);
   await page.evaluate(() => window.__app.setHash('#recipes'));
-  await page.locator('[data-recued-recipes-card="autorun-live-1"]')
-    .getByRole('button', { name: 'Open Watch pipeline details', exact: true })
-    .click();
+  await page.locator('[data-recued-recipes-card="autorun-live-1"]').press('Enter');
 
   const status = page.locator(
     '[data-recued-recipes-bundle-status="pipeline-response"]',

@@ -1,4 +1,5 @@
 import { assertKernelReadScope } from '../../situations/read-scope.js';
+import { dispatchMailWithReplyWatch } from '../../mail-follow-up-send-service.js';
 import { createResourceReviewHooks } from '../../resource-review.js';
 import { isCustomerAccountPaymentReminderReference, type ExecutionSource } from '@recued/contracts';
 /** Round 5 / executorConfig surgical extraction — boot composer for
@@ -247,7 +248,7 @@ export interface ComposeExecutorConfigDeps {
    *  this config, so a kernel dispatcher cannot capture it at construction. Same
    *  seam the container-pick and saga wirings use for the same reason. Absent ⇒
    *  the door refuses rather than raising nothing silently. */
-  getExecuteDeps?: () => { preflightNotifier?: unknown; auditLog?: unknown;
+  getExecuteDeps?: () => { preflightNotifier?: unknown; auditLog?: unknown; mailFollowUpSend?: import('../../mail-follow-up-send-service.js').MailFollowUpSendService;
     getQuoteSignoffReminderService?: () => import('../../quote-signoff-reminder-service.js').QuoteSignoffReminderService;
     getCustomerJobPaymentStatementService?: () => import('../../customer-job-payment-statement-service.js').CustomerJobPaymentStatementService;
     getCustomerAccountStatementService?: () => import('../../customer-account-statement-service.js').CustomerAccountStatementService;
@@ -1989,10 +1990,10 @@ export const composeExecutorConfig = async (
           }
           before_dispatch = await getReminders().guardSend(input);
         }
+        const followUp = deps.getExecuteDeps?.()?.mailFollowUpSend;
         try {
-          return before_dispatch
-            ? await handleCollectionMailSend({ registry: deps.collectionRegistry }, input, { before_dispatch })
-            : await handleCollectionMailSend({ registry: deps.collectionRegistry }, input);
+          return await dispatchMailWithReplyWatch(input, followUp, guard =>
+            handleCollectionMailSend({ registry: deps.collectionRegistry }, input, guard ? { before_dispatch: guard } : undefined), before_dispatch);
         } catch (err) {
           // A fenced send that ended without an outcome — this attempt, or an
           // earlier one a retry just ran into — is the OWNER's to settle: ask them

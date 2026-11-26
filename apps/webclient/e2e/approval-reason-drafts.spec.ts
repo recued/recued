@@ -8,6 +8,7 @@ declare global { interface Window {
 } }
 
 let bundle: string, tokens: string;
+test.use({ viewport: { width: 1200, height: 900 } });
 const pageErrors: string[] = [];
 test.beforeEach(({ page }) => {
   pageErrors.length = 0; page.on('pageerror', error => pageErrors.push(String(error)));

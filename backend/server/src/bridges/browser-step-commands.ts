@@ -16,7 +16,7 @@
  *  through the real adapter against a Bridge that answers everything, and fails when the adapter sends a
  *  command a Bridge with only what this lists could not run. A new `send` in the batch loop must be added
  *  here, or that test goes red. */
-import { browserCollectNeedsStructure, type BridgeAction, type BrowserCollectSpec } from '@recued/contracts';
+import { browserCollectNeedsStructure, isHorizontalScrollDirection, type BridgeAction, type BrowserCollectSpec } from '@recued/contracts';
 
 /** A command a step may send, with the arguments that decide whether a Bridge runs it. */
 export interface BrowserCommand {
@@ -27,6 +27,7 @@ export interface BrowserCommand {
 const command = (action: BridgeAction, args: Record<string, unknown> = {}): BrowserCommand => ({ action, args });
 /** On a page handle, as every command a batch sends to a tab is. */
 const onPage = (action: BridgeAction, args: Record<string, unknown> = {}): BrowserCommand => command(action, { page: 'page', ...args });
+const scrollArgs = (to: unknown) => isHorizontalScrollDirection(to) ? { to } : {};
 
 /** A single operation's commands: by a page handle (and a read of the page after a write), or by a
  *  selector alone. */
@@ -40,13 +41,13 @@ const SINGLE: Readonly<Record<string, (args: Readonly<Record<string, unknown>>) 
   'core.dom.wait': () => [onPage('wait_for_element'), onPage('reread')],
   'core.dom.table': () => [onPage('read_table')],
   'core.dom.screenshot': () => [onPage('screenshot_page')],
-  'core.dom.scroll': () => [onPage('scroll'), onPage('reread')],
+  'core.dom.scroll': (args) => [onPage('scroll', scrollArgs(args.to)), onPage('reread')],
   'core.dom.download': () => [onPage('download_file')],
   'core.dom.bridges': () => [],
 };
 
 /** The steps after which the batch reads the tab again, to say what the step changed. */
-const READS_AFTER = new Set(['type', 'click', 'press', 'submit', 'hover', 'scroll', 'go', 'back', 'reload', 'close', 'upload']);
+const READS_AFTER = new Set(['type', 'click', 'press', 'seek', 'submit', 'hover', 'drag', 'scroll', 'go', 'back', 'reload', 'close', 'upload']);
 
 /** One step of an Act batch. Undefined for a kind this does not know: the batch refuses it itself. */
 const actStepCommands = (step: Readonly<Record<string, unknown>>): BrowserCommand[] | undefined => {
@@ -63,16 +64,31 @@ const actStepCommands = (step: Readonly<Record<string, unknown>>): BrowserComman
       if (step.pick !== undefined) {
         commands.push(onPage('pick'));
         if (step.submit === true) commands.push(onPage('submit'));
-      } else commands.push(onPage(step.submit === true ? 'submit' : 'fill', within));
+      } else commands.push(onPage(step.submit === true ? 'submit' : 'fill',
+        step.delivery === 'paste' ? { ...within, delivery: 'paste' } : within));
       break;
     }
     case 'click':
       if (byText) commands.push(onPage('inspect'));
-      commands.push(onPage('click', within));
+      commands.push(onPage('click', { ...within,
+        ...(step.count === 2 ? { click_count: 2 } : {}),
+        ...(typeof step.download_wait === 'number' ? { download_wait_ms: step.download_wait * 1000 } : {}) }));
       break;
-    case 'press': case 'submit': case 'hover': case 'download': case 'upload':
+    case 'press': case 'submit': case 'hover': case 'download':
       if (byText) commands.push(onPage('inspect'));
-      commands.push(onPage(step.do === 'download' ? 'download_file' : step.do === 'upload' ? 'upload_file' : step.do));
+      commands.push(onPage(step.do === 'download' ? 'download_file' : step.do));
+      break;
+    case 'upload':
+      if (byText) commands.push(onPage('inspect'));
+      commands.push(onPage(step.files === undefined ? 'upload_file' : 'upload_files',
+        step.delivery === 'drop' ? { delivery: 'drop' } : {}));
+      break;
+    case 'drag':
+      commands.push(onPage('drag'));
+      break;
+    case 'seek':
+      if (byText) commands.push(onPage('inspect'));
+      commands.push(onPage('seek_media'));
       break;
     case 'wait':
       if (step.selector !== undefined) commands.push(onPage('wait_for_element'));
@@ -93,7 +109,10 @@ const actStepCommands = (step: Readonly<Record<string, unknown>>): BrowserComman
       break;
     }
     case 'table': commands.push(onPage('read_table')); break;
-    case 'scroll': commands.push(onPage('scroll')); break;
+    case 'scroll':
+      if (byText) commands.push(onPage('inspect'));
+      commands.push(onPage('scroll', scrollArgs(step.to)));
+      break;
     case 'go': commands.push(onPage('navigate')); break;
     case 'back': commands.push(onPage('go_back')); break;
     case 'reload': commands.push(onPage('reload_page')); break;

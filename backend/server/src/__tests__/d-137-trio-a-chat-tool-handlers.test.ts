@@ -27,6 +27,7 @@ import type {
   ExecutionSource,
   RecipeDefinition,
 } from '@recued/contracts';
+import { TIER1_TOOL_DESCRIPTORS } from '@recued/contracts';
 import { IngredientError } from '@recued/ingredients';
 import {
   buildChatTier1Handlers,
@@ -974,6 +975,27 @@ describe('D-137 Trio #A — Tier 2 dispatch', () => {
       expect(execute).not.toHaveBeenCalled();
     },
   );
+
+  // 2026-11-22 — `recipe.run` (Tier 1) takes no vault either. Its schema offered one as "per-run credential
+  // overrides", so a model that took the offer sent the owner's keys in its own arguments; the vault is server-owned,
+  // as the Tier-2 refusal above says, and credentials are the owner's connections.
+  it('rejects a vault on recipe.run (Tier 1) before execution, and its schema offers none', async () => {
+    const execute = vi.fn();
+    const handlers = buildChatTier1Handlers(buildDepsStub({ getExecuteRecipe: () => execute }));
+    const result = await handlers['recipe.run']!(
+      { recipe_id: 'foo/send', vault: { api_key: 'not-a-real-key' } },
+      ctxInternal(),
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toBe('invalid_args');
+      expect(result.detail).toContain('recipe.run takes no vault');
+    }
+    expect(execute).not.toHaveBeenCalled();
+    const schema = TIER1_TOOL_DESCRIPTORS['recipe.run'].arg_schema as { properties: Record<string, unknown> };
+    expect(Object.keys(schema.properties)).not.toContain('vault');
+    expect(JSON.stringify(TIER1_TOOL_DESCRIPTORS['recipe.run'])).not.toMatch(/credential/i);
+  });
 
   it('wraps a held publisher recipe send response as awaiting_approval', async () => {
     const recipe = buildRecipe('foo/send');

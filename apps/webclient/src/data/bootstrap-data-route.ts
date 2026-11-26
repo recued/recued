@@ -1,11 +1,25 @@
+import { focusNextInDialog, renderActionIcon } from '@recued/ui-shared';
+
+import { settingsSearchResults } from '../settings/settings-search.js';
+import { settingsFinderHash, type SettingsFinderTarget } from '../settings/settings-finder-targets.js';
+import { SEARCH_OPEN_SETTING, SEARCH_SETTING_ID, SEARCH_SETTING_GROUP } from '../settings/settings-search-view.js';
+import { createSavedViewSearch, savedViewSearchUncertain, savedViewSearchHref, savedViewSearchAliases, type SavedViewSearchCallers } from './saved-view-search.js';
+import { SEARCH_OPEN_SAVED_VIEW, SEARCH_REFRESH_SAVED_VIEWS, SEARCH_SAVED_VIEW_ID, SEARCH_SAVED_VIEW_FOCUS, SEARCH_SAVED_VIEW_GROUP } from './saved-view-search-view.js';
+import { createConnectionSearch, connectionSearchUncertain, type ConnectionSearchCallers } from '../connections/connection-search.js';
+import { SEARCH_OPEN_CONNECTION, SEARCH_REFRESH_CONNECTIONS, SEARCH_CONNECTION_KEY, SEARCH_CONNECTION_FOCUS, SEARCH_CONNECTION_GROUP } from '../connections/connection-search-view.js';
 import { createSelectionNotePicker } from './selection-note-picker.js';
 import { selectionNoteValues } from './selection-note.js';
 import { reconcileNativeField } from '../shell/reconcile-native-field.js';
+import { focusListTarget } from '../shell/list-preview-continuity.js';
 import { createBookingReaderActions, bookingIdentity, requireSameBooking, type BookingReaderActionsView } from './booking-reader-actions.js';
 import { createBookingReaderContinuity, type BookingReaderPosition } from './booking-reader-continuity.js';
 import { createSearchRecordPreviewSurface } from './search-record-preview-surface.js';
 import { createCommitmentChat, createWorkRecordChat } from './commitment-chat.js';
 import { createCommitmentFollowUp } from './commitment-follow-up.js';
+import { createRefundCreditReview, REFUND_CREDIT_STYLES, type RefundCreditCallers } from './refund-credit-review.js';
+import { CUSTOMER_WATCH_ACTION, CUSTOMER_WATCH_STYLES, createCustomerDecisionWatchEditor, type CustomerDecisionWatchCallers } from './customer-decision-watch.js';
+import { DECISION_WATCH_ENTITY, DECISION_WATCH_OWNER, type CustomerDecisionRef } from '@recued/contracts';
+import { refundWatchOrder } from '@recued/contracts';
 import { parseRecordLinkQuery, readExactRecordLink, EXACT_LINK_OPEN_ACTION, EXACT_LINK_RETRY_ACTION, EXACT_LINK_KEY_ATTR, type ExactRecordLinkState } from './exact-record-link.js';
 import { recordLink } from '../shell/record-link.js';
 import { createWorkLinkedFrom, verifyLinkedFromSource, WORK_LINKED_FROM_STYLES, type LinkedFromCaller } from './work-linked-from.js';
@@ -14,7 +28,10 @@ import { createContactMergeRecovery, MERGE_RECOVERY_PREFIX, MERGE_RECOVERY_STYLE
 import { DEFAULT_COMMITMENT_VIEW_FILTERS, parseCommitmentViewFilters, type CommitmentViewFilters } from '@recued/contracts';
 import { commitmentCounterpartyLabel, renderWorkEntityPageHeader, type WorkEntityCommitmentView, type WorkEntityTaskView, type TaskListLayout } from '@recued/ui-shared/work-entity-page';
 import { createMailDraftSearch } from '../mail/mail-draft-search.js';
-import { isUniversalSearchResultType, type UniversalSearchResultType } from '@recued/contracts';
+import { createMailFollowUpSearch, followUpResultHref } from '../mail/mail-follow-up-search.js';
+import { SEARCH_OPEN_FOLLOW_UP, SEARCH_MANAGE_FOLLOW_UP, SEARCH_MORE_FOLLOW_UPS, SEARCH_REFRESH_FOLLOW_UPS, SEARCH_FOLLOW_UP_ID, SEARCH_FOLLOW_UP_FILTER } from '../mail/mail-follow-up-search-view.js';
+import { isUniversalSearchResultType, parseMailFollowUpFilters, mailFollowUpHref, mailFollowUpTaskRef, type UniversalSearchResultType } from '@recued/contracts';
+import { createTaskReplyWatchSlots, taskReplyWatchSlot } from '../mail/task-reply-watch.js';
 import { SEARCH_TYPE_ATTR, SEARCH_CLEAR_TYPE_ACTION, retireSearchTypeCounts } from './universal-search-filter.js';
 import { createReminderSearch } from '../reminders/reminder-search.js';
 import { createReminderSearchTriage, SEARCH_TRIAGE_ACTION, SEARCH_TRIAGE_FIELD, SEARCH_TRIAGE_FOCUS } from '../reminders/reminder-search-triage.js';
@@ -24,6 +41,10 @@ import { createPromptSearchBulk, SEARCH_PROMPT_BULK_FOCUS } from '../automation/
 import { createPendingDecisionSearch, type PendingDecisionSearchCallers } from '../approvals/pending-decision-search.js';
 import { SEARCH_OPEN_DECISION, SEARCH_REFRESH_DECISIONS, SEARCH_DECISION_KEY, SEARCH_DECISION_FOCUS } from '../approvals/decision-search-view.js';
 import { decisionSearchHref } from '../approvals/decision-search-record.js';
+import { createRunSearch, runSearchHref, type RunSearchCallers } from '../logs/run-search.js';
+import { SEARCH_OPEN_RUN, SEARCH_REFRESH_RUNS, SEARCH_MORE_RUNS, SEARCH_RUN_ID, SEARCH_RUN_FOCUS, SEARCH_RUN_GROUP } from '../logs/run-search-view.js';
+import { SEARCH_RUN_FILTER, SEARCH_CLEAR_RUN_FILTERS } from '../logs/run-search-filters.js';
+import { SEARCH_REVIEW_RUNS } from '../logs/run-search-review.js';
 import type { PromptBulkClient } from '../automation/prompt-bulk-controls.js';
 import { SEARCH_OPEN_PROMPT, SEARCH_REFRESH_PROMPTS, SEARCH_PROMPT_ID, SEARCH_PROMPT_REVISION, SEARCH_PROMPT_GROUP } from '../automation/prompt-search-view.js';
 import { SEARCH_OPEN_REMINDER_ACTION, SEARCH_MORE_REMINDERS_ACTION, SEARCH_REMINDER_ID_ATTR, SEARCH_REMINDER_STATUS_ATTR } from '../reminders/reminder-search-view.js';
@@ -36,7 +57,7 @@ import { createNoteRelatedRecords, type NoteRelatedTarget } from './note-related
 import { createCommitmentRelatedRecords, commitmentRelatedIdentity } from './commitment-related-records.js';
 import { duplicateDestinations, duplicateWorkValues, isDuplicateEntity, sameDuplicateEntity, type DuplicateEntity } from './work-entity-duplicate.js';
 import { createNoteFind, NOTE_FIND_ACTION, TASK_FIND_ACTION } from './note-find.js';
-import { createWorkReaderNavigation, WORK_READER_ACTION, WORK_READER_FOCUS, WORK_READER_NAVIGATION_STYLES, type WorkReaderKind, type WorkReaderScope } from './work-reader-navigation.js';
+import { createWorkReaderNavigation, WORK_READER_ACTION, WORK_READER_FOCUS, WORK_READER_NAVIGATION_STYLES, type WorkReaderKind, type WorkReaderListOrigin, type WorkReaderScope } from './work-reader-navigation.js';
 import { createWorkReaderCopy, WORK_COPY_ACTION } from './work-reader-copy.js';
 import { copyText } from '../shell/copy-text.js';
 import { createNoteDraftCheckpoint, noteDraftOriginal, noteDraftMatchesOriginal, type NoteRecoveryStore } from './note-draft-recovery.js';
@@ -50,7 +71,9 @@ import { createRecentWorkPanel, RECENT_WORK_ACTION, RECENT_WORK_KIND, RECENT_WOR
 import { pinnedRecordIdentity, type PinnedRecords } from './pinned-records.js';
 import { createRecordPinControls, RECORD_PIN_ACTION, RECORD_PIN_KEY, type RecordPinCandidate } from './record-pin-controls.js';
 import { createSourceRecordCopy, renderSourceRecordCopy, SOURCE_COPY_ACTION, SOURCE_COPY_FOCUS, SOURCE_COPY_VALUE, SOURCE_RECORD_COPY_STYLES } from './source-record-copy.js';
-import { createMailReaderNavigation, MAIL_READER_ACTION, MAIL_READER_NAVIGATION_STYLES } from './mail-reader-navigation.js';
+import {
+  createMailReaderNavigation, MAIL_READER_ACTION, MAIL_READER_NAVIGATION_STYLES, MAIL_READER_OPEN_ACTION, MAIL_READING_PANE_MEDIA,
+} from './mail-reader-navigation.js';
 import { mailTaskValues } from './mail-task.js';
 import { createReaderPassage, readerPassageQuestion, READER_PASSAGE_STYLES, type ReaderPassage } from './reader-passage.js';
 import { calendarTaskValues } from './calendar-task.js';
@@ -89,10 +112,12 @@ import type { MainDishSettings } from '../recipes/main-dish-settings.js';
 import type { HeldRunFollower } from '../held-run-follow.js';
 import { CONNECTION_NAME_REGEX } from '@recued/contracts';
 import { connectionsFileAuthenticationAddress } from '../connections/connections-navigation.js';
-import { openFilePreview, readStoredFileDownload, type FilePreviewCallers } from '../files/file-preview.js';
+import { openFilePreview, readStoredFileDownload, type FilePreviewCallers, type FilePreviewTarget } from '../files/file-preview.js';
 import { openFileChatPicker, type FileChatCallers } from '../chat/existing-file-picker.js';
 import { cloudFileInstance, cloudFileRecord, cloudFileSourceId, cloudFileSourceSlug, SAVED_FILES_SLUG, savedFilesInstance } from './cloud-file-explorer.js';
 import { createSavedFileBrowser, savedFileRecord, renderSavedFileSearch, renderSavedFileFooter, type SavedFileListCaller } from './saved-file-browser.js';
+import { createSavedFilePreviewPane, SAVED_FILE_PREVIEW_SLOT, SAVED_FILE_PREVIEW_SLOT_SELECTOR, SAVED_FILE_PREVIEW_STYLES } from './saved-file-preview-pane.js';
+import { FILE_BROWSER_DESKTOP_MEDIA, FILE_BROWSER_TOOLBAR_STYLES, FILE_SOURCE_OPTIONS } from './file-browser-toolbar.js';
 import { createContactActivity, contactActivityMemory, CONTACT_ACTIVITY_STYLES } from './contact-activity.js';
 import { createMailBulkActions, MAIL_BULK_FOCUS, MAIL_BULK_STYLES } from './mail-bulk-actions.js';
 import { createMailInbox, mailInboxMemory, defaultMailInboxFilters, mailInboxHasFilters, renderMailInboxControls, renderMailInboxFooter, MAIL_INBOX_STYLES, type MailInboxPosition } from './mail-inbox.js';
@@ -348,7 +373,9 @@ import {
   createRemindersSurface,
   REMINDERS_ACTION_PREFIX,
   REMINDERS_FIELD_ATTR,
+  REMINDERS_FOCUS_ATTR,
   REMINDERS_STYLES,
+  REMINDER_READER_SCROLL_ATTR,
   type ReminderCallers,
 } from './reminders-surface.js';
 import { parseReminderLink } from '@recued/contracts';
@@ -420,6 +447,7 @@ import {
 import {
   renderCollectionExplorer,
   COLLECTION_EXPLORER_STYLES,
+  renderCollectionInstanceBar,
   COLLECTION_SELECT_INSTANCE_ACTION,
   COLLECTION_OPEN_RECORD_ACTION,
   COLLECTION_RETRY_ACTION,
@@ -432,7 +460,10 @@ import {
   COLLECTION_RETRY_ATTR,
   type CollectionExplorerDetailState,
 } from './collection-explorer.js';
-import { createCalendarAgenda, calendarAgendaPreferences, calendarDateIn, CALENDAR_AGENDA_STYLES, AGENDA_FOCUS, AGENDA_SOURCE } from './calendar-agenda.js';
+import {
+  createCalendarAgenda, calendarAgendaPreferences, calendarDateIn, CALENDAR_AGENDA_STYLES, AGENDA_FOCUS, AGENDA_SOURCE,
+  CALENDAR_MONTH_WIDE_MEDIA, CALENDAR_MONTH_WORKSPACE_ATTR, CALENDAR_MONTH_DAY_SCROLL_ATTR, type CalendarAgendaPosition,
+} from './calendar-agenda.js';
 import { createCalendarCreateSurface, CALENDAR_CREATE_STYLES, type CalendarCreateCallers } from './calendar-create-surface.js';
 import { calendarTaskSeed, calendarTaskHref, canScheduleTask, sameCalendarTask, type CalendarTaskOrigin } from './calendar-task-draft.js';
 import { calendarMailSeed, type CalendarMailOrigin } from './calendar-mail.js';
@@ -506,9 +537,11 @@ import {
   RECORDS_EVENT_ID_ATTR,
   RECORDS_ID_ATTR,
   RECORDS_KIND_ATTR,
+  RECORDS_MANAGEMENT_ATTR,
   RECORDS_NAMESPACE_ATTR,
   RECORDS_OPEN_REFERENCE_ACTION,
   RECORDS_OPEN_RECORD_ACTION,
+  RECORDS_PACK_PICKER_ACTION,
   RECORDS_PURGE_ACTION,
   RECORDS_PURGE_CONFIRMATION_ATTR,
   RECORDS_MARK_REVIEWED_ACTION,
@@ -519,6 +552,7 @@ import {
   RECORDS_SELECT_NAMESPACE_ACTION,
   RECORDS_TOGGLE_CHANGES_ACTION,
   RECORDS_TOGGLE_OUTBOX_ACTION,
+  RECORDS_WIDE_DESKTOP_MEDIA,
   renderRecordsExplorer,
   type RecordsExplorerState,
 } from './records-explorer.js';
@@ -683,11 +717,25 @@ const DATA_ROUTE_IMPORT_SOURCE_ATTR = 'data-import-source';
 
 const DATA_ROUTE_ACTION_ATTR = 'data-recued-data-action';
 const DATA_ROUTE_TAB_ID_ATTR = 'data-data-tab';
+const DATA_ROUTE_TABLIST_ID = 'recued-data-collections';
 const DATA_ROUTE_TAB_PANEL_ID = 'recued-data-collection-panel';
+const COLLECTION_RAIL_MEDIA = '(min-width: 960px)';
+const COLLECTION_RAIL_COLLAPSE_MEDIA = `${COLLECTION_RAIL_MEDIA} and (hover: hover) and (pointer: fine)`;
+const COLLECTION_RAIL_COLLAPSED_ATTR = 'data-recued-data-collections-collapsed';
+const COLLECTION_RAIL_TOGGLE_ACTION = 'toggle-collection-rail';
+const COLLECTION_RAIL_STORAGE_KEY = 'recued.data-collections-collapsed';
 const DATA_ROUTE_CONTACT_EMAIL_ATTR = 'data-contact-email';
 const DATA_ROUTE_FORM_RESPONSE_ID_ATTR = 'data-form-response-id';
+const FORM_RESPONSE_READER_SCROLL_ATTR = 'data-form-response-reader-scroll';
 const DATA_ROUTE_CONTACT_FIELD_ATTR = 'data-recued-data-contact-field';
 const DATA_ROUTE_CONTACT_SEARCH_ATTR = 'data-recued-data-contact-search';
+const DATA_DESKTOP_WORKSPACE_MEDIA = '(min-width: 1280px) and (hover: hover) and (pointer: fine)';
+const MEMORY_READER_FOCUS_SCOPES = ['.memory-reader-index', '.memory-detail', '.data-lens-switch'];
+const CONTACT_PREVIEW_ATTR = 'data-recued-contact-preview';
+const CONTACT_PREVIEW_ID = 'recued-data-contact-preview';
+const CONTACT_PREVIEW_HEADING_ID = 'recued-data-contact-preview-title';
+const CONTACT_PREVIEW_ACTION = 'preview-contact';
+const CONTACT_PREVIEW_CLOSE_ACTION = 'close-contact-preview';
 const DATA_ROUTE_TIMELINE_ENTITY_ATTR = 'data-recued-data-timeline-entity';
 const SHARED_ACTION_ATTR = 'data-action';
 const DEFAULT_LIMIT = 100;
@@ -1172,6 +1220,7 @@ export interface BootstrapDataRouteOptions {
   workEntityUpsertCaller?: DataWorkEntityUpsertCaller;
   taskMarkDoneCaller?: DataTaskMarkDoneCaller;
   commitmentCloseCaller?: DataCommitmentCloseCaller;
+  refundCreditCallers?: RefundCreditCallers;
   workEntityDeleteCaller?: DataWorkEntityDeleteCaller;
   manageRescheduleLinkCaller?: DataManageRescheduleLinkCaller;
   contactListCaller?: DataContactListCaller;
@@ -1246,6 +1295,14 @@ export interface BootstrapDataRouteOptions {
   promptBulkCaller?: PromptBulkClient;
   decisionSearchCallers?: PendingDecisionSearchCallers;
   openPendingDecision?: (id: string) => void;
+  settingsSearchTargets?: readonly SettingsFinderTarget[];
+  openSetting?: (entry: { id: string; section: string }) => void;
+  savedViewSearchCallers?: SavedViewSearchCallers;
+  openSavedView?: (id: string) => void;
+  connectionSearchCallers?: ConnectionSearchCallers;
+  openConnection?: (href: string) => void;
+  runSearchCallers?: RunSearchCallers;
+  openRun?: (id: string) => void;
   openPromptSchedule?: (selection: PromptSelection) => boolean;
   calendarEventCallers?: CalendarEventCallers;
   calendarCreateCallers?: CalendarCreateCallers;
@@ -1320,6 +1377,7 @@ export interface BootstrapDataRouteOptions {
    *  `data.shared.` prefix). Present → the Shared tab browses; absent → notice. */
   sharedListCaller?: DataSharedListCaller;
   recordsNamespaceListCaller?: DataRecordsNamespaceListCaller;
+  customerDecisionWatches?: CustomerDecisionWatchCallers;
   recordsKindListCaller?: DataRecordsKindListCaller;
   recordsSearchCaller?: DataRecordsSearchCaller;
   recordsGetCaller?: DataRecordsGetCaller;
@@ -1382,6 +1440,8 @@ export interface BootstrapDataRouteOptions {
   /** Exact collection instance for an explorer record deep link. Without this
    * locator a multi-account Data tab cannot safely choose an instance. */
   initialCollectionSlug?: string;
+  initialMailReference?: ReminderMailReference;
+  openReceivedReply?(ref: ReminderMailReference): void;
   initialEntityId?: string;
   initialRecordsTarget?: RecordsRecordAddress;
   /** The address's third segment (`#data/<tab>/<entity>/<detail>`), for a tab
@@ -1508,6 +1568,7 @@ interface TimelineSnapshot {
 interface ContactDetailState {
   activity_html?: string;
   work?: { busy?: ContactFollowUpKind | 'open'; preparation?: object; error?: string; created?: Extract<WorkEntity, { _kind: 'task' | 'note' }> };
+  previewReturn?: { hash: string; email: string; scrollTop: number };
   from_search?: boolean;
   from_note?: boolean;
   from_task?: boolean;
@@ -1812,7 +1873,7 @@ const DATA_ROUTE_STYLES = `
 }
 [${DATA_ROUTE_HOST_ATTR}] .data-collection-workspace,
 [${DATA_ROUTE_HOST_ATTR}] .data-collection-content { min-width:0; }
-@media(min-width:960px) {
+@media ${COLLECTION_RAIL_MEDIA} {
   [${DATA_ROUTE_HOST_ATTR}] .data-collection-workspace--split {
     display:grid; grid-template-columns:176px minmax(0,1fr); align-items:start; gap:24px;
   }
@@ -1840,6 +1901,33 @@ const DATA_ROUTE_STYLES = `
 [${DATA_ROUTE_HOST_ATTR}] .data-collection-title { margin:0; font-size:20px; font-weight:600; }
 [${DATA_ROUTE_HOST_ATTR}] .data-collection-header--list .work-entity-page-create-disabled { grid-column:1 / -1; }
 [${DATA_ROUTE_HOST_ATTR}][data-compact-list-layout="true"] .data-lens-switch { margin-bottom: 8px; }
+[${DATA_ROUTE_HOST_ATTR}] button.data-button.data-collection-rail-toggle { display:none; }
+@media ${COLLECTION_RAIL_COLLAPSE_MEDIA} {
+  [${DATA_ROUTE_HOST_ATTR}] .data-collection-toolbar {
+    display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px 16px;
+  }
+  [${DATA_ROUTE_HOST_ATTR}] button.data-button.data-collection-rail-toggle {
+    display:inline-flex; align-items:center; min-height:var(--wc-control-h,40px);
+  }
+  [${DATA_ROUTE_HOST_ATTR}][${COLLECTION_RAIL_COLLAPSED_ATTR}="true"] .data-collection-workspace--split { display:block; }
+  [${DATA_ROUTE_HOST_ATTR}][${COLLECTION_RAIL_COLLAPSED_ATTR}="true"] .data-collection-workspace--split > .data-tab-groups { display:none; }
+  [${DATA_ROUTE_HOST_ATTR}][${COLLECTION_RAIL_COLLAPSED_ATTR}="true"] .data-collection-header {
+    display:flex; flex-flow:row wrap; align-items:center; gap:8px 16px; margin-bottom:12px;
+  }
+  [${DATA_ROUTE_HOST_ATTR}][${COLLECTION_RAIL_COLLAPSED_ATTR}="true"] .data-collection-picker {
+    display:inline-flex; align-items:center; gap:8px; min-width:0; font-size:13px; font-weight:600;
+  }
+  [${DATA_ROUTE_HOST_ATTR}][${COLLECTION_RAIL_COLLAPSED_ATTR}="true"] .data-collection-picker select {
+    min-height:var(--wc-control-h,40px); min-width:12rem; max-width:100%;
+  }
+  [${DATA_ROUTE_HOST_ATTR}][${COLLECTION_RAIL_COLLAPSED_ATTR}="true"] .data-collection-header--list > :is(.work-entity-page-title, .data-collection-title) {
+    position:absolute; width:1px; height:1px; overflow:hidden; clip-path:inset(50%);
+  }
+  [${DATA_ROUTE_HOST_ATTR}][${COLLECTION_RAIL_COLLAPSED_ATTR}="true"] .data-collection-header--list :is(.work-entity-page-create, .data-collection-create) {
+    width:auto; min-width:var(--wc-task-action-width,7.5rem); margin-inline-start:auto;
+  }
+  [${DATA_ROUTE_HOST_ATTR}][${COLLECTION_RAIL_COLLAPSED_ATTR}="true"] .data-collection-header--list .work-entity-page-create-disabled { flex-basis:100%; }
+}
 @media (max-width: 640px) {
   [${DATA_ROUTE_HOST_ATTR}] .data-tab-groups { display: none; }
   [${DATA_ROUTE_HOST_ATTR}] .data-collection-picker {
@@ -1932,6 +2020,79 @@ const DATA_ROUTE_STYLES = `
 [${DATA_ROUTE_HOST_ATTR}] .data-contact-list-tools { display:flex; flex-wrap:wrap; align-items:center; gap:8px; min-width:0; margin:0 0 12px; }
 [${DATA_ROUTE_HOST_ATTR}] .data-contact-list-tools > .data-input { flex:1 1 240px; min-width:0; width:auto; max-width:100%; }
 [${DATA_ROUTE_HOST_ATTR}] .data-contact-list-actions { display:flex; flex-wrap:wrap; gap:8px; }
+[${DATA_ROUTE_HOST_ATTR}] .data-contact-workspace--preview {
+  display:grid; grid-template-columns:minmax(0,1fr) minmax(16rem,32%);
+  align-items:start; gap:var(--wc-space-lg,24px);
+}
+[${DATA_ROUTE_HOST_ATTR}] .work-entity-list-workspace {
+  display:grid; grid-template-columns:minmax(16rem, 36%) minmax(0, 1fr);
+  align-items:start; gap:var(--wc-space-lg,24px); min-width:0;
+}
+[${DATA_ROUTE_HOST_ATTR}] .work-entity-task-workspace { --task-controls-columns:repeat(2,minmax(0,1fr)); }
+[${DATA_ROUTE_HOST_ATTR}] .work-entity-note-workspace { grid-template-columns:minmax(16rem,32%) minmax(0,1fr); }
+[${DATA_ROUTE_HOST_ATTR}] :is(.work-entity-note-workspace,.work-entity-commitment-workspace,.work-entity-booking-workspace) .work-entity-page-source-row { display:grid; gap:4px; margin-block-end:12px; }
+[${DATA_ROUTE_HOST_ATTR}] .work-entity-commitment-workspace .work-entity-commitment-filters { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px; }
+[${DATA_ROUTE_HOST_ATTR}] .work-entity-booking-workspace .work-entity-list-search { display:grid; grid-template-columns:minmax(0,1fr); gap:8px; }
+[${DATA_ROUTE_HOST_ATTR}] :is(.work-entity-commitment-workspace,.work-entity-booking-workspace) .work-entity-list-filter-label { display:grid; gap:4px; min-width:0; }
+[${DATA_ROUTE_HOST_ATTR}] :is(.work-entity-commitment-workspace,.work-entity-booking-workspace) .work-entity-list-filter { width:100%; min-width:0; }
+[${DATA_ROUTE_HOST_ATTR}] .work-entity-task-workspace .work-entity-task-search-row > .work-entity-list-search,
+[${DATA_ROUTE_HOST_ATTR}] .work-entity-task-workspace .work-entity-task-context > * { grid-column:1 / -1; }
+[${DATA_ROUTE_HOST_ATTR}] .work-entity-task-workspace .work-entity-task-filter-toggle { grid-column:1; }
+[${DATA_ROUTE_HOST_ATTR}] .work-entity-task-workspace .work-entity-task-sort { grid-column:2; }
+[${DATA_ROUTE_HOST_ATTR}] .work-entity-list-workspace .work-entity-list-row-button[aria-current="true"] {
+  scroll-margin-block:var(--wc-space-md,16px);
+}
+[${DATA_ROUTE_HOST_ATTR}] .work-entity-list-workspace .work-entity-list-row:has(> [aria-current="true"]) {
+  background:var(--accent-weak); box-shadow:inset 3px 0 var(--accent);
+}
+[${DATA_ROUTE_HOST_ATTR}] .work-entity-list-workspace > .work-entity-reader--inline {
+  width:100%; min-width:0; max-height:none; box-shadow:none;
+  border:1px solid var(--border); border-radius:var(--wc-radius,9px);
+}
+[${DATA_ROUTE_HOST_ATTR}] .work-entity-reader--inline .work-entity-note-body { max-inline-size:68ch; }
+[${DATA_ROUTE_HOST_ATTR}] .work-entity-note-heading-actions { display:flex; gap:8px; align-items:center; flex-shrink:0; }
+[${DATA_ROUTE_HOST_ATTR}] .work-entity-reader--inline > .work-entity-note-outline {
+  flex-shrink:0; margin:8px 20px 0; align-self:flex-start; max-inline-size:calc(100% - 40px);
+}
+[${DATA_ROUTE_HOST_ATTR}] .work-entity-reader--inline > .work-entity-note-outline nav { max-height:min(8rem,16dvh); }
+@media (min-height:600px) {
+  [${DATA_ROUTE_HOST_ATTR}] .work-entity-list-workspace > .work-entity-reader--inline {
+    position:sticky; top:var(--wc-space-md,16px);
+    max-height:calc(100dvh - var(--wc-header-height,56px) - var(--wc-connection-banner-h,0px) - 128px);
+  }
+}
+/* An expanded outline and Find can share the reader toolbar. Let the
+   complete note and its actions scroll with Data in short windows. */
+@media (max-height:759px) {
+  [${DATA_ROUTE_HOST_ATTR}] .work-entity-note-workspace > .work-entity-reader--inline { position:static; max-height:none; }
+}
+[${DATA_ROUTE_HOST_ATTR}] .data-contact-list .data-contact-preview-trigger {
+  flex:none; align-self:center;
+}
+[${DATA_ROUTE_HOST_ATTR}] .data-contact-list .data-contact-preview-trigger[aria-expanded="true"] {
+  border-color:var(--accent); background:var(--accent-subtle); color:var(--accent);
+}
+[${DATA_ROUTE_HOST_ATTR}] [${DATA_ROUTE_CONTACT_ROW_ATTR}][data-preview-selected] .data-contact-row-button {
+  border-color:var(--accent);
+}
+[${CONTACT_PREVIEW_ATTR}] {
+  position:sticky; inset-block-start:var(--wc-space-md,16px);
+  min-width:0; padding:var(--wc-space-md,16px); border:1px solid var(--border);
+  border-radius:var(--wc-radius,9px); background:var(--surface); overflow-wrap:anywhere;
+}
+[${CONTACT_PREVIEW_ATTR}] header { display:flex; align-items:center; gap:12px; }
+[${CONTACT_PREVIEW_ATTR}] h2 { flex:1; min-width:0; margin:0; font-size:18px; line-height:1.3; }
+[${CONTACT_PREVIEW_ATTR}] h2:focus-visible { outline:2px solid var(--accent); outline-offset:3px; }
+[${DATA_ROUTE_HOST_ATTR}] [${CONTACT_PREVIEW_ATTR}] .data-contact-preview-close {
+  flex:none; display:grid; place-items:center; inline-size:var(--wc-control-h,40px); padding:0;
+}
+[${CONTACT_PREVIEW_ATTR}] .data-contact-preview-close svg { inline-size:16px; block-size:16px; }
+[${CONTACT_PREVIEW_ATTR}] dl {
+  display:grid; gap:12px; margin:var(--wc-space-md,16px) 0;
+  padding-block-start:var(--wc-space-md,16px); border-block-start:1px solid var(--border);
+}
+[${CONTACT_PREVIEW_ATTR}] dt { color:var(--muted); font-size:var(--wc-font-small,12px); }
+[${CONTACT_PREVIEW_ATTR}] dd { margin:2px 0 0; font-size:var(--wc-font-body,14px); line-height:1.45; }
 [${DATA_ROUTE_HOST_ATTR}][data-compact-list-layout="true"]:not([data-task-list-layout="true"]) .data-sphere-picker { display:flex; flex-wrap:wrap; align-items:center; gap:8px; margin-bottom:12px; font-size:12px; color:var(--muted); }
 /* D-336 — on a phone the phrase moves down whole, never "matched" on one line and "by name" on the next. */
 [${DATA_ROUTE_HOST_ATTR}] .data-contact-relationship-match {
@@ -2318,6 +2479,33 @@ const DATA_ROUTE_STYLES = `
   white-space: pre-wrap;
   font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
 }
+[${DATA_ROUTE_HOST_ATTR}] .data-form-response-workspace-list { min-width:0; }
+[${DATA_ROUTE_HOST_ATTR}] .data-form-response-workspace .data-form-response-exports { flex-basis:100%; }
+[${DATA_ROUTE_HOST_ATTR}] .data-form-response-workspace .data-row-button[aria-current="true"] {
+  background:var(--accent-weak); box-shadow:inset 3px 0 var(--accent); scroll-margin-block:var(--wc-space-md,16px);
+}
+[${DATA_ROUTE_HOST_ATTR}] .data-form-response-reader {
+  display:flex; flex-direction:column; overflow:hidden; background:var(--surface);
+}
+.data-form-response-reader .data-form-response-detail-content { display:flex; flex-direction:column; min-height:0; }
+.data-form-response-reader [${DATA_ROUTE_FORM_RESPONSE_DISCARD_GUARD_ATTR}] { flex-shrink:0; margin:12px 16px 0; }
+.data-form-response-reader-toolbar {
+  display:grid; gap:8px; flex-shrink:0; padding:12px 16px; border-bottom:1px solid var(--border);
+}
+.data-form-response-reader-main, .data-form-response-reader-actions { display:flex; flex-wrap:wrap; gap:8px; min-width:0; }
+.data-form-response-reader-main { justify-content:space-between; }
+.data-form-response-reader-actions { justify-content:flex-end; }
+.data-form-response-reader-toolbar .data-button { min-height:var(--wc-control-h,40px); }
+.data-form-response-reader-body {
+  display:grid; grid-auto-rows:max-content; align-content:start; gap:16px; min-width:0; min-height:0; overflow:auto; padding:16px;
+}
+[${DATA_ROUTE_FORM_RESPONSE_DETAIL_ATTR}].data-form-response-reader .data-response-header,
+[${DATA_ROUTE_FORM_RESPONSE_DETAIL_ATTR}].data-form-response-reader .data-response-meta { margin:0; }
+[${DATA_ROUTE_FORM_RESPONSE_DETAIL_ATTR}].data-form-response-reader .data-response-meta {
+  grid-template-columns:repeat(auto-fit,minmax(min(100%,9rem),1fr));
+}
+.data-form-response-reader-body .data-section-title { margin:0 0 8px; }
+.data-form-response-reader-body .data-response-editor .data-input { min-width:0; max-width:100%; box-sizing:border-box; }
 [${DATA_ROUTE_HOST_ATTR}] .data-contact-list .data-row-button {
   flex: 1;
 }
@@ -2644,15 +2832,23 @@ const DATA_ROUTE_STYLES = `
 }
 [${DATA_ROUTE_HOST_ATTR}] .data-dialog-panel {
   width: min(560px, 100%);
-  max-height: calc(100vh - 80px);
-  overflow: auto;
+  box-sizing: border-box;
+  max-height: calc(100vh - 72px);
+  max-height: calc(100dvh - 72px);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--surface);
   box-shadow: 0 24px 48px rgba(24, 33, 36, .18);
   padding: 14px;
 }
+[${DATA_ROUTE_HOST_ATTR}] .data-contact-dialog-editor { display:flex; flex-direction:column; min-height:0; }
+[${DATA_ROUTE_HOST_ATTR}] .data-dialog-body { min-height:0; overflow:auto; overscroll-behavior:contain; scroll-padding:12px; padding:2px; overflow-wrap:anywhere; }
+[${DATA_ROUTE_HOST_ATTR}] .data-dialog-actions { flex-shrink:0; }
 [${DATA_ROUTE_HOST_ATTR}] .data-dialog-header {
+  flex-shrink: 0;
   display: flex;
   align-items: baseline;
   gap: 10px;
@@ -3469,7 +3665,7 @@ const renderCollectionPicker = (active: DataTabId, locked = false): string => `
 const renderDataSpherePicker = (value: string): string => `<label class="data-sphere-picker">Sphere (loaded records) <select data-data-sphere aria-label="Data sphere">${[['all', 'All spheres'], ['personal', 'Personal'], ['professional', 'Work'], ['unsorted', 'Unsorted']].map(([id, label]) => `<option value="${id}"${id === value ? ' selected' : ''}>${label}</option>`).join('')}</select></label>`;
 
 const renderTabs = (active: DataTabId, locked = false, vertical = false): string => `
-  <div class="data-tab-groups" ${DATA_ROUTE_TABLIST_ATTR} data-recued-scroll-rail
+  <div class="data-tab-groups" id="${DATA_ROUTE_TABLIST_ID}" ${DATA_ROUTE_TABLIST_ATTR} data-recued-scroll-rail
     role="tablist" aria-label="Data collections" aria-orientation="${vertical ? 'vertical' : 'horizontal'}">
     ${DATA_TAB_GROUPS.map(group => renderTabGroup(group.label, group.tabs, active, locked)).join('')}
   </div>`;
@@ -3548,7 +3744,7 @@ const renderContactDialog = (
                 ? ' aria-disabled="true"'
                 : ''}>Close</button>
           </header>
-          <div class="data-form-grid">
+          <div class="data-dialog-body" data-dialog-scroll-key="contact:${e(dialog.mode)}:${e(dialog.original?.contact_id ?? dialog.original?.email ?? 'new')}"><div class="data-form-grid">
             ${renderContactField(
               'email',
               'Email',
@@ -3601,7 +3797,7 @@ const renderContactDialog = (
             <p>Hidden, deceased and former-partner contacts are excluded from automatic birthday, occasion and memory suggestions. These marks are set by you.</p>
           </div>
           ${submitError}
-          ${renderContactMergeOffer(dialog)}
+          ${renderContactMergeOffer(dialog)}</div>
           <footer class="data-dialog-actions">
             <button type="button" class="data-button data-dialog-cancel"
               ${DATA_ROUTE_ACTION_ATTR}="close-contact-dialog"${dialog.submitting || dialog.merging === true
@@ -3886,6 +4082,8 @@ interface ContactDetailField {
 /** D-336 slice H — a contact's address as the owner reads it. A contact with none is keyed
  *  on a placeholder (`isMentionOnlyEmail`), which is never shown as one. */
 const contactAddress = (email: string): string => (isMentionOnlyEmail(email) ? 'No email address' : email);
+
+const contactPreviewLabel = (contact: ContactRecord): string => contact.name?.trim() || contactAddress(contact.email);
 
 export { contactRefOption } from './contact-reference-picker.js';
 
@@ -4956,6 +5154,29 @@ export const contactRollupChips = (
   return out;
 };
 
+const renderContactPreview = (contact: ContactRecord): string => {
+  const facts = [
+    { label: 'Company', value: contact.company?.trim() },
+    { label: 'Email', value: contactAddress(contact.email) },
+    { label: 'Phone', value: contact.phone?.trim() },
+  ];
+  return `
+    <aside id="${CONTACT_PREVIEW_ID}" ${CONTACT_PREVIEW_ATTR}="${e(contact.email)}" aria-label="Contact preview">
+      <header>
+        <span class="data-contact-avatar" aria-hidden="true">${e(contactInitial(contact))}</span>
+        <h2 id="${CONTACT_PREVIEW_HEADING_ID}" tabindex="-1">${e(contactPreviewLabel(contact))}</h2>
+        <button type="button" class="data-button data-contact-preview-close"
+          ${DATA_ROUTE_ACTION_ATTR}="${CONTACT_PREVIEW_CLOSE_ACTION}" aria-label="Close preview"
+          title="Close preview">${renderActionIcon('close')}</button>
+      </header>
+      <dl>
+        ${facts.map(({ label, value }) => value ? `<div><dt>${label}</dt><dd>${e(value)}</dd></div>` : '').join('')}
+      </dl>
+      <button type="button" class="data-button data-button--primary" ${DATA_ROUTE_ACTION_ATTR}="open-contact-detail"
+        ${DATA_ROUTE_CONTACT_EMAIL_ATTR}="${e(contact.email)}">Open contact</button>
+    </aside>`;
+};
+
 const renderContactSurface = (
   contacts: readonly ContactRecord[],
   contactRollups: Record<string, TimelineRollup[]> | undefined,
@@ -4975,6 +5196,8 @@ const renderContactSurface = (
   canImport: boolean,
   canUploadFile: boolean,
   now: number,
+  previewEnabled: boolean,
+  preview: ContactRecord | undefined,
   loadedCount?: number,
   recovery?: ContactRecoveryRender,
 ): string => {
@@ -4997,9 +5220,7 @@ const renderContactSurface = (
       now,
     )}${renderContactDialog(dialog, discardGuardOpen)}`;
   }
-  return `
-  <section>
-    ${renderContactSourcesStrip(contactSources, now)}
+  const roster = `
     <div class="data-contact-list-tools">
       <input
         type="search"
@@ -5030,8 +5251,10 @@ const renderContactSurface = (
             </div>
           </div>`
       : `<ul class="data-contact-list" role="list">
-          ${contacts.map((contact) => `
-            <li ${DATA_ROUTE_CONTACT_ROW_ATTR}="${e(contact.email)}">
+          ${contacts.map((contact) => {
+            const selected = preview?.email === contact.email;
+            return `
+            <li ${DATA_ROUTE_CONTACT_ROW_ATTR}="${e(contact.email)}"${selected ? ' data-preview-selected' : ''}>
               <button type="button" class="data-row-button data-contact-row-button"
                 ${DATA_ROUTE_ACTION_ATTR}="open-contact-detail"
                 ${DATA_ROUTE_CONTACT_EMAIL_ATTR}="${e(contact.email)}">
@@ -5048,8 +5271,13 @@ const renderContactSurface = (
                     </span>`).join('')}
                 </span>
               </button>
-            </li>
-          `).join('')}
+              ${previewEnabled && contact.merged_into === undefined ? `
+                <button type="button" class="data-button data-contact-preview-trigger"
+                  ${DATA_ROUTE_ACTION_ATTR}="${CONTACT_PREVIEW_ACTION}" ${DATA_ROUTE_CONTACT_EMAIL_ATTR}="${e(contact.email)}"
+                  aria-label="${e(`Preview ${contactPreviewLabel(contact)}`)}" aria-expanded="${selected}"
+                  ${selected ? `aria-controls="${CONTACT_PREVIEW_ID}"` : ''}>Preview</button>` : ''}
+            </li>`;
+          }).join('')}
         </ul>`}
     ${renderLoadMoreFooter({
       marker: DATA_ROUTE_CONTACT_LOAD_MORE_ATTR,
@@ -5057,7 +5285,14 @@ const renderContactSurface = (
       loaded: loadedCount ?? contacts.length,
       total,
       loadingMore,
-    })}
+    })}`;
+  return `
+  <section>
+    ${renderContactSourcesStrip(contactSources, now)}
+    ${preview ? `<div class="data-contact-workspace--preview">
+      <div>${roster}</div>
+      ${renderContactPreview(preview)}
+    </div>` : roster}
     ${renderContactDialog(dialog, discardGuardOpen)}
   </section>
 `;
@@ -5272,7 +5507,10 @@ const renderFormResponseDetail = (
   saving: boolean,
   saveError: string | null,
   discardGuardOpen: boolean,
+  workspace?: { editorOpen: boolean },
 ): string => {
+  const inline = workspace !== undefined;
+  const editing = canEdit && (workspace?.editorOpen ?? true);
   const fields = formResponseFields(response);
   const draft = editorDraft?.submissionId === response.submission_id
     ? editorDraft
@@ -5304,37 +5542,24 @@ const renderFormResponseDetail = (
         </div>
       </section>`
     : '';
-  return `
-    <section ${DATA_ROUTE_FORM_RESPONSE_DETAIL_ATTR}="${e(response.submission_id)}">
-      ${discardGuard}
-      <div class="data-form-response-detail-content"${detailStateAttr}>
-      <button type="button" class="data-button"
-        ${DATA_ROUTE_ACTION_ATTR}="close-form-response"${saving
-          ? ' aria-disabled="true"'
-          : ''}>← Back to form responses</button>
-      <div class="data-response-header">
+  const back = `<button type="button" class="data-button" ${DATA_ROUTE_ACTION_ATTR}="close-form-response"${saving
+    ? ' aria-disabled="true"' : ''}>${inline ? 'Close response' : '← Back to form responses'}</button>`;
+  const heading = `<div class="data-response-header">
         <h2
+          ${inline ? 'id="data-form-response-reader-title"' : ''}
           ${DATA_ROUTE_FORM_RESPONSE_DETAIL_HEADING_ATTR}
           tabindex="-1"
         >${e(formResponseVisitorLabel(response))}</h2>
         <span class="data-pill">${e(response.lifecycle_state.replace('_', ' '))}</span>
-      </div>
-      <dl class="data-response-meta">
-        <div><dt>Form</dt><dd>${e(formResponseSourceLabel(response))}</dd></div>
-        <div><dt>Form definition</dt><dd>${e(response.form_definition_id)}</dd></div>
-        <div><dt>Endpoint</dt><dd>${e(response.endpoint_id)}</dd></div>
-        <div><dt>Submitted</dt><dd>${renderFormResponseTime(response.submitted_at)}</dd></div>
-        <div><dt>Accepted</dt><dd>${renderFormResponseTime(response.accepted_at)}</dd></div>
-        <div><dt>Working record updated</dt><dd>${renderFormResponseTime(response.updated_at)}</dd></div>
-        <div><dt>Reference</dt><dd>${e(response.submission_id)}</dd></div>
-      </dl>
-      <div class="data-response-automation">
-        <div class="data-response-automation-copy">
-          <strong>Continue with an automation</strong>
-          <span>Start a Kitchen recipe for future owner-accepted responses from this form. The draft reads full answers only when it runs.</span>
-        </div>
-        <div class="data-response-automation-actions">
-          <a class="data-button data-button--primary"
+      </div>`;
+  const form = `<div><dt>Form</dt><dd>${e(formResponseSourceLabel(response))}</dd></div>`;
+  const source = `<div><dt>Form definition</dt><dd>${e(response.form_definition_id)}</dd></div>
+    <div><dt>Endpoint</dt><dd>${e(response.endpoint_id)}</dd></div>`;
+  const dates = `<div><dt>Submitted</dt><dd>${renderFormResponseTime(response.submitted_at)}</dd></div>
+    <div><dt>Accepted</dt><dd>${renderFormResponseTime(response.accepted_at)}</dd></div>`;
+  const record = `<div><dt>Working record updated</dt><dd>${renderFormResponseTime(response.updated_at)}</dd></div>
+    <div><dt>Reference</dt><dd>${e(response.submission_id)}</dd></div>`;
+  const automate = `<a class="data-button${inline ? '' : ' data-button--primary'}"
             ${DATA_ROUTE_FORM_RESPONSE_AUTOMATE_ATTR}="${e(response.form_definition_id)}"
             ${saving ? 'aria-disabled="true"' : ''}
             href="${e(serializeShellRoute(
@@ -5342,20 +5567,17 @@ const renderFormResponseDetail = (
               'new',
               'form-response',
               response.form_definition_id,
-            ))}">Automate this form</a>
-          ${canRunAutomation
-            ? `<button type="button" class="data-button"
+            ))}">Automate this form</a>`;
+  const run = canRunAutomation
+    ? `<button type="button" class="data-button"
                 ${DATA_ROUTE_ACTION_ATTR}="discover-form-response-automations"
                 ${DATA_ROUTE_FORM_RESPONSE_RUN_ATTR}${discoveringAutomation
                   ? ' aria-disabled="true" aria-busy="true"'
                   : ''}>${discoveringAutomation
                   ? 'Looking for things that can run…'
                   : 'Run this response'}</button>`
-            : ''}
-        </div>
-      </div>
-      ${renderFormResponseAutomationPicker(automationState)}
-      <h3 class="data-section-title">Answers</h3>
+    : '';
+  const answers = `<h3 class="data-section-title">Answers</h3>
       ${fields.length === 0
         ? `<p ${DATA_ROUTE_UNAVAILABLE_ATTR}>This response contains no submitted values.</p>`
         : `<dl class="data-response-fields">
@@ -5365,8 +5587,8 @@ const renderFormResponseDetail = (
                 <dd>${renderFormResponseValue(field.value)}</dd>
               </div>
             `).join('')}
-          </dl>`}
-      ${canEdit ? `
+          </dl>`}`;
+  const editor = editing ? `
         <section class="data-response-editor">
           <h3 class="data-section-title">Edit working record</h3>
           <p class="data-row-subtle">This changes the owner-facing destination. The sealed Reception submission remains the original evidence.</p>
@@ -5389,11 +5611,42 @@ const renderFormResponseDetail = (
               ? ' aria-disabled="true" aria-busy="true"'
               : ''}>${saving ? 'Saving…' : 'Save changes'}</button>
           ${saveError === null ? '' : `<p role="alert">${e(saveError)}</p>`}
-        </section>
-      ` : ''}
+        </section>` : '';
+  const picker = renderFormResponseAutomationPicker(automationState);
+  if (inline) {
+    const edit = canEdit ? `<button type="button" class="data-button${editing ? '' : ' data-button--primary'}"
+      ${DATA_ROUTE_ACTION_ATTR}="${editing ? 'close-form-response-editor' : 'open-form-response-editor'}"${saving ? ' aria-disabled="true"' : ''}>
+      ${editing ? 'Cancel editing' : 'Edit working record'}</button>` : '';
+    return `<section class="data-form-response-reader work-entity-reader--inline" ${DATA_ROUTE_FORM_RESPONSE_DETAIL_ATTR}="${e(response.submission_id)}"
+      aria-labelledby="data-form-response-reader-title">
+      ${discardGuard}
+      <div class="data-form-response-detail-content"${detailStateAttr}>
+        <div class="data-form-response-reader-toolbar">
+          <div class="data-form-response-reader-main">${back}${edit}</div>
+          ${editing ? '' : `<div class="data-form-response-reader-actions" role="group" aria-label="Automation">${run}${automate}</div>`}
+        </div>
+        <div class="data-form-response-reader-body" ${FORM_RESPONSE_READER_SCROLL_ATTR}="${e(JSON.stringify([response.submission_id, editing]))}">
+          ${heading}
+          ${editing ? editor : `<section>${answers}</section>${picker}
+            <section><h3 class="data-section-title">Record details</h3><dl class="data-response-meta">${form}${dates}${source}${record}</dl></section>`}
+        </div>
       </div>
-    </section>
-  `;
+    </section>`;
+  }
+  return `<section ${DATA_ROUTE_FORM_RESPONSE_DETAIL_ATTR}="${e(response.submission_id)}">
+      ${discardGuard}
+      <div class="data-form-response-detail-content"${detailStateAttr}>
+        ${back}${heading}<dl class="data-response-meta">${form}${source}${dates}${record}</dl>
+        <div class="data-response-automation">
+          <div class="data-response-automation-copy">
+            <strong>Continue with an automation</strong>
+            <span>Start a Kitchen recipe for future owner-accepted responses from this form. The draft reads full answers only when it runs.</span>
+          </div>
+          <div class="data-response-automation-actions">${automate}${run}</div>
+        </div>
+        ${picker}${answers}${editor}
+      </div>
+    </section>`;
 };
 
 const renderFormResponseSurface = (
@@ -5413,25 +5666,24 @@ const renderFormResponseSurface = (
   discardGuardOpen: boolean,
   canExport: boolean,
   exportingFormat: 'json' | 'csv' | null,
+  workspace?: { editorOpen: boolean },
 ): string => {
+  let reader = '';
   if (detailId !== null) {
-    if (loadingDetail) {
-      return `
-        <section ${DATA_ROUTE_FORM_RESPONSE_DETAIL_ATTR}="${e(detailId)}">
-          <button type="button" class="data-button"
-            ${DATA_ROUTE_ACTION_ATTR}="close-form-response">← Back to form responses</button>
-          <p class="data-loading">Loading response...</p>
-        </section>`;
-    }
-    return detail === null
-      ? `<section ${DATA_ROUTE_FORM_RESPONSE_DETAIL_ATTR}="${e(detailId)}">
-          <button type="button" class="data-button"
-            ${DATA_ROUTE_ACTION_ATTR}="close-form-response">← Back to form responses</button>
-          <p ${DATA_ROUTE_UNAVAILABLE_ATTR}>${detailError === null
-            ? 'Recued could not find this answer.'
-            : 'Recued could not open this answer. Go back to the list and try again.'}</p>
-        </section>`
-      : renderFormResponseDetail(
+    if (detail === null || loadingDetail) {
+      const close = `<button type="button" class="data-button" ${DATA_ROUTE_ACTION_ATTR}="close-form-response">
+        ${workspace ? 'Close response' : '← Back to form responses'}</button>`;
+      const status = loadingDetail ? '<p class="data-loading" role="status">Loading response...</p>'
+        : `<p ${DATA_ROUTE_UNAVAILABLE_ATTR}>${detailError === null ? 'Recued could not find this answer.'
+          : 'Recued could not open this answer. Go back to the list and try again.'}</p>`;
+      reader = `<section ${DATA_ROUTE_FORM_RESPONSE_DETAIL_ATTR}="${e(detailId)}"${workspace
+        ? ' class="data-form-response-reader work-entity-reader--inline" aria-label="Response details"' : ''}>
+        ${workspace ? `<div class="data-form-response-reader-toolbar"><div class="data-form-response-reader-main">${close}</div></div>
+          <div class="data-form-response-reader-body">${status}</div>`
+          : close + status}
+      </section>`;
+    } else {
+      reader = renderFormResponseDetail(
           detail,
           automationState,
           canRunAutomation,
@@ -5440,22 +5692,25 @@ const renderFormResponseSurface = (
           saving,
           saveError,
           discardGuardOpen,
+          workspace,
         );
+    }
+    if (!workspace) return reader;
   }
 
-  return `
-    <section>
+  const list = `
+    <section class="data-form-response-workspace-list"${discardGuardOpen ? ' inert' : ''}>
       <header class="data-form-response-list-header">
         <h2 class="data-section-title">Form responses</h2>
         ${canExport ? `<div class="data-form-response-exports">
           <button type="button" class="data-button" data-format="json"
-            ${DATA_ROUTE_ACTION_ATTR}="export-form-responses"${exportingFormat === null
+            ${DATA_ROUTE_ACTION_ATTR}="export-form-responses"${exportingFormat === null && !saving
               ? ''
               : ' aria-disabled="true"'}${exportingFormat === 'json'
               ? ' aria-busy="true"'
               : ''}>${exportingFormat === 'json' ? 'Exporting JSON…' : 'Export JSON'}</button>
           <button type="button" class="data-button" data-format="csv"
-            ${DATA_ROUTE_ACTION_ATTR}="export-form-responses"${exportingFormat === null
+            ${DATA_ROUTE_ACTION_ATTR}="export-form-responses"${exportingFormat === null && !saving
               ? ''
               : ' aria-disabled="true"'}${exportingFormat === 'csv'
               ? ' aria-busy="true"'
@@ -5469,7 +5724,8 @@ const renderFormResponseSurface = (
               <li ${DATA_ROUTE_FORM_RESPONSE_ROW_ATTR}="${e(response.submission_id)}">
                 <button type="button" class="data-row-button"
                   ${DATA_ROUTE_ACTION_ATTR}="open-form-response"
-                  ${DATA_ROUTE_FORM_RESPONSE_ID_ATTR}="${e(response.submission_id)}">
+                  ${DATA_ROUTE_FORM_RESPONSE_ID_ATTR}="${e(response.submission_id)}"${response.submission_id === detailId
+                    ? ' aria-current="true"' : ''}${saving ? ' aria-disabled="true"' : ''}>
                   <span class="data-row-title">${e(formResponseVisitorLabel(response))}</span>
                   <span class="data-row-meta">${e(formResponseSourceLabel(response))}</span>
                   <span class="data-row-subtle">Accepted ${e(formatFormResponseTime(response.accepted_at))}</span>
@@ -5484,12 +5740,13 @@ const renderFormResponseSurface = (
           <button type="button" class="data-button"
             ${DATA_ROUTE_ACTION_ATTR}="load-more-form-responses"${loadingMore
               ? ' aria-disabled="true" aria-busy="true"'
-              : ''}>
+              : saving ? ' aria-disabled="true"' : ''}>
             ${loadingMore ? 'Loading…' : 'Load more'}
           </button>
         </div>`}
     </section>
   `;
+  return reader ? `<div class="data-form-response-workspace work-entity-list-workspace">${list}${reader}</div>` : list;
 };
 
 /** Defensively read a timeline entry's enrichment-source payload. The
@@ -5747,6 +6004,7 @@ const renderWorkEntitySurface = (
   taskView?: WorkEntityTaskView,
   taskLayout?: TaskListLayout,
   headerExternal = false,
+  workReaderInline = false,
 ): string => {
   const options = [...sourceOptionsForKind(duplicate?.from
     ? sources.map(source => source.sync_posture === 'read_through' ? { ...source, write_capable: false } : source)
@@ -5767,46 +6025,25 @@ const renderWorkEntitySurface = (
       ? renderWorkEntityDialog({ kind: 'project', definition, state: state.dialog, sources: options, ref_picker: true,
           discard_guard: discardGuardOpen, close_label: 'Back to project', history_html: historyHtml }) : '');
   }
+  let bookingReader: { id: string; html: string } | undefined;
   if (state.kind === 'booking' && bookingDetailId !== null) {
-    const dialogHtml = state.dialog === null
-      ? ''
-      : renderWorkEntityDialog({
-          kind: state.kind,
-          definition,
-          state: state.dialog,
-          sources: options,
-          ref_picker: true,
-          discard_guard: discardGuardOpen,
-          ...(workEntityHistoryHtml !== '' ? { history_html: workEntityHistoryHtml } : {}),
-        });
-    if (loadingBookingDetail) {
-      return `<section class="work-entity-booking-detail" aria-busy="true">
-        <button type="button" class="work-entity-booking-back" data-action="close-booking-detail" data-booking-focus="back">${e(bookingCloseLabel ?? 'Back to bookings')}</button>
-        <p>Loading booking…</p>
-      </section>${dialogHtml}`;
-    }
-    if (bookingDetailError !== null) {
-      return `<section class="work-entity-booking-detail">
-        <button type="button" class="work-entity-booking-back" data-action="close-booking-detail" data-booking-focus="back">${e(bookingCloseLabel ?? 'Back to bookings')}</button>
-        <p role="alert">${e(bookingDetailError)}</p>
-      </section>${dialogHtml}`;
-    }
     const entity = bookingDetail?.entity;
-    if (entity !== null && entity !== undefined && entity._kind === 'booking') {
-      return `${renderBookingDetail({
+    const html = !loadingBookingDetail && bookingDetailError === null && entity?._kind === 'booking'
+      ? renderBookingDetail({
         booking: entity, actions: bookingActionsView, copy: bookingCopyView, chat: bookingChatView, close_label: bookingCloseLabel,
-        ...(bookingDetail?.booking_history !== undefined
-          ? { history: bookingDetail.booking_history }
-          : {}),
+        history: bookingDetail?.booking_history, inline: workReaderInline,
         can_mint_manage_link: canMintManageLink,
         manage_link_busy: manageLinkBusy,
         ...(manageLinkNotice !== null ? { manage_link_notice: manageLinkNotice } : {}),
-      })}${dialogHtml}`;
-    }
-    return `<section class="work-entity-booking-detail">
-      <button type="button" class="work-entity-booking-back" data-action="close-booking-detail" data-booking-focus="back">${e(bookingCloseLabel ?? 'Back to bookings')}</button>
-      <p role="alert">This booking no longer exists.</p>
-    </section>${dialogHtml}`;
+      }) : `<section class="work-entity-booking-detail${workReaderInline ? ' work-entity-reader--inline' : ''}"${loadingBookingDetail ? ' aria-busy="true"' : ''}>
+        <button type="button" class="work-entity-booking-back" data-action="close-booking-detail" data-booking-focus="back">${e(bookingCloseLabel ?? (workReaderInline ? 'Close booking' : 'Back to bookings'))}</button>
+        ${loadingBookingDetail ? '<p role="status">Loading booking…</p>' : `<p role="alert">${e(bookingDetailError ?? 'This booking no longer exists.')}</p>`}
+      </section>`;
+    if (!workReaderInline) return html + (state.dialog ? renderWorkEntityDialog({
+      kind: state.kind, definition, state: state.dialog, sources: options, ref_picker: true,
+      discard_guard: discardGuardOpen, history_html: workEntityHistoryHtml,
+    }) : '');
+    bookingReader = { id: bookingDetailId, html };
   }
   // Task search and ordering are already applied to the complete SQL result.
   // Booking search is also applied before pagination. Do not apply
@@ -5849,12 +6086,14 @@ const renderWorkEntitySurface = (
     ...(state.kind === 'booking'
       ? { booking_lifecycle_filter: bookingLifecycleFilter }
       : {}),
+    ...(bookingReader ? { booking_reader: bookingReader } : {}),
     ...(openingEntityId !== null
       ? { opening_entity_id: openingEntityId }
       : {}),
     discard_guard: discardGuardOpen,
     task_details_open: taskDetailsOpen,
     ...(taskView ? { task_view: taskView } : {}),
+    work_reader_inline: workReaderInline,
     note_details_open: noteDetailsOpen,
     ...(noteView ? { note_view: noteView } : {}),
     ...(duplicate ? { duplicate } : {}),
@@ -6004,6 +6243,8 @@ export const bootstrapDataRoute = (
       MEMORY_LENS_STYLES,
       // D-198 Slice 5 — the mail / calendar / files collection explorer.
       COLLECTION_EXPLORER_STYLES,
+      SAVED_FILE_PREVIEW_STYLES,
+      FILE_BROWSER_TOOLBAR_STYLES,
       CALENDAR_AGENDA_STYLES,
       CALENDAR_CREATE_STYLES,
       REMINDER_CREATE_STYLES,
@@ -6022,21 +6263,46 @@ export const bootstrapDataRoute = (
       WORK_LINK_PREVIEW_STYLES,
       WORK_LINKED_FROM_STYLES,
       RECORD_LINK_INSERT_STYLES,
+      REFUND_CREDIT_STYLES,
+      CUSTOMER_WATCH_STYLES,
     ].join('\n');
     doc.head.appendChild(style);
   }
 
   const routeRoot = doc.createElement('div');
+  const taskReplyWatches = createTaskReplyWatchSlots(opts.mailMessageCallers?.followUps?.tasks?.list, opts.now ?? Date.now);
   routeRoot.setAttribute(DATA_ROUTE_HOST_ATTR, '');
   const collectionPickerBreakpoint = doc.defaultView?.matchMedia?.('(max-width: 640px)');
-  const collectionRailBreakpoint = doc.defaultView?.matchMedia?.('(min-width: 960px)');
+  const collectionRailBreakpoint = doc.defaultView?.matchMedia?.(COLLECTION_RAIL_MEDIA);
+  const collectionCollapseBreakpoint = doc.defaultView?.matchMedia?.(COLLECTION_RAIL_COLLAPSE_MEDIA);
+  let collectionsCollapsed = false;
+  try {
+    collectionsCollapsed = doc.defaultView?.localStorage?.getItem(COLLECTION_RAIL_STORAGE_KEY) === '1';
+  } catch {
+    // The layout choice is still available for this visit.
+  }
+  routeRoot.setAttribute(COLLECTION_RAIL_COLLAPSED_ATTR, String(collectionsCollapsed));
+  const collectionRailToggleLabel = (): string => collectionsCollapsed ? 'Show collections' : 'Collapse collections';
+  const usesCollectionPicker = (): boolean => collectionPickerBreakpoint?.matches === true
+    || (collectionsCollapsed && collectionCollapseBreakpoint?.matches === true);
+  const isCollectionRailToggle = (element: Element | null | undefined): boolean =>
+    element?.getAttribute?.(DATA_ROUTE_ACTION_ATTR) === COLLECTION_RAIL_TOGGLE_ACTION;
+  const recordsDesktopBreakpoint = doc.defaultView?.matchMedia?.(RECORDS_WIDE_DESKTOP_MEDIA);
+  const mailReadingPaneBreakpoint = doc.defaultView?.matchMedia?.(MAIL_READING_PANE_MEDIA);
+  const calendarMonthBreakpoint = doc.defaultView?.matchMedia?.(CALENDAR_MONTH_WIDE_MEDIA);
+  const fileBrowserBreakpoint = doc.defaultView?.matchMedia?.(FILE_BROWSER_DESKTOP_MEDIA);
+  const contactPreviewBreakpoint = doc.defaultView?.matchMedia?.(DATA_DESKTOP_WORKSPACE_MEDIA);
+  const workListReaderBreakpoint = doc.defaultView?.matchMedia?.(DATA_DESKTOP_WORKSPACE_MEDIA);
+  const projectWorkspaceBreakpoint = doc.defaultView?.matchMedia?.(DATA_DESKTOP_WORKSPACE_MEDIA);
+  const memoryReaderBreakpoint = doc.defaultView?.matchMedia?.(DATA_DESKTOP_WORKSPACE_MEDIA);
+  let recordsManagementOpen = false;
   let collectionRailScrollTop = 0;
   let renderedCollectionTab: DataTabId | null = null;
   // A focus fallback must address the navigation that is actually visible:
-  // collection tabs on a wide screen, the same collections in a picker on a
-  // phone. This also preserves the existing editor/discard-guard ownership.
+  // collection tabs or the same collections in a picker. This also preserves
+  // the existing editor/discard-guard ownership.
   const collectionNavigationTarget = (tab: DataTabId): HTMLElement | null =>
-    routeRoot.querySelector?.<HTMLElement>(collectionPickerBreakpoint?.matches
+    routeRoot.querySelector?.<HTMLElement>(usesCollectionPicker()
       ? `[${DATA_ROUTE_COLLECTION_PICKER_ATTR}]` : `[${DATA_ROUTE_TAB_ATTR}="${tab}"]`) ?? null;
   const revealCollectionTab = (tab: HTMLElement | null): void => {
     if (!collectionRailBreakpoint?.matches || !tab?.hasAttribute?.(DATA_ROUTE_TAB_ATTR)) return;
@@ -6090,8 +6356,11 @@ export const bootstrapDataRoute = (
     | { kind: 'edit'; memoryId: string }
     | null = null;
   let memoryDetail: MemoryDetailState | null = null;
-  let memoryDetailReturnId: string | null = null;
   let memoryDetailOpenSeq = 0;
+  const clearMemoryDetail = (): void => {
+    memoryDetailOpenSeq += 1;
+    memoryDetail = null;
+  };
   let memoryEditOpeningId: string | null = null;
   let memoryEditOpenSeq = 0;
   let memoryEditError: { memoryId: string; message: string } | null = null;
@@ -6144,6 +6413,8 @@ export const bootstrapDataRoute = (
     actionAttr: DATA_ROUTE_ACTION_ATTR,
     render: () => render(),
     onAddressChange: () => syncDataHash(),
+    desktopWorkspace: () => workListReaderBreakpoint?.matches === true,
+    navigation: { document: doc, owner: opts.searchContinuityOwner ?? opts.root, scrollHost: () => workSearchScrollHost() },
     // A bill or delivery opened by its address, as Today links to it, is opened as a
     // booking's page is: the server learns trips from it (D-325 §8).
     onThingOpened: id => opts.onOwnerRecordOpened?.({ collection: 'mail_fact', id }),
@@ -6153,8 +6424,13 @@ export const bootstrapDataRoute = (
     const visit = readSearchNavigationReturn<unknown>(doc, opts.searchContinuityOwner ?? opts.root);
     return visit?.focus.action === SEARCH_OPEN_REMINDER_ACTION && visit.destinationHash === doc.defaultView?.location.hash ? visit : undefined;
   };
-  let reminderWorkReturn: { hash: string; id: string; kind: 'task' | 'commitment'; recordId: string; scrollTop: number } | null = null;
-  let reminderMailReturn: { hash: string; id: string; slug: string; recordId: string; scrollTop: number } | null = null;
+  const reminderPane = () => routeRoot.querySelector?.<HTMLElement>(`[${REMINDER_READER_SCROLL_ATTR}]`);
+  type ReminderReturnPosition = { scrollTop: number; paneTop: number | undefined };
+  const captureReminderReturn = (): ReminderReturnPosition => ({
+    scrollTop: workSearchScrollHost()?.scrollTop ?? 0, paneTop: reminderPane()?.scrollTop,
+  });
+  let reminderWorkReturn: ({ hash: string; id: string; kind: 'task' | 'commitment'; recordId: string } & ReminderReturnPosition) | null = null;
+  let reminderMailReturn: ({ hash: string; id: string; slug: string; recordId: string } & ReminderReturnPosition) | null = null;
   const activeReminderMail = () => reminderMailReturn !== null && activeTab === 'mail'
     && explorerSelectedSlug === reminderMailReturn.slug && explorerDetail?.record_id === reminderMailReturn.recordId;
   const activeReminderWork = () => reminderWorkReturn !== null && activeTab === reminderWorkReturn.kind
@@ -6162,6 +6438,7 @@ export const bootstrapDataRoute = (
   const remindersSurface = createRemindersSurface({
     callers: opts.reminderCallers ?? {},
     recovery: opts.reminderRecovery,
+    desktopWorkspace: () => workListReaderBreakpoint?.matches === true,
     ...(activeTab === 'reminder' && opts.initialEntityId ? { initialId: opts.initialEntityId } : {}),
     backLabel: () => opts.todayReminderNavigation?.owns(remindersSurface.detailId()) ? 'Back to Today'
       : reminderSearchOrigin() ? 'Back to search' : 'Back to reminders',
@@ -6188,7 +6465,7 @@ export const bootstrapDataRoute = (
     ...(opts.mailMessageCallers?.get && opts.collectionGetCaller ? {
       readMail: (ref: ReminderMailReference) => opts.mailMessageCallers!.get!({
         slug: ref.slug, record_id: ref.record_id, expected_reminder_ref: ref }),
-      openMail: (message: MailMessageSnapshot, ref: ReminderMailReference) => openReminderMail(message, ref),
+      openMail: (message: MailMessageSnapshot, ref: ReminderMailReference, current: () => boolean) => openReminderMail(message, ref, current),
     } : {}),
   });
   const calendarContinuity: ReturnType<typeof calendarAgendaPreferences> = opts.savedView ? {} : calendarAgendaPreferences(opts.searchContinuityOwner ?? {});
@@ -6254,6 +6531,7 @@ export const bootstrapDataRoute = (
   let calendarDeletionNotice = '';
   const calendarAgenda = createCalendarAgenda({
     onSearchEverywhere: query => { void selectTab('search', false, undefined, false, query); },
+    wideMonth: () => calendarMonthBreakpoint?.matches === true,
     ...(opts.collectionListInstancesCaller ? { listInstances: opts.collectionListInstancesCaller } : {}),
     ...(opts.collectionListCaller ? { list: opts.collectionListCaller } : {}),
     ...(opts.now ? { now: opts.now } : {}),
@@ -6269,8 +6547,13 @@ export const bootstrapDataRoute = (
     createForm: () => calendarEventSurface.renderRecoveries() + calendarCreateSurface.render(),
   });
   let calendarInitialAddress = activeTab === 'calendar' && typeof opts.initialEntityId === 'string';
-  let calendarAgendaReturn: { key: string; scrollTop: number; hash: string; sourcesOpen: boolean } | null = calendarContinuity.returnTo ?? null;
-  let pendingCalendarAgendaRestore: { key: string; scrollTop: number; sourcesOpen?: boolean } | null = null;
+  let calendarAgendaReturn: CalendarAgendaPosition & { hash: string } | null = calendarContinuity.returnTo ?? null;
+  let pendingCalendarAgendaRestore: CalendarAgendaPosition | null = null;
+  const readCalendarDayScroll = (): CalendarAgendaPosition['dayScroll'] => {
+    const pane = routeRoot.querySelector?.<HTMLElement>(`[${CALENDAR_MONTH_DAY_SCROLL_ATTR}]`);
+    const day = pane?.getAttribute(CALENDAR_MONTH_DAY_SCROLL_ATTR);
+    return pane && day ? { day, scrollTop: pane.scrollTop } : undefined;
+  };
   const calendarEventSurface = createCalendarEventSurface({
     callers: opts.calendarEventCallers ?? {}, actionAttr: DATA_ROUTE_ACTION_ATTR, recovery: opts.calendarEditRecovery,
     ...(opts.now ? { now: opts.now } : {}),
@@ -6317,7 +6600,9 @@ export const bootstrapDataRoute = (
     changed: () => render(), ...(opts.now ? { now: opts.now } : {}),
     ...(opts.serverTimeZone ? { timeZone: opts.serverTimeZone } : {}) });
   const mailMessageSurface = createMailMessageSurface({
+    openReceivedReply: opts.openReceivedReply,
     document: doc, root: routeRoot, callers: opts.mailMessageCallers ?? {}, files: opts.filePreviewCallers,
+    now: opts.now, timeZone: opts.serverTimeZone,
     onSearchEverywhere: query => { void selectTab('search', false, undefined, false, query); },
     ...(opts.reminderCallers?.create && opts.reminderCallers.list ? {
       reminderLifecycle: mailReminders,
@@ -6566,6 +6851,15 @@ export const bootstrapDataRoute = (
     open: request => mailMessageSurface.openCreate(request), render: () => render(),
     focus: () => routeRoot.querySelector<HTMLElement>('[data-action="draft-commitment-follow-up"]')?.focus({ preventScroll: true }),
   });
+  const refundCreditReview = createRefundCreditReview({
+    document: doc,
+    callers: opts.refundCreditCallers,
+    current: () => !disposed && activeLens === 'data' && activeTab === 'commitment' && commitmentMode === 'read'
+      && !pendingWorkEntityDialogOpen && workEntityDialogEntity?._kind === 'commitment'
+      && workEntityState.dialog?.entity_id === workEntityDialogEntity.id && !workEntityState.dialog.submitting
+      && !workEntityDiscardGuardOpen ? workEntityDialogEntity : null,
+    restoreFocus: () => routeRoot.querySelector<HTMLElement>('[data-action="review-refund-credits"]')?.focus({ preventScroll: true }),
+  });
   const bindCommitmentFollowUp = (promise: Extract<WorkEntity, { _kind: 'commitment' }>): void => {
     const seq = workEntityDialogOpenSeq, navigation = navigationGeneration;
     commitmentFollowUp.bind(promise, () => !disposed && navigation === navigationGeneration && seq === workEntityDialogOpenSeq
@@ -6786,6 +7080,8 @@ export const bootstrapDataRoute = (
     | null = null;
   let bookingLifecycleFilter: BookingLifecycleState | 'all' = opts.savedView !== undefined
     && 'booking_lifecycle' in opts.savedView.definition ? opts.savedView.definition.booking_lifecycle : 'all';
+  const bookingListScope = () => JSON.stringify([workEntityState.selected_source_id, workEntityState.search_query.trim(), bookingLifecycleFilter]);
+  let loadedBookingListScope: string | null = null;
   let taskViewFilters: TaskViewFilters = opts.savedView?.definition.tab === 'task'
     ? opts.savedView.definition.task_filters ?? DEFAULT_TASK_VIEW_FILTERS : DEFAULT_TASK_VIEW_FILTERS;
   let taskFiltersOpen = taskViewFilters.completion !== 'all' || taskViewFilters.due !== 'all';
@@ -6793,6 +7089,8 @@ export const bootstrapDataRoute = (
     ? opts.savedView.definition.commitment_filters ?? DEFAULT_COMMITMENT_VIEW_FILTERS : DEFAULT_COMMITMENT_VIEW_FILTERS;
   let commitmentListFilter = { ...commitmentViewFilters };
   let commitmentListSearch = workEntityState.kind === 'commitment' ? workEntityState.search_query.trim() : '';
+  const commitmentListIsCurrent = (): boolean => commitmentListSearch === workEntityState.search_query.trim()
+    && commitmentListFilter.direction === commitmentViewFilters.direction && commitmentListFilter.status === commitmentViewFilters.status;
   let taskListFilter = resolveTaskListFilter(taskViewFilters, (opts.now ?? Date.now)());
   let taskListSearch = workEntityState.kind === 'task' ? workEntityState.search_query.trim() : '';
   const retireTaskListReads = (): void => {
@@ -6836,13 +7134,21 @@ export const bootstrapDataRoute = (
   let bookingDetailSeq = 0;
   let bookingReadingInteraction = 0;
   const bookingReader = createBookingReaderContinuity();
+  type BookingListOrigin = { hash: string; scrollTop: number };
+  let bookingListOrigin: BookingListOrigin | null = null;
+  const showBookingListReader = (): boolean => workListReaderBreakpoint?.matches === true && activeLens === 'data'
+    && activeTab === 'booking' && bookingListOrigin !== null && bookingDetailId !== null;
   type BookingReaderReturn = { parent: BookingReaderReturn | null; response: WorkEntityGetRpcResponse; hash: string;
     state: WorkEntityPageState; entities: WorkEntity[]; total: number; errors: typeof errors;
     position: BookingReaderPosition; target: { kind: 'contact' | 'booking'; id: string };
-    search: typeof workSearchReturn; lifecycle: typeof bookingLifecycleFilter };
+    search: typeof workSearchReturn; lifecycle: typeof bookingLifecycleFilter; list: BookingListOrigin | null; scope: string | null };
   let bookingReaderReturn: BookingReaderReturn | null = null;
-  const focusBooking = (key: string) => [...(typeof routeRoot.querySelectorAll === 'function' ? routeRoot.querySelectorAll<HTMLElement>('[data-booking-focus]') : [])]
-    .find(node => node.getAttribute('data-booking-focus') === key && !node.hasAttribute('disabled'))?.focus({ preventScroll: true });
+  const focusBooking = (key: string, reveal = false): void => {
+    const target = Array.from(routeRoot.querySelectorAll?.<HTMLElement>('[data-booking-focus]') ?? [])
+      .find(node => node.getAttribute('data-booking-focus') === key && !node.hasAttribute('disabled'));
+    target?.focus({ preventScroll: true });
+    if (reveal) target?.scrollIntoView?.({ block: 'nearest' });
+  };
   const bookingActions = createBookingReaderActions({ get: opts.workEntityGetCaller, contact: opts.contactGetCaller,
     openContact: contact => openBookingCustomer(contact), openHistory: (entry, response) => openPreviousBooking(entry, response),
     openMail: request => mailMessageSurface.openCreate(request), beforeLeave: () => mailMessageSurface.beforeLeave(),
@@ -6882,6 +7188,7 @@ export const bootstrapDataRoute = (
   let pendingContactLoadMoreFocus = false;
   let pendingLoadedContactEmail: string | null = null;
   let contactSearch = opts.savedView?.definition.tab === 'contact' ? opts.savedView.definition.query : '';
+  let contactPreviewSelection: { email: string; query: string } | null = null;
   let contactDialog: ContactDialogState | null = null;
   let contactDialogReturnFocus:
     | { kind: 'create' }
@@ -6894,6 +7201,7 @@ export const bootstrapDataRoute = (
     | null = null;
   let formResponses: FormResponseListItem[] = [];
   let formResponseNextCursor: FormResponseListCursor | null = null;
+  let formResponseListVersion = 0;
   let loadingMoreFormResponses = false;
   let formResponseLoadMoreQueued = false;
   let pendingFormResponseLoadMoreFocus = false;
@@ -6903,15 +7211,19 @@ export const bootstrapDataRoute = (
   let formResponseDetailError: string | null = null;
   let loadingFormResponseDetail = false;
   let pendingFormResponseDetailFocusId: string | null = null;
+  let formResponseListOrigin: { hash: string; scrollTop: number } | null = null;
+  let formResponseEditorOpen = false;
+  const showFormResponseWorkspace = () => workListReaderBreakpoint?.matches === true && activeLens === 'data'
+    && activeTab === 'form_response' && formResponseListOrigin !== null && formResponseDetailId !== null;
+  const formResponsePane = () => routeRoot.querySelector?.<HTMLElement>(`[${FORM_RESPONSE_READER_SCROLL_ATTR}]`);
   // The detail editor is uncontrolled at the DOM edge, but route paints replace
   // the whole subtree. Mirror every edit here so validation, automation reads,
   // and save progress cannot silently restore the older server snapshot.
   let formResponseEditorDraft: FormResponseEditorDraft | null = null;
   let formResponseEditorBaseline: string | null = null;
-  let formResponseDiscardGuardOpen = false;
-  let formResponseDiscardReturnId: string | null = null;
-  let formResponseDiscardPendingTab: DataTabId | null = null;
-  let formResponseDiscardPendingHref: string | null = null;
+  type FormResponseDiscardDestination = { kind: 'list' | 'editor' }
+    | { kind: 'row'; id: string } | { kind: 'tab'; tab: DataTabId } | { kind: 'link'; href: string };
+  let formResponseDiscard: FormResponseDiscardDestination | null = null;
   let pendingFormResponseDiscardTabFocus: DataTabId | null = null;
   let pendingFormResponseEditorFocus: {
     submissionId: string;
@@ -6983,6 +7295,23 @@ export const bootstrapDataRoute = (
   const focusContactEmail = (email: string): void => {
     Array.from(routeRoot.querySelectorAll<HTMLElement>(`[${DATA_ROUTE_ACTION_ATTR}="contact-email"]`))
       .find(button => button.getAttribute(DATA_ROUTE_CONTACT_EMAIL_ATTR) === email)?.focus({ preventScroll: true });
+  };
+  const contactPreviewElement = () => routeRoot.querySelector<HTMLElement>(`[${CONTACT_PREVIEW_ATTR}]`);
+  const focusContactList = (email: string, action = 'open-contact-detail'): void => {
+    const buttons = Array.from(routeRoot.querySelectorAll<HTMLElement>(
+      `[${DATA_ROUTE_CONTACT_EMAIL_ATTR}]`,
+    )).filter(button => button.getAttribute(DATA_ROUTE_CONTACT_EMAIL_ATTR) === email);
+    const row = buttons.find(button => button.getAttribute(DATA_ROUTE_ACTION_ATTR) === action)
+      ?? buttons.find(button => button.getAttribute(DATA_ROUTE_ACTION_ATTR) === 'open-contact-detail');
+    const search = routeRoot.querySelector<HTMLElement>(`[${DATA_ROUTE_CONTACT_SEARCH_ATTR}]`);
+    focusListTarget(row ?? search ?? collectionNavigationTarget('contact'));
+  };
+  const closeContactPreview = (): void => {
+    const selection = contactPreviewSelection;
+    if (!selection) return;
+    contactPreviewSelection = null;
+    render();
+    focusContactList(selection.email, CONTACT_PREVIEW_ACTION);
   };
   // D-205 #2b — the merge scan page. Null when closed.
   let contactScan: ContactScanState | null = null;
@@ -7126,6 +7455,7 @@ export const bootstrapDataRoute = (
   // empty for the second. Collapsing them would tell an owner their data is
   // absent when the search simply has not run.
   let universalSearchQuery = opts.savedView?.definition.tab === 'search' ? opts.savedView.definition.query : '';
+  let universalSearchSourcesOpen = false;
   let universalSearchType: UniversalSearchResultType = opts.savedView?.definition.tab === 'search' ? opts.savedView.definition.result_type ?? 'all' : 'all';
   let universalReminderStatus: ReminderSearchStatus = opts.savedView?.definition.tab === 'search' ? opts.savedView.definition.reminder_state ?? 'all' : 'all';
   const reminderDates = createReminderDateSearch({ initial: opts.savedView?.definition.tab === 'search' ? opts.savedView.definition.reminder_dates : undefined,
@@ -7180,7 +7510,8 @@ export const bootstrapDataRoute = (
     duplicate: DuplicateContext | null; reader: typeof noteReader; find: typeof noteFind; related: typeof noteRelated;
     taskReader: typeof taskReader; taskFind: typeof taskFind; taskRelated: typeof taskRelated; readerNavigation: ReturnType<typeof createWorkReaderNavigation>; mailWork: MailWorkOrigin | null; calendarWork: CalendarWorkOrigin | null; taskBlocker: TaskBlockerFocus | null;
     commitmentReader: typeof commitmentReader; commitmentRelated: typeof commitmentRelated;
-    commitmentFilters: CommitmentViewFilters; commitmentAppliedFilters: CommitmentViewFilters;
+    commitmentFilters: CommitmentViewFilters; commitmentAppliedFilters: CommitmentViewFilters; commitmentAppliedSearch: string;
+    listScrollTop?: number;
     linkedRecord?: { kind: 'contact' | 'project' | 'task'; id: string; key: string };
     todayReturn: ReturnType<TaskBlockerNavigation['snapshot']>; taskDependency?: string; source?: TaskNoteSource; workLink?: WorkRecordLink;
   };
@@ -7206,16 +7537,17 @@ export const bootstrapDataRoute = (
   let pendingWorkSearchRestore: { kind: WorkEntitySearchKind; id: string; scrollTop: number; recent?: boolean; pinned?: boolean } | null = null;
   const activeWorkReader = () => {
     const entity = workEntityDialogEntity;
-    if ((activeTab !== 'task' && activeTab !== 'note') || entity?._kind !== activeTab
-      || workEntityState.dialog?.mode !== 'edit' || workEntityState.dialog.entity_id !== entity.id
-      || (activeTab === 'task' ? taskMode : noteMode) !== 'read') return null;
+    if ((activeTab !== 'task' && activeTab !== 'note' && activeTab !== 'commitment') || entity?._kind !== activeTab
+      || workEntityState.dialog?.mode !== 'edit' || workEntityState.dialog.entity_id !== entity.id) return null;
+    const mode = activeTab === 'commitment' ? commitmentMode : activeTab === 'task' ? taskMode : noteMode;
+    if (mode !== 'read') return null;
     return { kind: activeTab, id: entity.id };
   };
   const workLinkPreviews = createWorkLinkPreviewSurface({ root: routeRoot, document: doc,
     owner: () => {
       const active = activeWorkReader(), entity = workEntityDialogEntity;
       return !disposed && activeLens === 'data' && active && entity && (entity._kind === 'note' || entity._kind === 'task')
-        ? { kind: active.kind, binding: JSON.stringify([navigationGeneration, readingRecord(entity)]) } : null;
+        ? { kind: entity._kind, binding: JSON.stringify([navigationGeneration, readingRecord(entity)]) } : null;
     },
     href: () => doc.defaultView?.location.href ?? doc.URL,
     readers: { ...(opts.collectionGetCaller ? { source: opts.collectionGetCaller } : {}), ...(opts.contactGetCaller ? { contact: id => opts.contactGetCaller!({ email: id }) } : {}),
@@ -7484,7 +7816,7 @@ export const bootstrapDataRoute = (
     }
   };
   const workReaderScope = (): WorkReaderScope | null => {
-    if (disposed || activeLens !== 'data' || (activeTab !== 'task' && activeTab !== 'note')
+    if (disposed || activeLens !== 'data' || (activeTab !== 'task' && activeTab !== 'note' && activeTab !== 'commitment')
       || projectChildReturn || projectWork || relatedWorkReturn || duplicateContext || activeMailWork() || activeCalendarWork()
       || taskBlockerReturn || opts.taskBlockerNavigation?.owns(workEntityDialogEntity?.id ?? '')) return null;
     const kind = activeTab;
@@ -7496,17 +7828,20 @@ export const bootstrapDataRoute = (
         progress: universalSearchWorkOffsets.get(kind) ?? group.matches.length, error: group.error };
     }
     const rows = workEntities.filter(row => row._kind === kind && facetIncludes({ collection: kind, id: row.id }));
-    const visible = kind === 'task' ? rows : filterAndSortEntities(kind, rows, workEntityState.search_query);
-    return { kind, key: JSON.stringify(['list', kind, workEntityState.selected_source_id, workEntityState.search_query, kind === 'task' ? taskViewFilters : null, dataSphere]),
-      generation: navigationGeneration, label: kind === 'task' ? 'Tasks' : 'Notes', ids: visible.map(row => row.id),
+    const visible = kind === 'note' ? filterAndSortEntities(kind, rows, workEntityState.search_query) : rows;
+    const filters = kind === 'commitment' ? commitmentViewFilters : kind === 'task' ? taskViewFilters : null;
+    return { kind, key: JSON.stringify(['list', kind, workEntityState.selected_source_id, workEntityState.search_query, filters, dataSphere]),
+      generation: navigationGeneration, label: kind === 'commitment' ? 'Commitments' : kind === 'task' ? 'Tasks' : 'Notes', ids: visible.map(row => row.id),
       more: dataSphere === 'all' && opts.workEntityListCaller !== undefined && workEntities.length < workEntityTotal,
       progress: workEntities.length, error: errors.work_entities,
-      ready: !loading && (kind !== 'task' || taskListSearch === workEntityState.search_query.trim()) };
+      ready: !loading && (kind !== 'task' || taskListSearch === workEntityState.search_query.trim())
+        && (kind !== 'commitment' || commitmentListIsCurrent()) };
   };
   const canLeaveWorkReader = () => !disposed && activeLens === 'data' && activeWorkReader() !== null
     && !hasDataInFlightWork() && !pendingWorkEntityDialogOpen && !workEntityDiscardGuardOpen && !loading
     && !loadingMoreWorkEntities && !universalSearchWorkLoadingKinds.has(activeTab as WorkReaderKind)
-    && (activeTab !== 'task' || taskListSearch === workEntityState.search_query.trim());
+    && (activeTab !== 'task' || taskListSearch === workEntityState.search_query.trim())
+    && (activeTab !== 'commitment' || commitmentListIsCurrent());
   const focusWorkReaderNavigation = (direction: 'previous' | 'next') => {
     const host = routeRoot.querySelector<HTMLElement>(`.work-entity-${activeTab}-reader`);
     (host?.querySelector<HTMLElement>(`[${WORK_READER_FOCUS}="${direction}"]:not([disabled])`)
@@ -7518,16 +7853,23 @@ export const bootstrapDataRoute = (
     more: async kind => { if (workSearchReturn) await loadMoreWorkSearch(kind); else await loadMoreWorkEntities(); },
     open: (kind, id) => openWorkReaderNeighbor(kind, id) });
   let workReaderNavigation = makeWorkReaderNavigation();
-  let pendingWorkReaderListReturn: { kind: WorkReaderKind; id: string; scrollTop: number } | null = null;
+  const activeWorkListReader = (): { kind: WorkReaderKind; id: string; hash: string } | undefined => {
+    const dialog = workEntityState.dialog;
+    if (activeLens !== 'data' || (activeTab !== 'task' && activeTab !== 'note' && activeTab !== 'commitment')
+      || dialog?.mode !== 'edit' || !dialog.entity_id) return;
+    const hash = workReaderNavigation.listHash(activeTab, dialog.entity_id, navigationGeneration);
+    return hash === undefined ? undefined : { kind: activeTab, id: dialog.entity_id, hash };
+  };
+  const showWorkListReader = (): boolean => workListReaderBreakpoint?.matches === true
+    && activeWorkReader() !== null && activeWorkListReader() !== undefined;
+  let pendingWorkReaderListReturn: { kind: WorkReaderKind | 'booking'; id: string; scrollTop: number } | null = null;
   const workReaderCopy = createWorkReaderCopy({
     current: () => {
       const booking = bookingDetail?.entity;
       if (!disposed && activeLens === 'data' && activeTab === 'booking' && !loadingBookingDetail && !workEntityState.dialog && booking?._kind === 'booking')
         return { entity: booking, version: bookingDetailSeq, href: doc.defaultView?.location?.href ?? doc.URL ?? '', counterparty_label: bookingActions.view()?.customer.label ?? 'Customer unavailable' };
       const reading = activeWorkReader(), entity = workEntityDialogEntity;
-      const readingCommitment = activeTab === 'commitment' && commitmentMode === 'read' && entity?._kind === 'commitment'
-        && workEntityState.dialog?.mode === 'edit' && workEntityState.dialog.entity_id === entity.id;
-      if (disposed || activeLens !== 'data' || !entity || (!reading && !readingCommitment)
+      if (disposed || activeLens !== 'data' || !entity || !reading
         || (entity._kind !== 'task' && entity._kind !== 'note' && entity._kind !== 'commitment')) return null;
       return { entity, version: workEntityDialogOpenSeq, href: doc.defaultView?.location?.href ?? doc.URL ?? '',
         ...(entity._kind === 'commitment' ? { counterparty_label: commitmentCounterpartyLabel(entity, commitmentContactLabels),
@@ -7650,6 +7992,9 @@ export const bootstrapDataRoute = (
   const promptSearch = createPromptSearch(opts.promptSchedulesCaller, () => {
     if (!disposed && activeLens === 'data' && activeTab === 'search') render();
   });
+  const followUpSearch = createMailFollowUpSearch(opts.mailMessageCallers?.followUps?.list, () => {
+    if (!disposed && activeLens === 'data' && activeTab === 'search') render();
+  }, opts.savedView?.definition.tab === 'search' ? opts.savedView.definition.follow_up_filters : undefined);
   const searchPromptBulk = createPromptSearchBulk({
     document: doc, call: opts.promptBulkCaller, state: promptSearch.state,
     active: () => !disposed && activeLens === 'data' && activeTab === 'search'
@@ -7668,7 +8013,26 @@ export const bootstrapDataRoute = (
       && (universalSearchType === 'all' || universalSearchType === 'decision') && universalSearchTimer === null,
     changed: () => { if (!disposed && activeLens === 'data' && activeTab === 'search') render(); },
   });
+  let savedViewOpening: string | undefined, savedViewOpenError: string | undefined, savedViewOpenSequence = 0;
+  const savedViewSearch = createSavedViewSearch(opts.savedViewSearchCallers, () => {
+    if (!disposed && activeLens === 'data' && activeTab === 'search') render();
+  });
+  const currentSavedViewSearchId = (): string | undefined => {
+    const definition = currentView(), selected = opts.savedView;
+    return selected && definition && doc.defaultView?.location.hash === savedViewSearchHref(selected.id)
+      && savedViewSearch.state().matches.some(row => row.id === selected.id && sameSavedDataViewDefinition(row.definition, definition))
+      ? selected.id : undefined;
+  };
+  let connectionOpening: string | undefined, connectionOpenError: string | undefined, connectionOpenSequence = 0;
+  const connectionSearch = createConnectionSearch(opts.connectionSearchCallers, () => {
+    if (!disposed && activeLens === 'data' && activeTab === 'search') render();
+  });
+  let runOpening: string | undefined, runOpenError: string | undefined, runOpenSequence = 0;
+  const runSearch = createRunSearch(opts.runSearchCallers, () => {
+    if (!disposed && activeLens === 'data' && activeTab === 'search') render();
+  }, { initialFilters: opts.savedView?.definition.tab === 'search' ? opts.savedView.definition.run_filters : undefined, now: opts.now });
   const captureSearchState = () => ({
+    universalSearchSourcesOpen: routeRoot.querySelector<HTMLDetailsElement>('.rq-sources')?.open ?? universalSearchSourcesOpen,
     universalSearchQuery, universalSearchType, universalReminderStatus, universalSearchGroups, universalSearchWorkGroups, universalExactLink,
     universalSearchContacts, universalSearchContactTotal, universalSearchContactOffset,
     universalSearchContactMore, universalSearchContactError, universalSearchContactUnsupported,
@@ -7678,13 +8042,13 @@ export const bootstrapDataRoute = (
     universalSearchMarket, universalSearchMarketError, universalSearchMarketQuery,
     assets: assetSearch.snapshot(),
     drafts: draftSearch.snapshot(),
-    chats: chatSearch.snapshot(), reminders: reminderSearch.snapshot(), prompts: promptSearch.snapshot(), decisions: decisionSearch.snapshot(),
+    followUps: followUpSearch.snapshot(), chats: chatSearch.snapshot(), reminders: reminderSearch.snapshot(), prompts: promptSearch.snapshot(), decisions: decisionSearch.snapshot(), runs: runSearch.snapshot(), connections: connectionSearch.snapshot(), savedViewsSearch: savedViewSearch.snapshot(),
     reminderDates: reminderDates.snapshot(),
     documents: documentSearch.snapshot(),
     pending: { records: universalSearchLoading || universalSearchGroups === undefined && !universalSearchError,
       work: universalSearchWorkLoading || universalSearchWorkGroups === undefined && !universalSearchWorkError && !universalSearchWorkUnsupported,
       contacts: universalSearchContactLoading && universalSearchContacts.length === 0,
-      capabilities: universalSearchCapabilitiesLoading, drafts: draftSearch.state().loading, chats: chatSearch.state().loading, reminders: reminderSearch.state().loading, prompts: promptSearch.state().loading, decisions: decisionSearch.state().loading },
+      followUps: followUpSearch.state().loading, capabilities: universalSearchCapabilitiesLoading, drafts: draftSearch.state().loading, chats: chatSearch.state().loading, reminders: reminderSearch.state().loading, prompts: promptSearch.state().loading, decisions: decisionSearch.state().loading, runs: runSearch.state().loading, connections: connectionSearch.state().loading, savedViews: savedViewSearch.state().loading },
   });
   type SearchResume = ReturnType<typeof captureSearchState>;
   let initialSearchResume: SearchResume['pending'] | undefined;
@@ -7700,7 +8064,7 @@ export const bootstrapDataRoute = (
   }
 
   if (savedSearchReturn && activeTab === 'search' && savedSearchReturn.returnHash === doc.defaultView?.location.hash) {
-    ({ universalSearchQuery, universalSearchType, universalReminderStatus, universalSearchGroups, universalSearchWorkGroups, universalExactLink,
+    ({ universalSearchSourcesOpen, universalSearchQuery, universalSearchType, universalReminderStatus, universalSearchGroups, universalSearchWorkGroups, universalExactLink,
       universalSearchContacts, universalSearchContactTotal, universalSearchContactOffset,
       universalSearchContactMore, universalSearchContactError, universalSearchContactUnsupported,
       universalSearchWorkError, universalSearchWorkUnsupported,
@@ -7713,13 +8077,18 @@ export const bootstrapDataRoute = (
     chatSearch.restore(savedSearchReturn.state.chats);
     reminderSearch.restore(savedSearchReturn.state.reminders);
     if (savedSearchReturn.state.reminderDates) reminderDates.restore(savedSearchReturn.state.reminderDates);
+    if (savedSearchReturn.state.followUps) followUpSearch.restore(savedSearchReturn.state.followUps);
     if (savedSearchReturn.state.prompts) promptSearch.restore(savedSearchReturn.state.prompts);
     if (savedSearchReturn.state.decisions) decisionSearch.restore(savedSearchReturn.state.decisions);
+    if (savedSearchReturn.state.savedViewsSearch) savedViewSearch.restore(savedSearchReturn.state.savedViewsSearch);
+    if (savedSearchReturn.state.connections) connectionSearch.restore(savedSearchReturn.state.connections);
+    if (savedSearchReturn.state.runs) runSearch.restore(savedSearchReturn.state.runs);
     reminderSearchIds = new Set(reminderSearch.state().matches.map(row => row.reminder_id));
     chatSearchIds = new Set(chatSearch.state().matches.map(chatSearchKey));
     documentSearch.restore(savedSearchReturn.state.documents);
     assetSearchIds = new Set(assetSearch.state().matches.map(row => row.id));
     initialSearchResume = { ...savedSearchReturn.state.pending,
+      followUps: savedSearchReturn.state.pending.followUps || savedNavigationSearch?.focus.action === SEARCH_OPEN_FOLLOW_UP || savedNavigationSearch?.focus.action === SEARCH_MANAGE_FOLLOW_UP,
       decisions: savedSearchReturn.state.pending.decisions || savedNavigationSearch?.focus.action === SEARCH_OPEN_DECISION,
       reminders: savedSearchReturn.state.pending.reminders || savedNavigationSearch?.focus.action === SEARCH_OPEN_REMINDER_ACTION,
       prompts: savedSearchReturn.state.pending.prompts || savedNavigationSearch?.focus.action === SEARCH_OPEN_PROMPT
@@ -7745,6 +8114,10 @@ export const bootstrapDataRoute = (
     explorerRecords = savedFiles.snapshot().files.map(savedFileRecord);
     render();
   });
+  const savedFilePreviewPane = opts.fileListCaller && opts.filePreviewCallers ? createSavedFilePreviewPane({
+    root: routeRoot, actionAttr: DATA_ROUTE_ACTION_ATTR, callers: opts.filePreviewCallers,
+    openFullSize: (target, opener) => openListedFilePreview(target, opener),
+  }) : null;
   let explorerDetail: CollectionExplorerDetailState | null = null;
   let pendingMailRestore: MailInboxPosition | undefined;
   let mailListScrollOverride: number | undefined;
@@ -7895,6 +8268,8 @@ export const bootstrapDataRoute = (
   // `collection.*`/`data.*` resolver that a recipe could accidentally share.
   let recordsSeq = 0;
   let pendingRecordsTarget = opts.initialRecordsTarget;
+  let recordsListReturn: { hash: string; id: string; firstId: string; scrollTop?: number; scrollLeft?: number } | null = null;
+  let recordsInspectorReadId: string | null = null;
   let savedRecordsSelection = opts.savedView?.definition.tab === 'records'
     ? { owner: opts.savedView.definition.owner, entity: opts.savedView.definition.entity }
     : opts.initialRecordsTarget ? {owner:opts.initialRecordsTarget.owner,entity:opts.initialRecordsTarget.entity} : null;
@@ -7938,6 +8313,17 @@ export const bootstrapDataRoute = (
     canRetireEvents: opts.recordsOutboxRetireCaller !== undefined,
     canPurge: opts.recordsPurgeCaller !== undefined,
   };
+  const currentDecisionRef = (): CustomerDecisionRef | null => {
+    const { selectedNamespace, selectedKind, detail } = recordsState;
+    if (disposed || activeLens !== 'data' || activeTab !== 'records' || !detail || recordsInspectorReadId !== null
+      || selectedNamespace?.owner.publisher !== DECISION_WATCH_OWNER.publisher || selectedNamespace.owner.pack_slug !== DECISION_WATCH_OWNER.pack_slug
+      || selectedKind !== DECISION_WATCH_ENTITY || selectedNamespace.state.state !== 'ready') return null;
+    return { decision_id: detail.id, created_at: detail._record.created_at, revision: detail._record.revision };
+  };
+  const customerDecisionWatch = createCustomerDecisionWatchEditor({
+    document: doc, callers: opts.customerDecisionWatches, current: currentDecisionRef,
+    restoreFocus: () => routeRoot.querySelector<HTMLElement>(`[data-action="${CUSTOMER_WATCH_ACTION}"]`)?.focus({ preventScroll: true }),
+  });
   const recordsImport = createRecordsImport({
     document: doc, mount: doc.body ?? opts.root,
     namespace: () => activeLens === 'data' && activeTab === 'records' ? recordsState.selectedNamespace : null,
@@ -7966,6 +8352,8 @@ export const bootstrapDataRoute = (
     `${owner.publisher}/${owner.pack_slug}`;
   const resetRecordsState = (): void => {
     recordsSeq += 1;
+    recordsListReturn = null;
+    recordsInspectorReadId = null;
     recordsState = {
       ...initialRecordsBrowseState(),
       namespaces: [],
@@ -8033,7 +8421,7 @@ export const bootstrapDataRoute = (
       filterIndex: active.getAttribute('data-records-filter-index'),
     };
   };
-  const focusRecordsIdentity = (identity: RecordsFocusIdentity | null): boolean => {
+  const focusRecordsIdentity = (identity: RecordsFocusIdentity | null, reveal = true): boolean => {
     if (identity === null) return false;
     const queryable = routeRoot as unknown as {
       querySelectorAll?: (selector: string) => ArrayLike<HTMLElement>;
@@ -8051,13 +8439,14 @@ export const bootstrapDataRoute = (
       && (identity.filterIndex === null
         || candidate.getAttribute('data-records-filter-index') === identity.filterIndex));
     target?.focus?.({ preventScroll: true });
-    target?.scrollIntoView?.({ block: 'nearest' });
+    if (reveal) target?.scrollIntoView?.({ block: 'nearest' });
     return target !== undefined;
   };
   const focusRecordsAction = (
     action: string,
     attribute?: string,
     value?: string,
+    reveal = true,
   ): boolean => {
     const queryable = routeRoot as unknown as {
       querySelectorAll?: (selector: string) => ArrayLike<HTMLElement>;
@@ -8068,17 +8457,20 @@ export const bootstrapDataRoute = (
     const target = attribute === undefined
       ? candidates[0]
       : candidates.find((candidate) => candidate.getAttribute(attribute) === value);
+    const management = target?.closest?.<HTMLDetailsElement>(`details[${RECORDS_MANAGEMENT_ATTR}]`);
+    if (management) management.open = true;
     target?.focus?.({ preventScroll: true });
-    target?.scrollIntoView?.({ block: 'nearest' });
+    if (reveal) target?.scrollIntoView?.({ block: 'nearest' });
     return target !== undefined;
   };
-  const focusRecordsDetailHeading = (): boolean => {
+  const focusRecordsDetailHeading = (block: 'nearest' | 'start' = 'nearest'): boolean => {
     const queryable = routeRoot as unknown as {
       querySelector?: (selector: string) => HTMLElement | null;
     };
     const heading = queryable.querySelector?.('#records-detail-title') ?? null;
     heading?.focus?.({ preventScroll: true });
-    heading?.scrollIntoView?.({ block: 'nearest' });
+    const reveal = block === 'start' ? heading?.closest?.('header') ?? heading : heading;
+    reveal?.scrollIntoView?.({ block });
     return heading !== null;
   };
   const focusRecordsOutboxSummary = (): boolean => {
@@ -8142,8 +8534,19 @@ export const bootstrapDataRoute = (
     const action = recordsInFlightOwnerAction();
     if (action !== null) focusRecordsAction(action);
   };
-  const focusRecordsListReturn = (recordId: string): void => {
-    if (focusRecordsAction(RECORDS_OPEN_RECORD_ACTION, RECORDS_ID_ATTR, recordId)) return;
+  const focusRecordsPack = (): void => {
+    const picker = routeRoot.querySelector?.<HTMLElement>(`[${SHARED_ACTION_ATTR}="${RECORDS_PACK_PICKER_ACTION}"]`);
+    if (picker) {
+      picker.focus({ preventScroll: true });
+      return;
+    }
+    const namespace = recordsState.selectedNamespace;
+    if (namespace !== null) {
+      focusRecordsAction(RECORDS_SELECT_NAMESPACE_ACTION, RECORDS_NAMESPACE_ATTR, recordsOwnerKey(namespace.owner));
+    }
+  };
+  const focusRecordsListReturn = (recordId: string, reveal = true): void => {
+    if (focusRecordsAction(RECORDS_OPEN_RECORD_ACTION, RECORDS_ID_ATTR, recordId, reveal)) return;
     if (
       recordsState.selectedKind !== null
       && focusRecordsAction(
@@ -8152,14 +8555,7 @@ export const bootstrapDataRoute = (
         recordsState.selectedKind,
       )
     ) return;
-    const namespace = recordsState.selectedNamespace;
-    if (namespace !== null) {
-      focusRecordsAction(
-        RECORDS_SELECT_NAMESPACE_ACTION,
-        RECORDS_NAMESPACE_ATTR,
-        recordsOwnerKey(namespace.owner),
-      );
-    }
+    focusRecordsPack();
   };
   const focusContactScanOwner = (
     owner: 'action' | 'result',
@@ -8401,10 +8797,20 @@ export const bootstrapDataRoute = (
       + (tab === 'mail' && detail ? mailReaderNavigation.render(DATA_ROUTE_ACTION_ATTR) : '') + previewControl + (downloadControl !== '' ? downloadControl + lifecycleControl : rescheduleControl + lifecycleControl) + useInChat + mailFactControls + followWork;
     const detailActions = tab === 'files' && detailControls !== ''
       ? `<div class="data-file-actions">${detailControls}</div>${lifecyclePanel}` : detailControls;
+    const desktopFiles = tab === 'files' && fileBrowserBreakpoint?.matches === true;
     const browsingSavedFiles = tab === 'files' && explorerSelectedSlug === SAVED_FILES_SLUG && opts.fileListCaller !== undefined;
     const savedFileSnapshot = savedFiles.snapshot();
     const savedFileState = { ...savedFileSnapshot, loading: savedFileSnapshot.loading || explorerLoading };
     const mailState = tab === 'mail' && mailInbox.snapshot()?.slug === explorerSelectedSlug ? mailInbox.snapshot() : null;
+    const fileInstanceLabels = tab === 'files' ? new Map([
+      [SAVED_FILES_SLUG, 'Saved files'], ...cloudSources.map(source => [cloudFileSourceSlug(source.source_id), source.label] as const),
+      // Use the same provider labels as Connections.
+      ...explorerInstances.flatMap((inst) => {
+        const lane = findAccountLane('file');
+        const provider = lane ? findAccountProvider(lane, inst.adapter_type) : undefined;
+        return provider ? [[inst.slug, `${provider.label} · ${inst.slug}`] as const] : [];
+      }),
+    ]) : undefined;
     const explorer = renderCollectionExplorer({
       collection: collectionName,
       ...(tab === 'files' && opts.filePreviewCallers ? { rowOpenAction: 'file-open-preview',
@@ -8414,16 +8820,8 @@ export const bootstrapDataRoute = (
       ...(mailState && !detail && mailBulk.enabled()
         ? { rowControlHtml: (record: CollectionRecord) => mailBulk.checkbox(record), disabled: mailBulk.busy() } : {}),
       instances: explorerInstances,
-      ...(tab === 'files' ? { instanceLabels: new Map([
-        ['received', 'Saved files'], ...cloudSources.map(source => [cloudFileSourceSlug(source.source_id), source.label] as const),
-        // A folder says what it is in Connections' words ("Local folder ·
-        // clients"), not by its adapter id ("fs · clients").
-        ...explorerInstances.flatMap((inst) => {
-          const lane = findAccountLane('file');
-          const provider = lane ? findAccountProvider(lane, inst.adapter_type) : undefined;
-          return provider ? [[inst.slug, `${provider.label} · ${inst.slug}`] as const] : [];
-        }),
-      ]) } : {}),
+      instanceLabels: fileInstanceLabels,
+      hideInstanceBar: desktopFiles,
       selectedSlug: explorerSelectedSlug,
       records: (tab === 'calendar' || tab === 'mail') && explorerSelectedSlug ? explorerRecords.filter(row => facetIncludes({ collection: tab, id: `${explorerSelectedSlug}:${row.record_id}` })) : explorerRecords,
       detail,
@@ -8461,11 +8859,29 @@ export const bootstrapDataRoute = (
       // — no instances, no "connected" empty state.
       ...(isSingleCollectionTab(tab) ? { singleCollection: true } : {}),
     });
-    if (tab === 'mail' && mailState && !detail) return `${renderMailInboxControls(mailState, DATA_ROUTE_ACTION_ATTR, mailBulk.busy())}${mailBulk.render()}${explorer}${renderMailInboxFooter(mailState, DATA_ROUTE_ACTION_ATTR, mailBulk.busy())}`;
-    if (tab !== 'files') return explorer;
+    const replyWatches = tab === 'mail' && !detail && opts.mailMessageCallers?.followUps
+      ? `<p><button type="button" class="data-button" ${DATA_ROUTE_ACTION_ATTR}="mail-message-watches">Reply watches</button></p>` : '';
+    if (mailState && detail && mailReadingPaneBreakpoint?.matches) {
+      return mailReaderNavigation.renderPane(DATA_ROUTE_ACTION_ATTR, detail.record_id, explorer);
+    }
+    if (tab === 'mail' && mailState && !detail) return `${replyWatches}${renderMailInboxControls(mailState, DATA_ROUTE_ACTION_ATTR, mailBulk.busy())}${mailBulk.render()}${explorer}${renderMailInboxFooter(mailState, DATA_ROUTE_ACTION_ATTR, mailBulk.busy())}`;
+    if (tab !== 'files') return replyWatches + explorer;
     const uploadShell = uploadDepsReady()
-      ? Upload.renderUploadWidget({ widgetId: UPLOAD_WIDGET_ID })
+      ? Upload.renderUploadWidget({ widgetId: UPLOAD_WIDGET_ID, ...(desktopFiles ? { promptText: 'Upload file' } : {}) })
       : '';
+    const archiveToggle = opts.fileUsageCaller && explorerSelectedSlug === SAVED_FILES_SLUG
+      ? `<button type="button" class="data-button" ${DATA_ROUTE_ACTION_ATTR}="file-toggle-archived" aria-pressed="${showArchivedFiles}"${fileBatch.busy() ? ' disabled' : ''}>${showArchivedFiles ? 'Show current files' : 'Show archived files'}</button>` : '';
+    const fileSourceCta = renderFileSourceCta();
+    const fileSourcePicker = desktopFiles && !detail
+      ? renderCollectionInstanceBar(explorerInstances, explorerSelectedSlug, DATA_ROUTE_ACTION_ATTR, fileInstanceLabels, fileBatch.busy(), 'File sources') : '';
+    const selectedFileSource = explorerInstances.find(instance => instance.slug === explorerSelectedSlug);
+    const fileSourceLabel = selectedFileSource ? fileInstanceLabels?.get(selectedFileSource.slug) ?? selectedFileSource.slug : '';
+    const fileToolbar = desktopFiles ? `<div class="file-browser-toolbar" role="group" aria-label="File actions">
+      <div class="file-browser-sources">${fileSourcePicker || (fileSourceLabel ? `<span class="file-browser-source-label">${e(fileSourceLabel)}</span>` : '')}</div>
+      ${archiveToggle}
+      <details data-file-source-options><summary class="data-button">Connect a source</summary>${fileSourceCta}</details>
+      ${uploadShell}
+    </div>` : '';
     const cloudSource = cloudSources.find(source => cloudFileSourceSlug(source.source_id) === explorerSelectedSlug);
     const cloudBrowse = cloudSource ? `<p role="status">${cloudSource.last_synced_at === null
       ? 'This source has not finished syncing yet.'
@@ -8476,20 +8892,23 @@ export const bootstrapDataRoute = (
       ${!detail ? `<div class="data-file-search"><label>Search file names and paths <input class="data-input" type="search" maxlength="200"
         aria-label="Search cloud files" ${DATA_ROUTE_ACTION_ATTR}="file-cloud-query" value="${e(cloudFileQueryInput)}" /></label>
         <button type="button" class="data-button" ${DATA_ROUTE_ACTION_ATTR}="file-cloud-search">Search files</button></div>` : ''}` : '';
-    return `<section ${DATA_ROUTE_MIRROR_ATTR}="files">
+    const savedControls = browsingSavedFiles && !detail
+      ? renderSavedFileSearch(savedFileState, savedFileQueryInput, DATA_ROUTE_ACTION_ATTR, fileBatch.busy())
+        + (savedFileState.unsupported ? '' : fileBatch.render(desktopFiles)) : '';
+    const results = `${desktopFiles && savedControls ? `<div class="saved-file-controls">${savedControls}</div>` : savedControls}
+      ${documentSearchReturn ? `<p><button type="button" class="data-button" ${DATA_ROUTE_ACTION_ATTR}="${DOCUMENT_SEARCH_ACTION}back">← Back to search</button></p>` : ''}${explorer}
+      ${browsingSavedFiles && !detail ? renderSavedFileFooter(savedFileState, DATA_ROUTE_ACTION_ATTR, savedFileState.pages > 0 || explorerRecords.length > 0, fileBatch.busy()) : ''}`;
+    const previewWorkspace = browsingSavedFiles && !detail && !savedFileState.unsupported && savedFilePreviewPane;
+    return `<section ${DATA_ROUTE_MIRROR_ATTR}="files"${desktopFiles ? ' class="files-desktop"' : ''}>
       ${opts.fileAttachmentReturn ? `<aside data-yours-file-return><p>Upload a file, then return to attach it to ${e(opts.fileAttachmentReturn.assetName)}.</p>
         <a class="data-button" href="#yours/asset/${e(encodeURIComponent(opts.fileAttachmentReturn.assetId))}/view/files">Return to ${e(opts.fileAttachmentReturn.assetName)}</a></aside>` : ''}
       ${cloudSourcesError ? `<p role="alert">${e(cloudSourcesError)}
         <button type="button" class="data-button" ${DATA_ROUTE_ACTION_ATTR}="file-cloud-refresh">Reload file sources</button></p>` : ''}
-      ${opts.fileUsageCaller && explorerSelectedSlug === 'received' ? `<button type="button" class="data-button" ${DATA_ROUTE_ACTION_ATTR}="file-toggle-archived" aria-pressed="${showArchivedFiles}"${fileBatch.busy() ? ' disabled' : ''}>${showArchivedFiles ? 'Show current files' : 'Show archived files'}</button>` : ''}
+      ${desktopFiles ? fileToolbar : archiveToggle}
       ${fileLifecycleNotice ? `<p role="status" data-file-lifecycle-notice tabindex="-1">${e(fileLifecycleNotice)}</p>` : ''}
-      ${uploadShell}
-      ${renderFileSourceCta()}
+      ${desktopFiles ? '' : uploadShell + fileSourceCta}
       ${cloudBrowse}
-      ${browsingSavedFiles && !detail ? renderSavedFileSearch(savedFileState, savedFileQueryInput, DATA_ROUTE_ACTION_ATTR, fileBatch.busy()) : ''}
-      ${browsingSavedFiles && !detail && !savedFileState.unsupported ? fileBatch.render() : ''}
-      ${documentSearchReturn ? `<p><button type="button" class="data-button" ${DATA_ROUTE_ACTION_ATTR}="${DOCUMENT_SEARCH_ACTION}back">← Back to search</button></p>` : ''}${explorer}
-      ${browsingSavedFiles && !detail ? renderSavedFileFooter(savedFileState, DATA_ROUTE_ACTION_ATTR, savedFileState.pages > 0 || explorerRecords.length > 0, fileBatch.busy()) : ''}
+      ${previewWorkspace ? `<div class="saved-file-results"><div class="saved-file-results-list">${results}</div>${SAVED_FILE_PREVIEW_SLOT}</div>` : results}
       ${cloudBrowseError ? `<p role="alert">${e(cloudBrowseError)}</p>` : ''}
       ${cloudSource && !detail && cloudFileCursor ? `<button type="button" class="data-button"
         ${DATA_ROUTE_ACTION_ATTR}="file-cloud-more"${cloudLoadingMore || explorerLoading ? ' disabled' : ''}>${cloudLoadingMore ? 'Loading…' : 'Load more files'}</button>` : ''}
@@ -8594,7 +9013,9 @@ export const bootstrapDataRoute = (
     if (activeTab === 'search') return { tab: activeTab, query: universalSearchQuery,
       ...(universalSearchType !== 'all' ? { result_type: universalSearchType } : {}),
       ...(universalReminderStatus !== 'all' ? { reminder_state: universalReminderStatus } : {}),
-      ...(reminderDates.definition() ? { reminder_dates: reminderDates.definition() } : {}) };
+      ...(reminderDates.definition() ? { reminder_dates: reminderDates.definition() } : {}),
+      ...(Object.keys(followUpSearch.state().filters).length ? { follow_up_filters: { ...followUpSearch.state().filters } } : {}),
+      ...(Object.keys(runSearch.state().filters ?? {}).length ? { run_filters: runSearch.state().filters } : {}) };
     if (activeTab === 'calendar') {
       if (calendarAgenda.snapshot().query.trim()) return null;
       const slug = calendarAgenda.selectedSource();
@@ -8624,6 +9045,8 @@ export const bootstrapDataRoute = (
   };
 
   const render = (): void => {
+    refundCreditReview.sync();
+    customerDecisionWatch.sync();
     if (!disposed && activeLens === 'data' && activeTab === 'booking' && !loadingBookingDetail && bookingDetail?.entity?._kind === 'booking' && workEntityState.dialog === null) {
       const entity = bookingDetail.entity, response = bookingDetail, seq = bookingDetailSeq, navigation = navigationGeneration, dialog = workEntityDialogOpenSeq;
       bookingReader.bind(bookingIdentity(entity));
@@ -8660,13 +9083,14 @@ export const bootstrapDataRoute = (
         opts.pinnedRecords?.remember(pinWorkRecord(recentEntity));
         lastRecentWorkReader = { entity: recentEntity, sequence: workEntityDialogOpenSeq };
       }
-    } else if (activeLens !== 'data' || !activeWorkReader()) lastRecentWorkReader = null;
+    } else if (activeLens !== 'data' || activeTab === 'commitment' || !activeWorkReader()) lastRecentWorkReader = null;
     const copyInput = doc.activeElement as HTMLTextAreaElement | null;
     const copyHost = copyInput?.hasAttribute?.('data-work-copy-value') ? copyInput.closest('.work-entity-dialog[data-mode="read"], .work-entity-booking-detail[data-booking-id], .project-overview[data-project-overview]') : null;
     const copySelection = copyHost && copyInput ? { kind: copyHost.getAttribute('data-kind'),
       id: copyHost.getAttribute(`data-${copyHost.getAttribute('data-kind')}-id`), value: copyInput.value,
       start: copyInput.selectionStart, end: copyInput.selectionEnd, direction: copyInput.selectionDirection } : null;
     const blockerFocus = taskBlockers.captureFocus();
+    const replyWatchFocus = taskReplyWatches.captureFocus();
     if (activeLens === 'data' && activeTab === 'calendar' && explorerDetail === null && calendarAgenda.isComposing()) return;
     if (activeLens !== 'data' || activeTab !== 'files' || explorerSelectedSlug !== SAVED_FILES_SLUG || explorerDetail !== null) fileBatch.reset();
     if (activeLens !== 'data' || activeTab !== 'contact' || !contactScan) contactRecovery.close();
@@ -8676,6 +9100,13 @@ export const bootstrapDataRoute = (
     const documentFocus = pendingDocumentSearchFocus ?? doc.activeElement?.getAttribute?.(DOCUMENT_SEARCH_FOCUS);
     pendingDocumentSearchFocus = null;
     const recordsFocus = activeLens === 'data' && activeTab === 'records' ? activeRecordsFocusIdentity() : null;
+    const recordsManagement = routeRoot.querySelector?.<HTMLDetailsElement>(`details[${RECORDS_MANAGEMENT_ATTR}]`);
+    if (recordsManagement) recordsManagementOpen = recordsManagement.open;
+    const recordsInspector = activeLens === 'data' && activeTab === 'records' && recordsDesktopBreakpoint?.matches && recordsListReturn !== null;
+    const priorRecordsIndex = recordsInspector ? routeRoot.querySelector?.<HTMLElement>('.records-inspector-list') : null;
+    const recordsScrollTop = priorRecordsIndex ? workSearchScrollHost()?.scrollTop : undefined;
+    const recordsIndexScroll = priorRecordsIndex?.scrollTop;
+    const recordsHeadingFocused = recordsInspector && doc.activeElement?.id === 'records-detail-title';
     let searchFocusFallback = false;
     let agendaFocusFallback = false;
     const savedFileListVisible = activeLens === 'data' && activeTab === 'files' && explorerSelectedSlug === SAVED_FILES_SLUG && explorerDetail === null && opts.fileListCaller !== undefined;
@@ -8697,6 +9128,9 @@ export const bootstrapDataRoute = (
       ? routeRoot.querySelector?.<HTMLDetailsElement>('details[data-calendar-agenda-sources]')?.open : undefined;
     const agendaScroll = agendaVisible ? pendingCalendarAgendaRestore?.scrollTop
       ?? (renderedActiveTab === 'calendar' && routeRoot.querySelector?.('[data-calendar-agenda]') ? workSearchScrollHost()?.scrollTop : undefined) : undefined;
+    const agendaDayScroll = agendaVisible ? pendingCalendarAgendaRestore?.dayScroll ?? readCalendarDayScroll() : undefined;
+    const focusedDayAgenda = agendaVisible && doc.activeElement?.closest?.('[data-calendar-month-selection]') != null;
+    const hadSplitMonth = focusedDayAgenda && routeRoot.querySelector?.(`[${CALENDAR_MONTH_WORKSPACE_ATTR}]`) != null;
     const mailScrollTop = activeLens === 'data' && activeTab === 'mail' && renderedActiveTab === 'mail'
       && routeRoot.querySelector?.('.data-mail-conversation') ? workSearchScrollHost()?.scrollTop : undefined;
     const mailIndexScroll = activeLens === 'data' && activeTab === 'mail' && renderedActiveTab === 'mail'
@@ -8712,6 +9146,7 @@ export const bootstrapDataRoute = (
     const oldProjectLinkFocus = oldProjectLinkReview?.contains(doc.activeElement) ? doc.activeElement : null;
     const projectLinkFocus = oldProjectLinkFocus?.getAttribute('data-action');
     const revealAssetSearchFocus = pendingAssetSearchRestore?.reveal === true || pendingDraftSearchRestore?.reveal === true || pendingChatSearchRestore?.reveal === true || pendingReminderSearchRestore?.reveal === true;
+    const revealRunSearchFocus = pendingNavigationSearchRestore?.focus.action === SEARCH_OPEN_RUN || pendingNavigationSearchRestore?.focus.action === SEARCH_OPEN_CONNECTION || pendingNavigationSearchRestore?.focus.action === SEARCH_OPEN_SAVED_VIEW || pendingNavigationSearchRestore?.focus.action === SEARCH_OPEN_SETTING;
     const searchScrollTop = activeTab === 'search' ? pendingNavigationSearchRestore?.scrollTop ?? pendingReminderSearchRestore?.scrollTop ?? pendingChatSearchRestore?.scrollTop ?? pendingDraftSearchRestore?.scrollTop ?? pendingDocumentSearchRestore?.scrollTop ?? pendingAssetSearchRestore?.scrollTop ?? pendingContactSearchRestore?.scrollTop ?? pendingRecentSourceRestore?.scrollTop ?? pendingWorkSearchRestore?.scrollTop
       ?? (renderedActiveTab === 'search' && routeRoot.querySelector?.('.rq-search') ? workSearchScrollHost()?.scrollTop : undefined) : undefined;
     const contactActivityPosition = activeLens === 'data' && activeTab === 'contact' && contactDetail?.email === contactActivity.email()
@@ -8721,8 +9156,14 @@ export const bootstrapDataRoute = (
     commitmentReader.capture(routeRoot); bookingReader.capture(routeRoot, workSearchScrollHost());
     noteFind.capture(); taskFind.capture();
     mailMessageSurface.captureFind();
-    const workListKind = activeLens === 'data' && isWorkEntityTab(activeTab) && workEntityState.kind === activeTab && workEntityState.dialog === null
-      && !(activeTab === 'booking' && bookingDetailId !== null) && !(activeTab === 'project' && projectWork !== null) ? activeTab : undefined;
+    const inlineWorkReader = showWorkListReader();
+    const inlineBookingReader = showBookingListReader();
+    const workListScrollTop = inlineWorkReader && renderedActiveTab === activeTab && routeRoot.querySelector?.('.work-entity-list-workspace')
+      ? workSearchScrollHost()?.scrollTop : undefined;
+    const workListKind = activeLens === 'data' && isWorkEntityTab(activeTab) && workEntityState.kind === activeTab
+      && (workEntityState.dialog === null || inlineWorkReader || inlineBookingReader)
+      && (activeTab !== 'booking' || bookingDetailId === null || inlineBookingReader)
+      && !(activeTab === 'project' && projectWork !== null) ? activeTab : undefined;
     const compactWorkEntityLayout = workListKind !== undefined;
     const compactTaskLayout = compactWorkEntityLayout && activeTab === 'task';
     const compactContactLayout = activeLens === 'data' && activeTab === 'contact' && contactDetail === null && contactScan === null && contactImport === null;
@@ -8758,6 +9199,8 @@ export const bootstrapDataRoute = (
       fileChatAbort?.abort(); fileChatRecord = null;
     }
     if (disposed) return;
+    const savedFileSnapshot = savedFiles.snapshot();
+    savedFilePreviewPane?.reconcile(savedFileListVisible && !savedFileSnapshot.unsupported ? savedFileSnapshot.files : undefined);
     // This route repaints with `innerHTML` as reads settle. Preserve ownership
     // when a collection tab/source, work-entity source/search, response editor
     // control, or timeline/reschedule control has focus: the replacement
@@ -8766,6 +9209,12 @@ export const bootstrapDataRoute = (
     // captures the live owner again, so moving to another control while a read
     // is pending cancels the restoration naturally.
     const activeElement = doc.activeElement as HTMLElement | null | undefined;
+    const memoryReaderFocusScope = activeLens === 'memory' && memoryDetail !== null
+      ? MEMORY_READER_FOCUS_SCOPES.find(scope => activeElement?.closest?.(scope))
+      : undefined;
+    const memoryIndexScrollTop = activeLens === 'memory' && memoryDetail !== null
+      ? routeRoot.querySelector?.('.memory-reader-entries')?.scrollTop
+      : undefined;
     const workDraftFocus = activeLens === 'data' && renderedActiveTab === activeTab && isWorkDraftKind(activeTab)
       ? activeElement?.getAttribute?.('data-work-draft-focus') : null;
     const workDraftSelection = workDraftFocus && activeElement?.tagName === 'TEXTAREA'
@@ -8789,27 +9238,48 @@ export const bootstrapDataRoute = (
     const focusedReminderTriage = activeTab === 'search' ? activeElement?.getAttribute?.(SEARCH_TRIAGE_FOCUS) : null;
     const focusedPromptBulk = activeTab === 'search' ? activeElement?.getAttribute?.(SEARCH_PROMPT_BULK_FOCUS) : null;
     const focusedDecision = activeTab === 'search' && activeElement?.hasAttribute?.(SEARCH_DECISION_FOCUS);
+    const focusedSavedView = activeTab === 'search' && activeElement?.hasAttribute?.(SEARCH_SAVED_VIEW_FOCUS);
+    const focusedConnection = activeTab === 'search' && activeElement?.hasAttribute?.(SEARCH_CONNECTION_FOCUS);
+    const focusedRun = activeTab === 'search' && activeElement?.hasAttribute?.(SEARCH_RUN_FOCUS);
+    const focusedFollowUpFilter = activeTab === 'search' && activeElement?.hasAttribute?.(SEARCH_FOLLOW_UP_FILTER);
+    const focusedRunFilter = activeTab === 'search' ? activeElement?.getAttribute?.(SEARCH_RUN_FILTER) : null;
+    universalSearchSourcesOpen = routeRoot.querySelector<HTMLDetailsElement>('.rq-sources')?.open ?? universalSearchSourcesOpen;
+    const focusedSearchSources = activeTab === 'search' && activeElement?.hasAttribute?.('data-search-sources-focus') === true;
     const focusedSearchType = activeTab === 'search' && activeElement?.hasAttribute?.(SEARCH_TYPE_ATTR) === true;
     const focusedSearchControl = activeTab === 'search' && !focusedReminderDate && !focusedReminderTriage && !focusedPromptBulk && (activeElement?.tagName === 'BUTTON' || activeElement?.tagName === 'A')
       && activeElement.closest?.('.rq-search') ? [DATA_ROUTE_ACTION_ATTR, SEARCH_WORK_KIND_ATTR, SEARCH_WORK_ID_ATTR,
         RECENT_WORK_KIND, RECENT_WORK_ID, PINNED_WORK_KIND, PINNED_WORK_ID, RECORD_PIN_KEY,
         SEARCH_GROUP_PLATFORM_ATTR, SEARCH_GROUP_SLUG_ATTR, SEARCH_RECORD_ID_ATTR, SEARCH_RECIPE_ID_ATTR,
-        SEARCH_PACK_SLUG_ATTR, SEARCH_DID_YOU_MEAN_QUERY_ATTR, SEARCH_CONTACT_EMAIL_ATTR, SEARCH_ASSET_ID_ATTR, SEARCH_DRAFT_ID_ATTR, SEARCH_RECOVERY_DRAFT_KEY, SEARCH_CHAT_SESSION_ATTR, SEARCH_CHAT_MESSAGE_ATTR, SEARCH_REMINDER_ID_ATTR, SEARCH_DECISION_KEY, EXACT_LINK_KEY_ATTR].map(attribute => [attribute, activeElement.getAttribute(attribute)] as const) : null;
+        SEARCH_PACK_SLUG_ATTR, SEARCH_DID_YOU_MEAN_QUERY_ATTR, SEARCH_CONTACT_EMAIL_ATTR, SEARCH_ASSET_ID_ATTR, SEARCH_DRAFT_ID_ATTR, SEARCH_RECOVERY_DRAFT_KEY, SEARCH_CHAT_SESSION_ATTR, SEARCH_CHAT_MESSAGE_ATTR, SEARCH_REMINDER_ID_ATTR, SEARCH_FOLLOW_UP_ID, SEARCH_DECISION_KEY, SEARCH_RUN_ID, SEARCH_CONNECTION_KEY, SEARCH_SAVED_VIEW_ID, SEARCH_SETTING_ID, EXACT_LINK_KEY_ATTR].map(attribute => [attribute, activeElement.getAttribute(attribute)] as const) : null;
     // D-315 — Mail facts keys each focusable control; restored after the repaint.
     const focusedMailFactsKey = renderedActiveTab === 'mail_fact'
       ? mailFacts.captureFocus(activeElement)
+      : null;
+    const mailFactsViewport = activeLens === 'data' && activeTab === 'mail_fact' && renderedActiveTab === 'mail_fact'
+      ? mailFacts.captureViewport(routeRoot)
       : null;
     const focusedCalendarEvent = renderedActiveTab === 'calendar' ? calendarEventSurface.captureFocus(activeElement) : null;
     const focusedCalendarCreate = renderedActiveTab === 'calendar' || renderedActiveTab === 'mail' ? calendarCreateSurface.captureFocus(activeElement) : null;
     const focusedMailMessage = renderedActiveTab === 'mail' ? mailMessageSurface.captureFocus(activeElement) : null;
     const focusedMailReader = renderedActiveTab === 'mail' ? mailReaderNavigation.captureFocus(activeElement) : null;
+    if (renderedActiveTab === 'mail') mailReaderNavigation.capturePaneScroll(routeRoot);
     // D-324 — so does the Reminders tab.
     const focusedMailBulk = renderedActiveTab === 'mail' ? activeElement?.getAttribute?.(MAIL_BULK_FOCUS) ?? null : null;
     const focusedTaskBulk = renderedActiveTab === 'task' ? activeElement?.getAttribute?.(TASK_BULK_FOCUS) ?? null : null;
     const focusedNoteBulk = renderedActiveTab === 'note' ? activeElement?.getAttribute?.(NOTE_BULK_FOCUS) ?? null : null;
     const focusedFileBatch = renderedActiveTab === 'files' ? activeElement?.getAttribute?.(FILE_BATCH_FOCUS) ?? null : null;
+    const fileSourceOptionsBefore = renderedActiveTab === 'files'
+      ? routeRoot.querySelector<HTMLDetailsElement>(FILE_SOURCE_OPTIONS) : null;
+    const focusedFileSource = renderedActiveTab === 'files'
+      ? activeElement?.getAttribute?.(DATA_ROUTE_FILE_SOURCE_LINK_ATTR) ?? null : null;
+    const focusedFileSourceOptions = activeElement?.tagName === 'SUMMARY' && activeElement.parentElement === fileSourceOptionsBefore;
+    const focusedFileUpload = renderedActiveTab === 'files' && activeElement?.closest?.(`[${Upload.UPLOAD_SHELL_ATTR}="${UPLOAD_WIDGET_ID}"]`)
+      ? [Upload.UPLOAD_INPUT_ATTR, Upload.UPLOAD_CANCEL_ATTR].find(attr => activeElement.hasAttribute(attr)) : undefined;
     const reminderScrollTop = activeLens === 'data' && activeTab === 'reminder' && renderedActiveTab === 'reminder'
       && routeRoot.querySelector?.('[data-recued-reminders]') ? workSearchScrollHost()?.scrollTop : undefined;
+    const previousReminderPane = reminderScrollTop === undefined ? undefined : reminderPane();
+    const reminderPaneId = previousReminderPane?.getAttribute(REMINDER_READER_SCROLL_ATTR);
+    const reminderPaneTop = previousReminderPane?.scrollTop;
     let revealReminderFocus = false;
     const focusedRemindersKey = renderedActiveTab === 'reminder'
       ? remindersSurface.captureFocus(activeElement)
@@ -8894,6 +9364,8 @@ export const bootstrapDataRoute = (
     const draftFieldAttribute = contactDialog !== null ? DATA_ROUTE_CONTACT_FIELD_ATTR
       : workEntityState.dialog !== null ? 'data-form-field' : null;
     const draftField = draftFieldAttribute === null ? null : activeElement?.getAttribute?.(draftFieldAttribute);
+    const dialogBody = routeRoot.querySelector<HTMLElement>('[data-dialog-scroll-key]');
+    const dialogScroll = dialogBody ? { key: dialogBody.getAttribute('data-dialog-scroll-key'), top: dialogBody.scrollTop } : null;
     const focusedDraftField = draftField == null || draftFieldAttribute === null ? null : {
       attribute: draftFieldAttribute, field: draftField,
       selectionStart: activeSearch?.selectionStart, selectionEnd: activeSearch?.selectionEnd,
@@ -8904,7 +9376,7 @@ export const bootstrapDataRoute = (
       && renderedActiveTab === activeTab
       && isWorkEntityTab(activeTab)
       && activeElement?.getAttribute?.(SHARED_ACTION_ATTR)
-        === 'open-edit-work-entity'
+        === (activeTab === 'booking' ? 'open-work-entity-detail' : 'open-edit-work-entity')
       && activeElement.getAttribute('data-kind') === activeTab
       && activeElement.getAttribute('data-entity-id') !== null
         ? {
@@ -8993,6 +9465,19 @@ export const bootstrapDataRoute = (
       )
         ? focusedFormResponseExportFormatRaw
         : null;
+    const formResponseListRepaint = activeLens === 'data' && isReceivedTab(activeTab) && isReceivedTab(renderedActiveTab)
+      && (formResponseDetailId === null || showFormResponseWorkspace())
+      && routeRoot.querySelector?.('.data-form-response-workspace-list');
+    const formResponseListScroll = formResponseListRepaint ? workSearchScrollHost()?.scrollTop : undefined;
+    const previousFormResponsePane = showFormResponseWorkspace() ? formResponsePane() : undefined;
+    const formResponsePaneKey = previousFormResponsePane?.getAttribute(FORM_RESPONSE_READER_SCROLL_ATTR);
+    const formResponsePaneTop = previousFormResponsePane?.scrollTop;
+    const focusedFormResponseRowId = formResponseListRepaint && activeElement?.getAttribute?.(DATA_ROUTE_ACTION_ATTR) === 'open-form-response'
+      ? activeElement.getAttribute(DATA_ROUTE_FORM_RESPONSE_ID_ATTR) : null;
+    const focusedFormResponseToolbarAction = showFormResponseWorkspace()
+      && activeElement?.closest?.('.data-form-response-reader-toolbar')
+      && activeElement.closest(`[${DATA_ROUTE_FORM_RESPONSE_DETAIL_ATTR}]`)?.getAttribute(DATA_ROUTE_FORM_RESPONSE_DETAIL_ATTR) === formResponseDetailId
+      ? activeElement.getAttribute(DATA_ROUTE_ACTION_ATTR) : null;
     const focusedFormResponseEditorControl =
       activeLens === 'data'
       && renderedActiveTab === activeTab
@@ -9176,7 +9661,7 @@ export const bootstrapDataRoute = (
       ? { id: activeElement.closest('.work-entity-commitment-reader')?.getAttribute('data-commitment-id'), action: activeElement.getAttribute?.(SHARED_ACTION_ATTR),
           status: activeElement.hasAttribute?.('data-commitment-status'), notice: activeElement.hasAttribute?.('data-commitment-notice') } : null;
     const focusedTaskFilterToggle = activeElement?.getAttribute?.(SHARED_ACTION_ATTR) === 'toggle-task-filters';
-    const focusedTaskFilter = activeLens === 'data' && (activeTab === 'task' || activeTab === 'commitment')
+    const focusedWorkFilter = activeLens === 'data' && (activeTab === 'task' || activeTab === 'commitment' || activeTab === 'booking')
       && renderedActiveTab === activeTab
       && activeElement?.getAttribute?.(SHARED_ACTION_ATTR)?.startsWith(`filter-${activeTab}-`)
       ? activeElement.getAttribute(SHARED_ACTION_ATTR) : null;
@@ -9244,6 +9729,7 @@ export const bootstrapDataRoute = (
             : null;
     const focusedTabRaw = activeElement?.getAttribute?.(DATA_ROUTE_TAB_ATTR);
     const focusedCollectionPicker = activeElement?.hasAttribute?.(DATA_ROUTE_COLLECTION_PICKER_ATTR) === true;
+    const focusedCollectionRailToggle = isCollectionRailToggle(activeElement);
     const focusedTab = focusedTabRaw !== null
       && focusedTabRaw !== undefined
       && isDataTab(focusedTabRaw)
@@ -9315,9 +9801,28 @@ export const bootstrapDataRoute = (
         pendingExplorerRecordFocus = null;
       }
     }
+    const visibleContacts = activeTab === 'contact'
+      ? contacts.filter(row => facetIncludes({ collection: 'contact', id: row.contact_id ?? row.email }))
+      : [];
+    const contactPreviewEnabled = compactContactLayout && contactDialog === null && contactPreviewBreakpoint?.matches === true;
+    const previousContactPreview = compactContactLayout ? contactPreviewElement() : null;
+    const contactListScrollTop = compactContactLayout && (previousContactPreview || contactPreviewSelection)
+      ? workSearchScrollHost()?.scrollTop : undefined;
+    const focusedInContactPreview = previousContactPreview?.contains(activeElement ?? null) === true;
+    const focusedContactAction = activeElement?.getAttribute?.(DATA_ROUTE_ACTION_ATTR);
+    const focusedContactRow = compactContactLayout
+      ? activeElement?.closest?.(`[${DATA_ROUTE_CONTACT_ROW_ATTR}]`) : null;
+    const contactPreviewFocusEmail = focusedInContactPreview
+      ? previousContactPreview?.getAttribute(CONTACT_PREVIEW_ATTR)
+      : focusedContactRow?.getAttribute(DATA_ROUTE_CONTACT_ROW_ATTR);
+    const selection = contactPreviewSelection;
+    const contactPreview = contactPreviewEnabled && selection?.query === contactSearch.trim()
+      ? visibleContacts.find(row => row.email === selection.email && row.merged_into === undefined)
+      : undefined;
+    if (!contactPreview) contactPreviewSelection = null;
     const body = activeTab === 'contact'
       ? renderContactSurface(
-          contacts.filter(row => facetIncludes({ collection: 'contact', id: row.contact_id ?? row.email })),
+          visibleContacts,
           contactRollups,
           contactTotal,
           loadingMoreContacts,
@@ -9336,6 +9841,8 @@ export const bootstrapDataRoute = (
           canImport,
           canUploadFile,
           (opts.now ?? Date.now)(),
+          contactPreviewEnabled,
+          contactPreview,
           contacts.length,
           { available: contactRecovery.available(), busy: contactRecovery.busy(), ...(contactRecovery.isOpen() ? { html: contactRecovery.render() } : {}) },
         )
@@ -9356,9 +9863,10 @@ export const bootstrapDataRoute = (
             formResponseEditorDraft,
             savingFormResponse,
             formResponseSaveError,
-            formResponseDiscardGuardOpen,
+            formResponseDiscard !== null,
             opts.formResponseExportCaller !== undefined,
             exportingFormResponseFormat,
+            showFormResponseWorkspace() ? { editorOpen: formResponseEditorOpen } : undefined,
           )
       : isWorkEntityTab(activeTab)
         ? (activeTab === 'note' && opts.noteRecovery ? `<style>${NOTE_DRAFT_RECOVERY_STYLES}</style>${workEntityState.dialog ? '' : noteDraftPanel()}` : '') + workDraftSurface() + renderWorkEntitySurface(
@@ -9370,7 +9878,7 @@ export const bootstrapDataRoute = (
             loadingMoreWorkEntities,
             pendingWorkEntityDialogOpen?.kind === activeTab
               ? pendingWorkEntityDialogOpen.id
-              : null,
+              : inlineBookingReader && loadingBookingDetail ? bookingDetailId : null,
             bookingLifecycleFilter,
             taskViewFilters,
             commitmentViewFilters,
@@ -9454,6 +9962,8 @@ export const bootstrapDataRoute = (
               return { entity, mode: commitmentMode, can_edit: canEditCommitment(entity),
                 reminder_html: commitmentMode === 'read' ? workReminder.render(entity, workReminderContext(entity)) : undefined,
                 counterparty_label: commitmentCounterpartyLabel(entity, commitmentContactLabels),
+                refund_credit_review: commitmentMode === 'read' && !!opts.refundCreditCallers && entity.source_id === 'recued.commitment'
+                  && entity.sync_state === 'live' && entity.deleted_at == null && !entity.pending_write && !!refundWatchOrder(entity),
                 follow_up: commitmentMode === 'read' ? commitmentFollowUp.view(entity) : undefined,
                 related: commitmentMode === 'read' ? commitmentRelated.view() : undefined,
                 copy: commitmentMode === 'read' ? workReaderCopy.state() : undefined,
@@ -9478,6 +9988,7 @@ export const bootstrapDataRoute = (
               if (activeTab !== 'task' || entity?._kind !== 'task' || workEntityState.dialog?.mode !== 'edit' || workEntityState.dialog.entity_id !== entity.id) return undefined;
               const dependencies = taskRelated.dependencies();
               return { entity, mode: taskMode, can_edit: canEditTask(entity), related: taskRelated.view(), notice: taskNotice, find: taskFind.state(), navigation_html: workReaderNavigation.render(),
+                reply_watch_html: taskMode === 'read' ? taskReplyWatchSlot(mailFollowUpTaskRef(entity)) : undefined,
                 reminder_html: taskMode === 'read' ? workReminder.render(entity, workReminderContext(entity)) : undefined,
                 calendar: { available: taskMode === 'read' && calendarCreateSurface.available() && Boolean(opts.workEntityGetCaller) && canScheduleTask(entity),
                   busy: taskCalendarPreparing?.id === entity.id && taskCalendarPreparing.navigation === navigationGeneration && taskCalendarPreparing.sequence === workEntityDialogOpenSeq },
@@ -9492,10 +10003,11 @@ export const bootstrapDataRoute = (
               filters_open: taskFiltersOpen,
             } : undefined,
             compactWorkEntityLayout,
+            inlineWorkReader || inlineBookingReader,
           )
         : activeTab === 'search'
           ? renderUniversalSearch({
-              query: universalSearchQuery, exactLink: universalExactLink, exactLinkOpening: universalExactOpening, exactLinkError: universalExactError, resultType: universalSearchType, debouncing: universalSearchTimer !== null,
+              sourcesOpen: universalSearchSourcesOpen, query: universalSearchQuery, exactLink: universalExactLink, exactLinkOpening: universalExactOpening, exactLinkError: universalExactError, resultType: universalSearchType, debouncing: universalSearchTimer !== null,
               recordSearchAvailable: opts.collectionSearchAllCaller !== undefined, workSearchAvailable: opts.workEntitySearchCaller !== undefined,
               ...(opts.recentSearches ? { recentSearches: opts.recentSearches.list() } : {}),
               recentWorkHtml: pinnedWorkPanel.render(DATA_ROUTE_ACTION_ATTR, universalSearchType) + recentWorkPanel.render(DATA_ROUTE_ACTION_ATTR, universalSearchType),
@@ -9506,9 +10018,14 @@ export const bootstrapDataRoute = (
               ...(opts.reminderCallers?.list ? { reminderSearch: reminderDates.view().readError ? { ...reminderSearch.state(), error: reminderDates.view().readError } : reminderSearch.state(),
                 reminderStatus: universalReminderStatus, reminderTriage: { ...searchReminderTriage.view(), writing: searchWriting() },
                 reminderDatesHtml: renderReminderDateSearch(reminderDates.view(), DATA_ROUTE_ACTION_ATTR, searchWriting()) } : {}),
+              ...(opts.mailMessageCallers?.followUps?.list ? { followUpSearch: followUpSearch.state() } : {}),
               ...(opts.promptSchedulesCaller ? { promptSearch: promptSearch.state(), promptOpening, promptOpenError } : {}),
               searchWriting: searchWriting(),
               ...(opts.decisionSearchCallers ? { decisionSearch: decisionSearch.state(), decisionOpening, decisionOpenError } : {}),
+              ...(opts.settingsSearchTargets ? { settingsSearch: settingsSearchResults(opts.settingsSearchTargets, universalSearchQuery) } : {}),
+              ...(opts.savedViewSearchCallers ? { savedViewSearch: savedViewSearch.state(), savedViewOpening, savedViewOpenError, currentSavedViewId: currentSavedViewSearchId() } : {}),
+              ...(opts.connectionSearchCallers ? { connectionSearch: connectionSearch.state(), connectionOpening, connectionOpenError } : {}),
+              ...(opts.runSearchCallers ? { runSearch: runSearch.state(), runOpening, runOpenError } : {}),
               ...(opts.mailCompose?.drafts ? { draftSearch: draftSearch.state(), draftOpeningId: universalDraftOpening, draftOpenError: universalDraftOpenError } : {}),
               recoveryDraftSearch: recoveryDraftSearch(), recoveryDraftError,
               recoveryDraftOpening: recoveryDraftOpening?.navigation === navigationGeneration ? recoveryDraftOpening.key : undefined,
@@ -9559,7 +10076,12 @@ export const bootstrapDataRoute = (
         : activeTab === 'reminder'
           ? remindersSurface.render()
         : activeTab === 'records'
-          ? renderRecordsExplorer({ ...recordsState, importBusy: recordsImport.hasInFlightWork() }, recordsImport.render())
+          ? renderRecordsExplorer({ ...recordsState, importBusy: recordsImport.hasInFlightWork(),
+              canWatchCustomer: !!opts.customerDecisionWatches && currentDecisionRef() !== null }, recordsImport.render(), {
+              desktop: recordsDesktopBreakpoint?.matches === true,
+              managementOpen: recordsManagementOpen,
+              ...(recordsInspector ? { inspector: { pendingId: recordsInspectorReadId ?? undefined } } : {}),
+            })
         : isExplorerTab(activeTab) || isSingleCollectionTab(activeTab)
           ? renderExplorerTab(activeTab)
         : // Only `crm` remains a `data.timeline` raw-id drill-down — mail /
@@ -9595,6 +10117,7 @@ export const bootstrapDataRoute = (
           compose: memoryCompose,
           composeDiscardGuard: memoryComposeDiscardGuardOpen,
           detail: memoryDetail,
+          desktopReader: memoryReaderBreakpoint?.matches === true,
           importPanel: memoryImport,
           importDiscardGuard: memoryImportDiscardGuardOpen,
           ...(memoryFilteringOrigin !== null
@@ -9696,8 +10219,10 @@ export const bootstrapDataRoute = (
             verificationItemLoading,
             verificationItemReady,
           );
-    const collectionNavigationLocked = savingFormResponse || formResponseDiscardGuardOpen
+    const collectionNavigationLocked = savingFormResponse || formResponseDiscard !== null
       || hasRecordsInFlightWork() || contactRecovery.busy() || fileBatch.busy();
+    const lensSwitcher = renderLensSwitcher(activeLens, DATA_ROUTE_ACTION_ATTR,
+      memoryExporting || memoryFilteringOrigin !== null || hasRecordsInFlightWork() || contactRecovery.busy() || fileBatch.busy());
     const markup = `
       ${opts.hideHeading ? '' : `<header class="data-header">
         <h1 class="data-title" ${DATA_ROUTE_HEADING_ATTR}>Data</h1>
@@ -9717,14 +10242,11 @@ export const bootstrapDataRoute = (
         ? `<p><button type="button" class="data-button" ${DATA_ROUTE_ACTION_ATTR}="return-recent-source-search">Back to search</button></p>` : ''}
       ${activeTab !== 'booking' && !projectChildReturn && workSearchReturn && workEntityState.dialog === null
         ? `<p><button type="button" ${DATA_ROUTE_ACTION_ATTR}="return-work-search">Back to search</button></p>` : ''}
-      ${renderLensSwitcher(
-        activeLens,
-        DATA_ROUTE_ACTION_ATTR,
-        memoryExporting
-          || memoryFilteringOrigin !== null
-          || hasRecordsInFlightWork()
-          || contactRecovery.busy() || fileBatch.busy(),
-      )}
+      ${activeLens === 'data' ? `<div class="data-collection-toolbar">
+        ${lensSwitcher}
+        <button type="button" class="data-button data-collection-rail-toggle" ${DATA_ROUTE_ACTION_ATTR}="${COLLECTION_RAIL_TOGGLE_ACTION}"
+          aria-expanded="${!collectionsCollapsed}" aria-controls="${DATA_ROUTE_TABLIST_ID}">${collectionRailToggleLabel()}</button>
+      </div>` : lensSwitcher}
       <div class="data-collection-workspace${activeLens === 'data' ? ' data-collection-workspace--split' : ''}">
       ${activeLens === 'memory' ? '' : renderTabs(activeTab, collectionNavigationLocked, collectionRailBreakpoint?.matches === true)}
       <div class="data-collection-content">
@@ -9733,6 +10255,7 @@ export const bootstrapDataRoute = (
           : compactContactLayout ? { kind: 'contact' } : undefined)}
       ${loading && activeLens !== 'memory' && activeTab !== 'calendar' ? '<p class="data-loading">Loading data...</p>' : ''}
       ${renderErrors(activeLens === 'data' && activeTab === 'contact' && contactDetail && contactActivity.enabled() ? { ...errors, timeline: undefined } : errors)}
+      ${activeLens === 'data' && activeTab === 'commitment' && !workEntityState.dialog && commitmentNotice ? `<p role="status">${e(commitmentNotice)}</p>` : ''}
       ${canFacet && (facetHasRecords || dataSphere !== 'all') ? `${compactTaskLayout ? '' : renderDataSpherePicker(dataSphere)}
         ${dataSphere === 'all' ? '' : '<p>This filter applies to loaded records. Load more to find further matches.</p>'}
         ${facetsLoading && dataSphere !== 'all' ? '<p role="status">Reading sphere placements…</p>' : ''}${facetError ? `<p role="status">${e(facetError)}</p>` : ''}` : ''}
@@ -9751,19 +10274,20 @@ export const bootstrapDataRoute = (
     workTaskPickers.captureBeforeRender();
     const picker = routeRoot.querySelector<HTMLSelectElement>(`[${DATA_ROUTE_COLLECTION_PICKER_ATTR}]`);
     const reminderHost = workReminder.preservedHost() ?? mailReminders.preservedHost();
-    const preserved = reminderHost?.isConnected ? reminderHost : picker;
+    const previewSlot = savedFilePreviewPane?.preservedSlot();
+    const preserved = reminderHost?.isConnected ? reminderHost : previewSlot?.isConnected ? previewSlot : picker;
     const previousCollectionRail = routeRoot.querySelector<HTMLElement>(`[${DATA_ROUTE_TABLIST_ATTR}]`);
-    if (previousCollectionRail) collectionRailScrollTop = previousCollectionRail.scrollTop;
+    if (previousCollectionRail && !usesCollectionPicker()) collectionRailScrollTop = previousCollectionRail.scrollTop;
     readerPassage.captureFocus();
     if (activeLens === 'data' && preserved != null) {
-      // Keep a reminder editor connected through reader refreshes. Native date
-      // segments hold partial input outside value, just like selector typeahead.
+      // Keep the active file renderer and native fields connected. Date
+      // segments and selector typeahead can be lost when inputs are detached.
       const nextRoot = doc.createElement('div');
       for (const attribute of Array.from(routeRoot.attributes)) nextRoot.setAttribute(attribute.name, attribute.value);
       nextRoot.innerHTML = markup;
       const nextControl = nextRoot.querySelector(preserved === reminderHost
         ? `[${reminderHost?.hasAttribute(MAIL_REMINDER_CREATE_HOST) ? MAIL_REMINDER_CREATE_HOST : RECORD_REMINDER_HOST}]`
-        : `[${DATA_ROUTE_COLLECTION_PICKER_ATTR}]`);
+        : preserved === previewSlot ? SAVED_FILE_PREVIEW_SLOT_SELECTOR : `[${DATA_ROUTE_COLLECTION_PICKER_ATTR}]`);
       if (nextControl && reconcileNativeField(routeRoot, nextRoot, preserved, nextControl)) {
         if (preserved === picker && picker) {
           if (picker.value !== activeTab) picker.value = activeTab;
@@ -9771,9 +10295,40 @@ export const bootstrapDataRoute = (
         }
       } else routeRoot.innerHTML = markup;
     } else routeRoot.innerHTML = markup;
+    if (activeLens === 'memory' && memoryDetail !== null) {
+      const index = routeRoot.querySelector?.<HTMLElement>('.memory-reader-entries');
+      if (index && memoryIndexScrollTop !== undefined) index.scrollTop = memoryIndexScrollTop;
+      else index?.querySelector?.('.memory-row.is-selected')?.scrollIntoView?.({ block: 'nearest' });
+      if (memoryReaderFocusScope && activeElement) {
+        const scope = routeRoot.querySelector?.(memoryReaderFocusScope);
+        const target = findMemoryReaderFocus(scope, activeElement);
+        if (focusListTarget(target)) {
+          if ((index != null) !== (memoryIndexScrollTop !== undefined)) {
+            target?.scrollIntoView?.({ block: 'nearest' });
+          }
+        } else if (memoryReaderFocusScope !== '.memory-reader-index' || !focusListTarget(index)) {
+          focusMemoryDetailHeading();
+        }
+      }
+    }
+    savedFilePreviewPane?.restore(activeElement ?? null);
+    if (contactListScrollTop !== undefined) {
+      const host = workSearchScrollHost();
+      if (host) host.scrollTop = contactListScrollTop;
+    }
+    if (compactContactLayout && contactDialog === null && contactPreviewFocusEmail) {
+      if (focusedInContactPreview && contactPreview?.email === contactPreviewFocusEmail) {
+        const selector = focusedContactAction
+          ? `[${DATA_ROUTE_ACTION_ATTR}="${focusedContactAction}"]`
+          : `#${CONTACT_PREVIEW_HEADING_ID}`;
+        focusListTarget(contactPreviewElement()?.querySelector<HTMLElement>(selector));
+      } else {
+        focusContactList(contactPreviewFocusEmail, focusedInContactPreview ? CONTACT_PREVIEW_ACTION : focusedContactAction ?? undefined);
+      }
+    }
     searchPromptBulk.mount(routeRoot);
     const collectionRail = routeRoot.querySelector<HTMLElement>(`[${DATA_ROUTE_TABLIST_ATTR}]`);
-    if (collectionRail) {
+    if (collectionRail && !usesCollectionPicker()) {
       collectionRail.scrollTop = collectionRailScrollTop;
       if (renderedCollectionTab !== activeTab) revealCollectionTab(collectionNavigationTarget(activeTab));
       renderedCollectionTab = activeTab;
@@ -9787,9 +10342,10 @@ export const bootstrapDataRoute = (
         : (activeTab === 'calendar' || activeTab === 'mail') && explorerDetail?.record && explorerSelectedSlug
           ? { collection: activeTab, id: `${explorerSelectedSlug}:${explorerDetail.record_id}` } : null;
       // In a dialog the control sits above its actions, so Save stays the last stop of its focus loop.
-      const dialog = routeRoot.querySelector<HTMLElement>('dialog,[role="dialog"]');
+      const dialog = routeRoot.querySelector<HTMLElement>('dialog,[role="dialog"]')
+        ?? routeRoot.querySelector<HTMLElement>('.work-entity-reader--inline');
       const actions = dialog?.querySelector<HTMLElement>('.work-entity-dialog-actions, .data-dialog-actions') ?? null;
-      const taskContent = dialog?.querySelector<HTMLElement>('.work-entity-task-content, .work-entity-note-content, .work-entity-commitment-content') ?? null;
+      const taskContent = dialog?.querySelector<HTMLElement>('.work-entity-dialog-body, .work-entity-task-content, .work-entity-note-content, .work-entity-commitment-content, .data-dialog-body') ?? null;
       if (ref) sphereControl = mountSpherePlacement(taskContent ?? actions?.parentElement ?? dialog ?? routeRoot, ref, {
         read: opts.spheres.read,
         change: async input => { opaqueMutationsInFlight += 1; try { const result = await opts.spheres!.change(input); facetKey = ''; return result; } finally { opaqueMutationsInFlight -= 1; } },
@@ -9809,6 +10365,11 @@ export const bootstrapDataRoute = (
     noteReader.restore(routeRoot);
     taskReader.restore(routeRoot, { pending: pendingWorkEntityDialogOpen?.kind === 'task' || workReminder.initialReadPending() });
     commitmentReader.restore(routeRoot); bookingReader.restore(routeRoot, workSearchScrollHost());
+    if (workListScrollTop !== undefined) {
+      // Reopening the reader's sections restores its full height before the list scroll is applied.
+      const host = workSearchScrollHost();
+      if (host) host.scrollTop = workListScrollTop;
+    }
     noteFind.mount(); taskFind.mount();
     mountedWorkReading();
     readerPassage.mount();
@@ -9824,12 +10385,6 @@ export const bootstrapDataRoute = (
         input.focus({ preventScroll: true }); input.setSelectionRange(copySelection.start, copySelection.end, copySelection.direction);
       }
     }
-    if (pendingWorkReaderListReturn && activeTab === pendingWorkReaderListReturn.kind && !workEntityState.dialog && !loading) {
-      const origin = pendingWorkReaderListReturn; pendingWorkReaderListReturn = null;
-      const host = workSearchScrollHost(); if (host) host.scrollTop = origin.scrollTop;
-      workEntityDialogReturnFocus = { mode: 'edit', kind: origin.kind, id: origin.id };
-      focusWorkEntityDialogReturnTarget();
-    }
     if (oldProjectLinkFocus) {
       const review = routeRoot.querySelector<HTMLElement>('[data-project-link-review]');
       const target = projectLinkFocus ? review?.querySelector<HTMLElement>(`[data-action="${projectLinkFocus}"]`)
@@ -9837,17 +10392,39 @@ export const bootstrapDataRoute = (
       target?.focus({ preventScroll: true });
     }
     renderedActiveTab = activeTab;
-    if (recordsFocus) focusRecordsIdentity(recordsFocus);
+    if (recordsIndexScroll !== undefined) {
+      const index = routeRoot.querySelector?.<HTMLElement>('.records-inspector-list');
+      if (index) index.scrollTop = recordsIndexScroll;
+    }
+    if (recordsScrollTop !== undefined) {
+      const host = workSearchScrollHost();
+      if (host) host.scrollTop = recordsScrollTop;
+    }
+    if (recordsFocus) focusRecordsIdentity(recordsFocus, recordsIndexScroll === undefined);
+    if (recordsHeadingFocused) routeRoot.querySelector?.<HTMLElement>('#records-detail-title')?.focus({ preventScroll: true });
     if (agendaVisible) {
       const disclosure = routeRoot.querySelector?.<HTMLDetailsElement>('details[data-calendar-agenda-sources]');
       if (disclosure) disclosure.open = pendingCalendarAgendaRestore?.sourcesOpen ?? agendaSourcesOpen ?? false;
+      if (agendaDayScroll) {
+        const pane = routeRoot.querySelector<HTMLElement>(`[${CALENDAR_MONTH_DAY_SCROLL_ATTR}]`);
+        if (pane?.getAttribute(CALENDAR_MONTH_DAY_SCROLL_ATTR) === agendaDayScroll.day) pane.scrollTop = agendaDayScroll.scrollTop;
+      }
       const requestedFocus = calendarAgenda.takeFocus();
       const key = requestedFocus ?? pendingCalendarAgendaRestore?.key ?? agendaFocus;
       if (key) {
         const controls = [...routeRoot.querySelectorAll<HTMLElement>(`[${AGENDA_FOCUS}]`)];
         const target = controls.find(control => control.getAttribute(AGENDA_FOCUS) === key);
         if (target || !pendingCalendarAgendaRestore || !calendarAgenda.isBusy()) {
-          agendaFocusFallback = target === undefined || requestedFocus !== null;
+          const splitMonth = routeRoot.querySelector(`[${CALENDAR_MONTH_WORKSPACE_ATTR}]`) !== null;
+          agendaFocusFallback = target === undefined || requestedFocus !== null || (focusedDayAgenda && hadSplitMonth !== splitMonth);
+          if (requestedFocus !== null && target && splitMonth) {
+            const host = workSearchScrollHost();
+            if (host && agendaScroll !== undefined) host.scrollTop = agendaScroll;
+            const viewport = host?.getBoundingClientRect(), rect = target.getBoundingClientRect();
+            // A visible date stays in place. Arrow navigation can still reveal an offscreen date.
+            agendaFocusFallback = rect.top < Math.max(0, viewport?.top ?? 0)
+              || rect.bottom > Math.min(viewport?.bottom ?? Infinity, doc.defaultView?.innerHeight ?? Infinity);
+          }
           const fallback = calendarAgenda.snapshot().query.trim() ? 'search' : 'date';
           const focused = target ?? controls.find(control => control.getAttribute(AGENDA_FOCUS) === fallback);
           focused?.focus({ preventScroll: !agendaFocusFallback });
@@ -9890,9 +10467,16 @@ export const bootstrapDataRoute = (
     if (focusedReminderStatus && activeTab === 'search') routeRoot.querySelector<HTMLElement>(`[${SEARCH_REMINDER_STATUS_ATTR}]`)?.focus({ preventScroll: true });
     if (focusedReminderDate && activeTab === 'search') Array.from(routeRoot.querySelectorAll<HTMLElement>(`[${REMINDER_DATE_FOCUS}]`))
       .find(el => el.getAttribute(REMINDER_DATE_FOCUS) === focusedReminderDate)?.focus({ preventScroll: true });
+    if (focusedSearchSources && activeTab === 'search') routeRoot.querySelector<HTMLElement>('[data-search-sources-focus]')?.focus({ preventScroll: true });
     if (focusedSearchType && activeTab === 'search') routeRoot.querySelector<HTMLElement>(`[${SEARCH_TYPE_ATTR}]`)?.focus({ preventScroll: true });
     searchReminderTriage.restoreFocus(routeRoot, focusedReminderTriage);
     if (focusedDecision && activeTab === 'search') routeRoot.querySelector<HTMLElement>(`[${SEARCH_DECISION_FOCUS}]`)?.focus({ preventScroll: true });
+    if (focusedSavedView && activeTab === 'search') routeRoot.querySelector<HTMLElement>(`[${SEARCH_SAVED_VIEW_FOCUS}]`)?.focus({ preventScroll: true });
+    if (focusedConnection && activeTab === 'search') routeRoot.querySelector<HTMLElement>(`[${SEARCH_CONNECTION_FOCUS}]`)?.focus({ preventScroll: true });
+    if (focusedRun && activeTab === 'search') routeRoot.querySelector<HTMLElement>(`[${SEARCH_RUN_FOCUS}]`)?.focus({ preventScroll: true });
+    if (focusedFollowUpFilter && activeTab === 'search') routeRoot.querySelector<HTMLElement>(`[${SEARCH_FOLLOW_UP_FILTER}]`)?.focus({ preventScroll: true });
+    if (focusedRunFilter && activeTab === 'search') Array.from(routeRoot.querySelectorAll<HTMLElement>(`[${SEARCH_RUN_FILTER}]`))
+      .find(el => el.getAttribute(SEARCH_RUN_FILTER) === focusedRunFilter)?.focus({ preventScroll: true });
     if (activeLens === 'data' && activeTab === 'search' && (documentFocus || pendingDocumentSearchRestore)) {
       const key = pendingDocumentSearchRestore?.fileId ?? documentFocus;
       const owner = [...routeRoot.querySelectorAll<HTMLElement>(`[${DOCUMENT_SEARCH_FOCUS}]`)].find(element => element.getAttribute(DOCUMENT_SEARCH_FOCUS) === key)
@@ -9959,6 +10543,11 @@ export const bootstrapDataRoute = (
     } else if ((focusedTab !== null || focusedCollectionPicker) && activeLens === 'data') {
       const replacement = collectionNavigationTarget(focusedTab ?? activeTab);
       replacement?.focus?.({ preventScroll: true });
+    } else if (focusedCollectionRailToggle && activeLens === 'data') {
+      const replacement = collectionCollapseBreakpoint?.matches
+        ? routeRoot.querySelector<HTMLElement>(`[${DATA_ROUTE_ACTION_ATTR}="${COLLECTION_RAIL_TOGGLE_ACTION}"]`)
+        : collectionNavigationTarget(activeTab);
+      replacement?.focus?.({ preventScroll: true });
     }
     if (commitmentFocused && activeTab === 'commitment' && workEntityDialogEntity?.id === commitmentFocused.id) {
       const reader = routeRoot.querySelector<HTMLElement>('.work-entity-commitment-reader');
@@ -9968,8 +10557,8 @@ export const bootstrapDataRoute = (
       (target ?? reader?.querySelector<HTMLElement>('[data-commitment-status]'))?.focus?.({ preventScroll: true });
     }
     if (focusedTaskFilterToggle && activeTab === 'task') routeRoot.querySelector<HTMLElement>('[data-action="toggle-task-filters"]')?.focus?.({ preventScroll: true });
-    if (focusedTaskFilter !== null && activeLens === 'data' && (activeTab === 'task' || activeTab === 'commitment')) {
-      routeRoot.querySelector<HTMLElement>(`select[${SHARED_ACTION_ATTR}="${focusedTaskFilter}"]`)
+    if (focusedWorkFilter !== null && activeLens === 'data') {
+      routeRoot.querySelector<HTMLElement>(`select[${SHARED_ACTION_ATTR}="${focusedWorkFilter}"]`)
         ?.focus?.({ preventScroll: true });
     }
     if (
@@ -10031,7 +10620,7 @@ export const bootstrapDataRoute = (
       && activeTab === focusedWorkEntityRow.kind
     ) {
       const replacement = Array.from(routeRoot.querySelectorAll<HTMLElement>(
-        `[${SHARED_ACTION_ATTR}="open-edit-work-entity"]`,
+        `[${SHARED_ACTION_ATTR}="${activeTab === 'booking' ? 'open-work-entity-detail' : 'open-edit-work-entity'}"]`,
       )).find(
         (candidate) =>
           candidate.getAttribute('data-kind') === focusedWorkEntityRow.kind
@@ -10048,6 +10637,12 @@ export const bootstrapDataRoute = (
         `select[${SHARED_ACTION_ATTR}="select-source"]`,
       ) as HTMLSelectElement | null;
       replacement?.focus?.({ preventScroll: true });
+    }
+    if (pendingWorkReaderListReturn && activeTab === pendingWorkReaderListReturn.kind && !workEntityState.dialog && !loading) {
+      const origin = pendingWorkReaderListReturn; pendingWorkReaderListReturn = null;
+      const host = workSearchScrollHost(); if (host) host.scrollTop = origin.scrollTop;
+      workEntityDialogReturnFocus = { mode: 'edit', kind: origin.kind, id: origin.id };
+      focusWorkEntityDialogReturnTarget();
     }
     if (
       focusedWorkEntityDialogSubmit
@@ -10075,6 +10670,12 @@ export const bootstrapDataRoute = (
         replacement.setSelectionRange(focusedDraftField.selectionStart, focusedDraftField.selectionEnd,
           focusedDraftField.selectionDirection ?? undefined);
       }
+    }
+    const nextDialogBody = routeRoot.querySelector<HTMLElement>('[data-dialog-scroll-key]');
+    if (dialogScroll && nextDialogBody?.getAttribute('data-dialog-scroll-key') === dialogScroll.key) {
+      nextDialogBody.scrollTop = dialogScroll.top;
+      const focused = doc.activeElement as HTMLElement | null;
+      if (focused && nextDialogBody.contains(focused)) focused.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
     }
     if (focusedContactEmail !== null && activeLens === 'data' && activeTab === 'contact'
       && contactDetail?.email === focusedContactEmail) focusContactEmail(focusedContactEmail);
@@ -10125,6 +10726,19 @@ export const bootstrapDataRoute = (
         pendingContactEditFocusEmail = null;
       }
     }
+    if (activeLens === 'data' && isReceivedTab(activeTab)) {
+      const host = workSearchScrollHost();
+      if (host && formResponseListScroll !== undefined) host.scrollTop = formResponseListScroll;
+      const pane = formResponsePane();
+      if (pane && formResponsePaneTop !== undefined && pane.getAttribute(FORM_RESPONSE_READER_SCROLL_ATTR) === formResponsePaneKey) {
+        pane.scrollTop = formResponsePaneTop;
+      }
+      if (focusedFormResponseRowId) formResponseRow(focusedFormResponseRowId)?.focus?.({ preventScroll: true });
+      if (focusedFormResponseToolbarAction) {
+        Array.from(routeRoot.querySelectorAll?.<HTMLElement>('.data-form-response-reader-toolbar button') ?? [])
+          .find(button => button.getAttribute(DATA_ROUTE_ACTION_ATTR) === focusedFormResponseToolbarAction)?.focus({ preventScroll: true });
+      }
+    }
     if (
       focusedFormResponseDetailId !== null
       && activeLens === 'data'
@@ -10143,6 +10757,7 @@ export const bootstrapDataRoute = (
       && formResponseDetailId === pendingFormResponseDetailFocusId
       && !loadingFormResponseDetail
     ) {
+      const responseId = pendingFormResponseDetailFocusId;
       pendingFormResponseDetailFocusId = null;
       const target = (
         routeRoot.querySelector(
@@ -10153,6 +10768,10 @@ export const bootstrapDataRoute = (
         )
       ) as HTMLElement | null;
       target?.focus?.({ preventScroll: true });
+      if (showFormResponseWorkspace()) {
+        formResponseRow(responseId)?.scrollIntoView?.({ block: 'nearest' });
+        target?.scrollIntoView?.({ block: 'nearest' });
+      }
     }
     const formResponseEditorFocus = pendingFormResponseEditorFocus === null
       ? focusedFormResponseEditor
@@ -10218,7 +10837,7 @@ export const bootstrapDataRoute = (
       focusedFormResponseExportFormat !== null
       && activeLens === 'data'
       && isReceivedTab(activeTab)
-      && formResponseDetailId === null
+      && (formResponseDetailId === null || showFormResponseWorkspace())
     ) {
       const replacement = routeRoot.querySelector(
         `[${DATA_ROUTE_ACTION_ATTR}="export-form-responses"]`
@@ -10507,7 +11126,7 @@ export const bootstrapDataRoute = (
     noteBulk.mount(routeRoot);
     if (activeLens === 'data' && activeTab === 'files') fileBatch.restoreFocus(routeRoot, focusedFileBatch);
     if (activeLens === 'data' && activeTab === 'mail_fact') {
-      mailFacts.restoreFocus(routeRoot, focusedMailFactsKey);
+      mailFacts.restoreFocus(routeRoot, focusedMailFactsKey, mailFactsViewport, !loading);
     }
     if (activeLens === 'data' && activeTab === 'reminder') {
       revealReminderFocus = remindersSurface.restoreFocus(routeRoot, focusedRemindersKey) === true;
@@ -10516,6 +11135,7 @@ export const bootstrapDataRoute = (
     mailReminders.restore();
     if (activeLens === 'data' && activeTab === 'calendar') calendarEventSurface.restoreFocus(routeRoot, focusedCalendarEvent);
     if (activeLens === 'data' && activeTab === 'mail') {
+      mailReaderNavigation.restorePaneScroll(routeRoot);
       mailMessageSurface.restoreScroll(routeRoot, mailIndexScroll);
       mailMessageSurface.restoreFocus(routeRoot, focusedMailMessage);
       mailMessageSurface.mountFind();
@@ -10568,9 +11188,26 @@ export const bootstrapDataRoute = (
     // dialog just painted (no-op otherwise).
     mountWorkEntityRefPickers();
     taskBlockers.mount(routeRoot, refreshTaskBlockers); refreshTaskBlockers = false;
+    taskReplyWatches.mount(routeRoot);
+    taskReplyWatches.focus(replyWatchFocus);
     if (blockerFocus && !workEntityState.dialog && !pendingWorkEntityDialogOpen) taskBlockers.focus(blockerFocus);
     // Attach (or rewire) the Files-tab upload widget (no-op elsewhere).
     mountUploadWidget();
+    if (activeLens === 'data' && activeTab === 'files') {
+      const sourceOptions = routeRoot.querySelector<HTMLDetailsElement>(FILE_SOURCE_OPTIONS);
+      if (sourceOptions) sourceOptions.open = fileSourceOptionsBefore?.open ?? (focusedFileSource !== null);
+      if (focusedFileSource !== null || focusedFileSourceOptions) {
+        const links = [...routeRoot.querySelectorAll<HTMLElement>(`[${DATA_ROUTE_FILE_SOURCE_LINK_ATTR}]`)];
+        const link = links.find(item => item.getAttribute(DATA_ROUTE_FILE_SOURCE_LINK_ATTR) === focusedFileSource);
+        const trigger = sourceOptions?.querySelector<HTMLElement>('summary');
+        (sourceOptions && !sourceOptions.open ? trigger : link ?? trigger ?? links[0])?.focus({ preventScroll: true });
+      }
+      if (focusedFileUpload) {
+        const upload = routeRoot.querySelector<HTMLElement>(`[${Upload.UPLOAD_SHELL_ATTR}="${UPLOAD_WIDGET_ID}"]`);
+        (upload?.querySelector<HTMLElement>(`[${focusedFileUpload}]`)
+          ?? upload?.querySelector<HTMLElement>(`[${Upload.UPLOAD_INPUT_ATTR}]`))?.focus({ preventScroll: true });
+      }
+    }
     if (memoryFilteringOrigin !== null) {
       focusMemoryOriginFilter(memoryFilteringOrigin);
     } else if (memoryExporting) {
@@ -10583,7 +11220,7 @@ export const bootstrapDataRoute = (
       focusMemoryImportDiscardGuard();
     } else if (memoryComposeDiscardGuardOpen) {
       focusMemoryComposeDiscardGuard();
-    } else if (formResponseDiscardGuardOpen) {
+    } else if (formResponseDiscard) {
       focusFormResponseDiscardGuard();
     } else if (contactDiscardGuardOpen) {
       focusContactDiscardGuard();
@@ -10602,12 +11239,19 @@ export const bootstrapDataRoute = (
       const scrollHost = workSearchScrollHost();
       if (scrollHost) scrollHost.scrollTop = searchScrollTop;
       const owner = doc.activeElement as HTMLElement | null;
-      if ((owner?.tagName === 'BUTTON' || searchFocusFallback || revealAssetSearchFocus) && owner?.closest?.('.rq-search')) owner.scrollIntoView?.({ block: 'nearest' });
+      if ((owner?.tagName === 'BUTTON' || searchFocusFallback || revealAssetSearchFocus || revealRunSearchFocus) && owner?.closest?.('.rq-search')) owner.scrollIntoView?.({ block: 'nearest' });
     }
     if (activeLens === 'data' && activeTab === 'reminder' && reminderScrollTop !== undefined) {
       const host = workSearchScrollHost(); if (host) host.scrollTop = reminderScrollTop;
+      const pane = reminderPane();
+      if (pane && reminderPaneTop !== undefined && pane.getAttribute(REMINDER_READER_SCROLL_ATTR) === reminderPaneId) pane.scrollTop = reminderPaneTop;
       const owner = doc.activeElement as HTMLElement | null;
-      if (revealReminderFocus && owner?.hasAttribute?.('data-recued-reminders-focus')) owner.scrollIntoView?.({ block: 'nearest' });
+      if (revealReminderFocus && owner?.hasAttribute?.(REMINDERS_FOCUS_ATTR)) {
+        if (pane && owner.getAttribute(REMINDERS_FOCUS_ATTR) === 'detail') {
+          routeRoot.querySelector<HTMLElement>('.reminders-open-row[aria-current="true"]')?.scrollIntoView?.({ block: 'nearest' });
+        }
+        owner.scrollIntoView?.({ block: 'nearest' });
+      }
     }
     if (agendaVisible && agendaScroll !== undefined && !agendaFocusFallback) {
       const host = workSearchScrollHost();
@@ -10656,6 +11300,9 @@ export const bootstrapDataRoute = (
           .find(node => node.getAttribute(attribute) === origin.recordId);
         (row ?? routeRoot.querySelector<HTMLElement>(`input[${DATA_ROUTE_ACTION_ATTR}="file-saved-query"]`))?.focus({ preventScroll: true });
         pendingSavedFileRestore = null;
+      } else if (focusedSavedFileAction === 'file-open-preview') {
+        const id = activeElement?.getAttribute(COLLECTION_RECORD_ID_ATTR);
+        if (id) savedFilePreviewPane?.focusRow(id);
       } else if (focusedSavedFileAction && ['file-saved-search', 'file-saved-more', 'file-saved-retry', 'file-saved-check'].includes(focusedSavedFileAction)) {
         const action = routeRoot.querySelector<HTMLElement>(`[${DATA_ROUTE_ACTION_ATTR}="${focusedSavedFileAction}"]`);
         (action ?? routeRoot.querySelector<HTMLElement>(`input[${DATA_ROUTE_ACTION_ATTR}="file-saved-query"]`))?.focus({ preventScroll: true });
@@ -10777,6 +11424,8 @@ export const bootstrapDataRoute = (
     retainRowsOnError = false,
   ): Promise<void> => {
     if (disposed || generation !== loadGeneration) return;
+    const bookingScope = workEntityState.kind === 'booking' ? bookingListScope() : null;
+    if (bookingScope !== null) loadedBookingListScope = null;
     // Retain the exact saved Source even after it disconnects. A select with no
     // matching option must not show All while the query still names that Source.
     const selectedSource = workEntityState.selected_source_id;
@@ -10796,6 +11445,7 @@ export const bootstrapDataRoute = (
       const response = await opts.workEntityListCaller(workEntityListRequest(0));
       if (disposed || generation !== loadGeneration) return;
       workEntities = [...response.entities];
+      if (bookingScope !== null) loadedBookingListScope = bookingScope;
       taskBlockerSources.clear(); for (const fresh of response.source_freshness ?? []) taskBlockerSources.set(fresh.source_id, fresh);
       refreshTaskBlockers = true;
       workEntityTotal = response.total;
@@ -10815,8 +11465,8 @@ export const bootstrapDataRoute = (
   // load so `offset` reads the post-refresh list.
   const loadMoreWorkEntities = async (): Promise<void> => {
     if (opts.workEntityListCaller === undefined) return;
-    if (activeTab === 'commitment' && (commitmentListSearch !== workEntityState.search_query.trim()
-      || commitmentListFilter.direction !== commitmentViewFilters.direction || commitmentListFilter.status !== commitmentViewFilters.status)) return;
+    if (activeTab === 'commitment' && !commitmentListIsCurrent()) return;
+    if (activeTab === 'booking' && loadedBookingListScope !== bookingListScope()) return;
     if (loadingMoreWorkEntities || workEntities.length >= workEntityTotal) return;
     const generation = loadGeneration;
     loadingMoreWorkEntities = true;
@@ -10968,15 +11618,15 @@ export const bootstrapDataRoute = (
       nextErrors.form_responses = 'Recued cannot list answers here.';
       return;
     }
+    const version = formResponseListVersion;
     try {
       const response = await opts.formResponseListCaller({ limit: DEFAULT_LIMIT });
-      if (disposed || generation !== loadGeneration) return;
+      if (disposed || generation !== loadGeneration || version !== formResponseListVersion) return;
       formResponses = [...response.responses];
       formResponseNextCursor = response.next_cursor ?? null;
     } catch (err) {
-      if (disposed || generation !== loadGeneration) return;
-      formResponses = [];
-      formResponseNextCursor = null;
+      if (disposed || generation !== loadGeneration || version !== formResponseListVersion) return;
+      if (!formResponseListOrigin) { formResponses = []; formResponseNextCursor = null; }
       nextErrors.form_responses = errMessage(err);
     }
   };
@@ -11601,9 +12251,18 @@ export const bootstrapDataRoute = (
     caller: NonNullable<BootstrapDataRouteOptions['collectionGetCaller']>,
   ): Promise<void> => {
     let loadedRecord: CollectionRecord | null = null;
+    let pinnedMessage: MailMessageSnapshot | undefined;
     try {
       const { record } = await caller({ platform, slug, record_id });
       if (disposed || seq !== explorerSeq) return;
+      const pinnedMail = platform === 'mail' && opts.initialMailReference?.slug === slug
+        && opts.initialMailReference.record_id === record_id ? opts.initialMailReference : undefined;
+      if (pinnedMail) {
+        if (!record || record.source_id !== pinnedMail.source_id || record.received_at !== pinnedMail.received_at || !opts.mailMessageCallers?.get)
+          throw new Error('This reply was removed or replaced. Open Mail to review the conversation.');
+        pinnedMessage = await opts.mailMessageCallers.get({ slug, record_id, expected_reminder_ref: pinnedMail });
+        if (disposed || seq !== explorerSeq) return;
+      }
       const linkedSource = relatedWorkReturn?.source;
       if (record && linkedSource?.tab === tab && linkedSource.collectionSlug === slug && linkedSource.recordId === record_id
         && record.record_id !== record_id) throw new Error('The linked record could not be confirmed. Try again.');
@@ -11612,7 +12271,8 @@ export const bootstrapDataRoute = (
       explorerDetailRetrying = false;
       loadedRecord = record;
       if (platform === 'calendar' && record !== null) void calendarEventSurface.open({ slug, source_id: record.source_id }, record.record_id);
-      if (platform === 'mail' && record !== null) void mailMessageSurface.open({ slug, record_id: record.record_id });
+      if (platform === 'mail' && record !== null) void mailMessageSurface.open({ slug, record_id: record.record_id,
+        ...(pinnedMail ? { expected_reminder_ref: pinnedMail } : {}) }, pinnedMessage);
       // The verification handoff has found its exact item. From here on,
       // switching accounts is ordinary browsing rather than repeatedly forcing
       // this record id onto every source. A null result stays pending so the
@@ -11663,7 +12323,8 @@ export const bootstrapDataRoute = (
     loadGeneration += 1; loading = false;
     calendarAgenda.cancel();
     calendarAgendaReturn = { key, scrollTop: workSearchScrollHost()?.scrollTop ?? 0, hash: dataHistory.current().hash,
-      sourcesOpen: routeRoot.querySelector<HTMLDetailsElement>('details[data-calendar-agenda-sources]')?.open ?? false };
+      sourcesOpen: routeRoot.querySelector<HTMLDetailsElement>('details[data-calendar-agenda-sources]')?.open ?? false,
+      dayScroll: readCalendarDayScroll() };
     calendarContinuity.returnTo = calendarAgendaReturn;
     explorerCollection = 'calendar';
     explorerInstances = calendarAgenda.snapshot().sources.map(source => source.instance);
@@ -11711,6 +12372,7 @@ export const bootstrapDataRoute = (
     const activeElement = doc.activeElement as HTMLElement | null | undefined;
     pendingExplorerRecordFocus =
       renderedActiveTab === activeTab
+      && activeElement?.getAttribute?.(DATA_ROUTE_ACTION_ATTR) !== MAIL_READER_OPEN_ACTION
       && (activeElement?.getAttribute?.(COLLECTION_RECORD_ID_ATTR) ?? activeElement?.getAttribute?.('data-file-details-id')) === record_id
         ? { tab: activeTab, recordId: record_id }
         : null;
@@ -11878,7 +12540,10 @@ export const bootstrapDataRoute = (
     if (!namespace || !kind || !caller || recordsState.loading || hasRecordsInFlightWork()) return;
     const seq = ++recordsSeq;
     const focus = activeRecordsFocusIdentity();
+    const leavingInspector = recordsListReturn !== null;
+    recordsListReturn = null;
     recordsState = { ...recordsState, loading: true, error: undefined,
+      ...(leavingInspector ? { detail: null, diagnostics: null, deletePending: false } : {}),
       ...(cursor === undefined ? { records: [], nextCursor: null, prevCursor: null, page: 1 } : {}) };
     render();
     focusRecordsIdentity(focus);
@@ -11975,6 +12640,8 @@ export const bootstrapDataRoute = (
     const kindsCaller = opts.recordsKindListCaller;
     const searchCaller = opts.recordsSearchCaller;
     const seq = ++recordsSeq;
+    recordsListReturn = null;
+    recordsInspectorReadId = null;
     if (opts.savedView !== undefined) {
       savedRecordsSelection = { owner: namespace.owner, entity: preferredKind ?? null };
     }
@@ -12125,6 +12792,8 @@ export const bootstrapDataRoute = (
         loading: selected !== null,
       };
       if (selected === null) {
+        recordsListReturn = null;
+        recordsInspectorReadId = null;
         void recordsImport.load(null);
         recordsState = { ...recordsState, records: [], kinds: [], selectedKind: null, detail: null,
           diagnostics: null, outbox: null, outboxOpen: false, retention: {}, loading: false,
@@ -12177,6 +12846,8 @@ export const bootstrapDataRoute = (
       selected === undefined
       || (selectedKey === key && recordsState.error === undefined)
     ) return;
+    const leavingDetail = recordsState.detail !== null;
+    if (recordsDesktopBreakpoint?.matches && activeRecordsAction() === RECORDS_SELECT_NAMESPACE_ACTION) focusRecordsPack();
     recordsState = {
       ...recordsState,
       loadingNamespaceKey: key,
@@ -12194,6 +12865,7 @@ export const bootstrapDataRoute = (
     const settledFocus = activeRecordsFocusIdentity();
     recordsState = { ...recordsState, loadingNamespaceKey: null };
     render();
+    if (leavingDetail) syncDataHash();
     focusRecordsIdentity(settledFocus);
   };
 
@@ -12209,6 +12881,9 @@ export const bootstrapDataRoute = (
       || (recordsState.selectedKind === kind && recordsState.error === undefined)
     ) return;
     if (opts.savedView !== undefined) savedRecordsSelection = { owner: namespace.owner, entity: kind };
+    const leavingDetail = recordsState.detail !== null;
+    recordsListReturn = null;
+    recordsInspectorReadId = null;
     const seq = ++recordsSeq;
     const focusedControl = activeRecordsFocusIdentity();
     recordsState = {
@@ -12248,30 +12923,49 @@ export const bootstrapDataRoute = (
     const settledFocus = activeRecordsFocusIdentity();
     recordsState = { ...recordsState, loadingKind: null };
     render();
+    if (leavingDetail) syncDataHash();
     focusRecordsIdentity(settledFocus);
   };
 
-  const openRecordsRecord = async (id: string): Promise<void> => {
+  const openRecordsRecord = async (id: string, activation?: 'pointer' | 'keyboard'): Promise<void> => {
     const namespace = recordsState.selectedNamespace;
     const entity = recordsState.selectedKind;
     const caller = opts.recordsGetCaller;
-    if (namespace === null || entity === null || caller === undefined) return;
-    const carryFocus =
-      activeRecordsAction() === RECORDS_OPEN_RECORD_ACTION
-      && (doc.activeElement as HTMLElement | null)?.getAttribute(RECORDS_ID_ATTR) === id;
+    const fromList = activation !== undefined;
+    const inspect = recordsDesktopBreakpoint?.matches === true && (fromList || recordsListReturn !== null);
+    if (namespace === null || entity === null || caller === undefined
+      || (recordsState.loading && !(inspect && fromList && recordsInspectorReadId !== null))) return;
+    if (inspect && (hasRecordsInFlightWork() || recordsInspectorReadId === id
+      || (fromList && !recordsState.records.some(row => row.id === id)))) return;
+    if (inspect && fromList && id === recordsState.detail?.id && !recordsState.loading && recordsState.error === undefined) {
+      if (activation === 'keyboard') focusRecordsDetailHeading();
+      return;
+    }
+    const origin = fromList && recordsListReturn === null && recordsState.detail === null ? {
+      hash: dataHistory.current().hash, id, firstId: id,
+      ...(inspect ? {
+        scrollTop: workSearchScrollHost()?.scrollTop,
+        scrollLeft: routeRoot.querySelector?.('.records-table-scroll')?.scrollLeft,
+      } : {}),
+    } : null;
+    if (inspect) {
+      recordsListReturn ??= origin;
+      recordsInspectorReadId = id;
+    }
     const seq = ++recordsSeq;
     recordsState = { ...recordsState, loading: true, error: undefined, deletePending: false };
     render();
-    if (carryFocus) {
+    if (fromList) {
       focusRecordsAction(RECORDS_OPEN_RECORD_ACTION, RECORDS_ID_ATTR, id);
     }
+    let confirmed = false;
     try {
       const { record, diagnostics } = await caller({ owner: namespace.owner, entity, id });
       if (disposed || seq !== recordsSeq) return;
+      confirmed = record !== null;
       recordsState = {
         ...recordsState,
-        detail: record,
-        diagnostics,
+        ...(record !== null || !inspect ? { detail: record, diagnostics } : {}),
         loading: false,
         ...(record === null ? { error: 'This record no longer exists.' } : {}),
       };
@@ -12279,17 +12973,55 @@ export const bootstrapDataRoute = (
       if (disposed || seq !== recordsSeq) return;
       recordsState = { ...recordsState, loading: false, error: humanizeRpcError(error) };
     }
-    const stillOwnsFocus =
-      carryFocus
-      && activeRecordsAction() === RECORDS_OPEN_RECORD_ACTION
-      && (doc.activeElement as HTMLElement | null)?.getAttribute(RECORDS_ID_ATTR) === id;
-    render();
-    if (stillOwnsFocus) {
-      if (recordsState.detail === null) {
-        focusRecordsAction(RECORDS_OPEN_RECORD_ACTION, RECORDS_ID_ATTR, id);
-      } else {
-        focusRecordsDetailHeading();
+    recordsInspectorReadId = null;
+    const settledFocus = activeRecordsFocusIdentity();
+    if (confirmed) {
+      recordsListReturn ??= origin;
+      if (recordsListReturn !== null) {
+        if (fromList) recordsListReturn.id = id;
+        // A series of selections shares one history entry above its results.
+        syncDataHash(dataHistory.current().hash === recordsListReturn.hash);
       }
+    }
+    render();
+    if (!confirmed || settledFocus?.id !== id) return;
+    const focusedRow = settledFocus.action === RECORDS_OPEN_RECORD_ACTION;
+    if ((fromList && focusedRow && (activation === 'keyboard' || !inspect))
+      || (inspect && settledFocus.action === RECORDS_OPEN_REFERENCE_ACTION)) {
+      focusRecordsDetailHeading(fromList && !recordsDesktopBreakpoint?.matches ? 'start' : 'nearest');
+    } else if (inspect && focusedRow) {
+      routeRoot.querySelector?.('#records-detail-title')?.scrollIntoView?.({ block: 'nearest' });
+    }
+  };
+
+  const closeRecordsRecord = (alreadyNavigated = false): void => {
+    const origin = recordsListReturn;
+    const recordId = origin?.id ?? recordsState.detail?.id;
+    recordsListReturn = null;
+    recordsInspectorReadId = null;
+    recordsSeq += 1;
+    recordsState = {
+      ...recordsState, detail: null, diagnostics: null, loading: false,
+      deletePending: false, deleting: false, error: undefined,
+    };
+    if (origin === null) {
+      syncDataHash();
+    } else {
+      // Browser Back keeps the current list and its page handles in this mount.
+      const address = dataAddress(origin.hash, undefined);
+      if (alreadyNavigated) dataHistory.adopt(address);
+      else dataHistory.navigate(address, { intent: 'replace' });
+    }
+    render();
+    if (origin?.scrollTop !== undefined) {
+      const host = workSearchScrollHost();
+      if (host) host.scrollTop = origin.scrollTop;
+    }
+    if (recordId !== undefined) focusRecordsListReturn(recordId,
+      origin?.scrollTop === undefined || recordId !== origin.firstId || !recordsDesktopBreakpoint?.matches);
+    if (origin?.scrollLeft !== undefined) {
+      const table = routeRoot.querySelector?.('.records-table-scroll');
+      if (table) table.scrollLeft = origin.scrollLeft;
     }
   };
 
@@ -12336,6 +13068,8 @@ export const bootstrapDataRoute = (
         deletePending: false,
         deleting: false,
       };
+      recordsListReturn = null;
+      syncDataHash();
       // Re-read namespace quota/generations after the atomic delete.
       await loadRecords(settledAction === null ? undefined : record.id);
       deleted = true;
@@ -12748,6 +13482,7 @@ export const bootstrapDataRoute = (
     loadingMoreContacts = false;
     loadingMoreWorkEntities = false;
     loadingMoreFormResponses = false;
+    memoryLoadingMore = false;
 
     // D-198 Slice 1b — the Memory lens loads the feed, not a tab collection.
     // Orthogonal to `activeTab`; the feed drives its own loading + error state.
@@ -12933,9 +13668,16 @@ export const bootstrapDataRoute = (
     searchReminderTriage.reset(); searchPromptBulk.resetSelection();
     universalSearchType = type; universalSearchTypeGeneration++;
     promptOpenSequence++; promptOpening = undefined; promptOpenError = undefined;
+    if (type === 'follow_up' && universalSearchTimer === null) void followUpSearch.load(universalSearchQuery.trim(), false, false);
     if (type === 'scheduled_prompt' && !universalSearchQuery.trim()) void promptSearch.load('');
     decisionOpenSequence++; decisionOpening = undefined; decisionOpenError = undefined;
     if (type === 'decision') void decisionSearch.load(universalSearchQuery.trim());
+    runOpenSequence++; runOpening = undefined; runOpenError = undefined;
+    connectionOpenSequence++; connectionOpening = undefined; connectionOpenError = undefined;
+    savedViewOpenSequence++; savedViewOpening = undefined; savedViewOpenError = undefined;
+    if (type === 'saved_view' && universalSearchTimer === null) void savedViewSearch.load(universalSearchQuery.trim());
+    if (type === 'connection' && universalSearchTimer === null) void connectionSearch.load(universalSearchQuery.trim());
+    if (type === 'run' && universalSearchTimer === null) void runSearch.load(universalSearchQuery.trim());
     if (type === 'reminder' && !universalSearchQuery.trim()) void loadReminderSearch();
     mailMessageSurface.cancelCreateOpen(); universalDraftOpening = undefined; universalDraftOpenError = undefined;
     if (recoveryDraftOpening?.mail) recoveryDraftOpening = undefined;
@@ -12948,11 +13690,14 @@ export const bootstrapDataRoute = (
 
   const retireUniversalSearch = (finishHistory = true, promptQuery?: string): void => {
     decisionSearch.reset(); decisionOpenSequence++; decisionOpening = undefined; decisionOpenError = undefined;
+    savedViewSearch.reset(); savedViewOpenSequence++; savedViewOpening = undefined; savedViewOpenError = undefined;
+    connectionSearch.reset(); connectionOpenSequence++; connectionOpening = undefined; connectionOpenError = undefined;
+    runSearch.reset(); runOpenSequence++; runOpening = undefined; runOpenError = undefined;
     searchReminderTriage.reset(); searchPromptBulk.resetSelection();
     searchRecordPreviews.reset(false);
     if (finishHistory) finishRecentSearch();
     universalExactLink = undefined; universalExactOpening = false; universalExactError = undefined;
-    assetSearch.reset(); chatSearch.reset(); reminderSearch.reset();
+    assetSearch.reset(); chatSearch.reset(); reminderSearch.reset(); followUpSearch.reset();
     if (promptQuery !== undefined) promptSearch.setQuery(promptQuery); else promptSearch.reset();
     promptOpenSequence++; promptOpening = undefined; promptOpenError = undefined;
     draftSearch.reset(); mailMessageSurface.cancelCreateOpen();
@@ -12987,20 +13732,31 @@ export const bootstrapDataRoute = (
     universalSearchError = undefined;
   };
 
-  const runUniversalSearch = async (resume = { records: true, work: true, contacts: true, capabilities: true, drafts: true, chats: true, reminders: true, prompts: false, decisions: false }): Promise<void> => {
+  const runUniversalSearch = async (resume = { records: true, work: true, contacts: true, capabilities: true, drafts: true, chats: true, reminders: true, prompts: false, decisions: false, runs: true, connections: true, savedViews: true, followUps: true }): Promise<void> => {
     if (disposed || activeLens !== 'data' || activeTab !== 'search') return;
     const caller = opts.collectionSearchAllCaller;
     const query = universalSearchQuery.trim();
+    savedViewOpenSequence++; savedViewOpening = undefined; savedViewOpenError = undefined;
+    connectionOpenSequence++; connectionOpening = undefined; connectionOpenError = undefined;
+    runOpenSequence++; runOpening = undefined; runOpenError = undefined;
     decisionOpenSequence++; decisionOpening = undefined; decisionOpenError = undefined;
     promptOpenSequence++; promptOpening = undefined; promptOpenError = undefined;
     if (query === '') {
+      const followUps = followUpSearch.snapshot();
       const prompts = promptSearch.snapshot();
       const reminders = reminderSearch.snapshot();
       const decisions = decisionSearch.snapshot();
+      const runs = runSearch.snapshot();
+      const connections = connectionSearch.snapshot();
+      const savedViews = savedViewSearch.snapshot();
       retireUniversalSearch();
+      if (universalSearchType === 'follow_up') { followUpSearch.restore(followUps); await followUpSearch.load('', false, resume.followUps); }
       if (universalSearchType === 'scheduled_prompt') { promptSearch.restore(prompts); await promptSearch.load('', resume.prompts); }
       if (universalSearchType === 'reminder') { reminderSearch.restore(reminders); await loadReminderSearch(); }
       if (universalSearchType === 'decision') { decisionSearch.restore(decisions); await decisionSearch.load('', resume.decisions); }
+      if (universalSearchType === 'saved_view') { savedViewSearch.restore(savedViews); await savedViewSearch.load('', resume.savedViews); }
+      if (universalSearchType === 'connection') { connectionSearch.restore(connections); await connectionSearch.load('', resume.connections); }
+      if (universalSearchType === 'run') { runSearch.restore(runs); await runSearch.load('', false, resume.runs); }
       render();
       return;
     }
@@ -13186,7 +13942,7 @@ export const bootstrapDataRoute = (
       universalSearchCapabilitiesError = capabilityErrors.length > 0 ? capabilityErrors.join(' ') : undefined;
       if (activeTab === 'search') render();
     })();
-    await Promise.all([recordSearch, workSearch, capabilitySearch, resume.contacts ? loadUniversalContactSearch(true) : Promise.resolve(), assetSearch.load(query), resume.drafts ? draftSearch.load(query) : Promise.resolve(), (resume.chats || savedChatSearch) ? chatSearch.load(query) : Promise.resolve(), resume.reminders ? loadReminderSearch() : Promise.resolve(), promptSearch.load(query, resume.prompts), decisionSearch.load(query, resume.decisions)]);
+    await Promise.all([recordSearch, workSearch, capabilitySearch, followUpSearch.load(query, false, resume.followUps), resume.contacts ? loadUniversalContactSearch(true) : Promise.resolve(), assetSearch.load(query), resume.drafts ? draftSearch.load(query) : Promise.resolve(), (resume.chats || savedChatSearch) ? chatSearch.load(query) : Promise.resolve(), resume.reminders ? loadReminderSearch() : Promise.resolve(), promptSearch.load(query, resume.prompts), decisionSearch.load(query, resume.decisions), runSearch.load(query, false, resume.runs), connectionSearch.load(query, resume.connections), savedViewSearch.load(query, resume.savedViews)]);
   };
 
   const loadUniversalContactSearch = async (replace = false): Promise<void> => {
@@ -13295,7 +14051,13 @@ export const bootstrapDataRoute = (
       || universalSearchType !== 'all' || caller === undefined || query === '' || universalSearchMarketLoading
       || universalSearchLoading || universalSearchCapabilitiesLoading
       || universalSearchCapabilitiesError !== undefined
+      // Reply watches on a server without them are certainly empty (see `followUpsUncertain`, universal-search.ts).
+      || opts.mailMessageCallers?.followUps && !followUpSearch.state().unsupported && (followUpSearch.state().loading || !followUpSearch.state().loaded || followUpSearch.state().error || followUpSearch.state().next_cursor || followUpSearch.state().matches.length > 0)
       || promptSearch.state().loading || promptSearch.state().error !== undefined || promptSearch.state().unsupported || promptSearch.state().matches.length > 0
+      || opts.settingsSearchTargets && settingsSearchResults(opts.settingsSearchTargets, universalSearchQuery).matches.length > 0
+      || opts.savedViewSearchCallers && (savedViewSearchUncertain(savedViewSearch.state()) || savedViewSearch.state().matches.length > 0)
+      || opts.connectionSearchCallers && (connectionSearchUncertain(connectionSearch.state()) || connectionSearch.state().matches.length > 0)
+      || opts.runSearchCallers && (runSearch.state().loading || !runSearch.state().loaded || runSearch.state().unsupported || runSearch.state().error || runSearch.state().stale || runSearch.state().next_cursor || runSearch.state().matches.length > 0)
       || opts.decisionSearchCallers && (decisionSearch.state().loading || !decisionSearch.state().loaded || decisionSearch.state().incomplete || decisionSearch.state().matches.length > 0)
       || reminderSearch.state().loading || reminderSearch.state().error !== undefined || reminderSearch.state().unsupported || reminderSearch.state().next_cursor || reminderSearch.state().matches.length > 0
       || chatSearch.state().loading || chatSearch.state().error !== undefined || chatSearch.state().unsupported || chatSearch.state().incomplete || chatSearch.state().next_cursor || chatSearch.state().matches.length > 0
@@ -13439,7 +14201,7 @@ export const bootstrapDataRoute = (
    * The shared controller therefore cannot mistake first paint for a new detail
    * visit, while later source-record canonicalization remains a replace. */
   const initialDataEntity = activeLens === 'data'
-    ? opts.initialEntityId
+    ? opts.initialRecordsTarget?.id ?? opts.initialEntityId
     : undefined;
   const dataHistory = createHierarchicalHistory({
     initial: dataAddress(
@@ -13447,6 +14209,8 @@ export const bootstrapDataRoute = (
         ? serializeShellRoute('views', opts.savedView.id)
         : activeLens === 'memory'
         ? serializeShellRoute('data', 'memory')
+        : activeTab === 'records' && opts.initialRecordsTarget
+        ? recordsRecordAddress(opts.initialRecordsTarget)
         : activeTab === 'mail_fact'
         ? serializeShellRoute('data', activeTab, ...mailFacts.addressSegments())
         : serializeShellRoute('data', activeTab, initialDataEntity),
@@ -13530,7 +14294,7 @@ export const bootstrapDataRoute = (
                   : {}),
               })
             : serializeShellRoute('data', activeTab, deepLinkEntity);
-    const fromBookingSearch = workSearchReturn?.kind === 'booking' && deepLinkEntity === workSearchReturn.id && dataHistory.current().hash === workSearchReturn.hash;
+    const fromWorkSearch = activeTab === workSearchReturn?.kind && deepLinkEntity === workSearchReturn.id && dataHistory.current().hash === workSearchReturn.hash;
     const fromRecentWork = workSearchReturn?.recent && activeTab === workSearchReturn.kind && deepLinkEntity === workSearchReturn.id
       && dataHistory.current().hash === serializeShellRoute('data', 'search');
     const fromRecentSource = recentSourceReturn?.record.kind === activeTab && dataHistory.current().hash === recentSourceReturn.hash;
@@ -13551,7 +14315,7 @@ export const bootstrapDataRoute = (
     const fromSavedView = deepLinkEntity !== undefined && savedViewLinked && savedViewBinding !== undefined && readerView !== null
       && sameSavedDataViewDefinition(readerView, savedViewBinding.definition)
       && dataHistory.current().hash === serializeShellRoute('views', savedViewBinding.id);
-    dataHistory.navigate(dataAddress(hash, deepLinkEntity), forcePush || fromBookingSearch || fromRecentWork || fromRecentSource || fromSearch || fromAgenda || fromDocumentSearch || fromProject || fromNote || fromBooking || fromReminder || fromSavedView ? { intent: 'push' } : undefined);
+    dataHistory.navigate(dataAddress(hash, deepLinkEntity), forcePush || fromWorkSearch || fromRecentWork || fromRecentSource || fromSearch || fromAgenda || fromDocumentSearch || fromProject || fromNote || fromBooking || fromReminder || fromSavedView ? { intent: 'push' } : undefined);
   };
 
   const cancelContactEditOpen = (): void => {
@@ -13588,7 +14352,7 @@ export const bootstrapDataRoute = (
       return;
     }
     if (savingFormResponse) return;
-    if (formResponseDiscardGuardOpen) {
+    if (formResponseDiscard) {
       focusFormResponseDiscardGuard();
       return;
     }
@@ -13600,7 +14364,7 @@ export const bootstrapDataRoute = (
       formResponseDetailId !== null
       && hasUnsavedFormResponseEditor()
     ) {
-      showFormResponseDiscardGuard(tab);
+      showFormResponseDiscardGuard({ kind: 'tab', tab });
       return;
     }
     if (tab === 'search' && exactSearchReturn && !preserveWorkSearch) { returnToExactLinkSearch(); return; }
@@ -13649,6 +14413,8 @@ export const bootstrapDataRoute = (
     resetFormResponseAutomation();
     formResponseDetailSeq += 1;
     formResponseDetailId = null;
+    formResponseListOrigin = null;
+    formResponseEditorOpen = false;
     formResponseDetail = null;
     formResponseEditorDraft = null;
     retireFormResponseEditorDraft();
@@ -13658,6 +14424,8 @@ export const bootstrapDataRoute = (
     formResponseSaveError = null;
     bookingDetailSeq += 1;
     bookingDetailId = null;
+    bookingListOrigin = null;
+    loadedBookingListScope = null;
     bookingDetail = null;
     bookingDetailError = null;
     loadingBookingDetail = false;
@@ -13783,6 +14551,7 @@ export const bootstrapDataRoute = (
     if (afterLeave && contactDialog !== null) { contactDialog = null; retireContactDialogDraft(); }
     contactDetail = null; loadingContactDetail = false; cancelContactEditOpen(); suspendContactActivity();
     bookingDetailSeq++; bookingDetail = null; bookingDetailId = null; loadingBookingDetail = false;
+    bookingListOrigin = null;
     bookingReaderReturn = null; bookingActions.reset(); bookingReader.reset(); bookingChat.reset();
     workSearchReturn = null;
     loadGeneration += 1;
@@ -13811,7 +14580,7 @@ export const bootstrapDataRoute = (
     const origin = { hash: dataHistory.current().hash, sequence, query: universalSearchQuery, kind, id, scrollTop };
     workSearchReturn = origin;
     const previousNavigation = navigationGeneration;
-    const opening = selectTab(kind, false, undefined, true, undefined, kind === 'booking');
+    const opening = selectTab(kind, false, undefined, true, undefined, true);
     const navigation = navigationGeneration;
     if (navigation === previousNavigation) { workSearchReturn = null; return; }
     await opening;
@@ -13828,19 +14597,22 @@ export const bootstrapDataRoute = (
   const openWorkReaderNeighbor = async (kind: WorkReaderKind, id: string): Promise<boolean> => {
     const from = activeWorkReader(), owner = workReaderNavigation, navigation = navigationGeneration;
     if (!from || from.kind !== kind || !canLeaveWorkReader()) return false;
+    const sequence = workEntityDialogOpenSeq, scope = workReaderScope()?.key;
     const origin = workSearchReturn, source = origin ? null : workEntityState.selected_source_id;
-    const find = kind === 'task' ? taskFind.state() : noteFind.state();
-    const query = origin?.query.trim() ?? (find.open ? find.query : undefined);
+    const find = kind === 'task' ? taskFind : kind === 'note' ? noteFind : undefined;
+    const findState = find?.state();
+    const query = origin?.query.trim() ?? (findState?.open ? findState.query : undefined);
     const response = opts.workEntityGetCaller ? await opts.workEntityGetCaller({ kind, id })
       : { entity: workEntities.find(entity => entity._kind === kind && entity.id === id) ?? null };
-    if (owner !== workReaderNavigation || navigation !== navigationGeneration || activeWorkReader()?.id !== from.id || !canLeaveWorkReader()) return false;
+    if (owner !== workReaderNavigation || navigation !== navigationGeneration || sequence !== workEntityDialogOpenSeq
+      || scope !== workReaderScope()?.key || activeWorkReader()?.id !== from.id || !canLeaveWorkReader()) return false;
     const entity = response.entity;
     if (!entity || entity._kind !== kind || entity.id !== id) throw new Error(`This ${kind} is no longer available. Return to the list to refresh it.`);
     if (source !== null && entity.source_id !== source) throw new Error(`This ${kind} is no longer in the selected source. Return to the list to refresh it.`);
     await openEditWorkEntityDialog(kind, id, 'read', false, entity, 'source_freshness' in response ? response.source_freshness : undefined);
     if (owner !== workReaderNavigation || navigation !== navigationGeneration || activeWorkReader()?.id !== id) return false;
     if (origin && workSearchReturn === origin) origin.id = id;
-    if (query !== undefined) (kind === 'task' ? taskFind : noteFind).find(query);
+    if (query !== undefined) find?.find(query);
     return true;
   };
 
@@ -13891,16 +14663,29 @@ export const bootstrapDataRoute = (
       if (filePreviewAbort === abort) { filePreviewAbort = null; filePreviewRecord = null; }
     });
   };
-  const previewListedFile = (fileId: string, opener: HTMLElement): void => {
+  const openListedFilePreview = (target: FilePreviewTarget, opener: HTMLElement): void => {
+    if (!opts.filePreviewCallers) return;
+    filePreviewAbort?.abort(); const abort = new AbortController(); filePreviewAbort = abort;
+    const visit = { id: target.record_id, slug: explorerSelectedSlug, fromList: true };
+    filePreviewRecord = visit;
+    // WebKit pointer clicks need explicit focus for the viewer's return target.
+    opener.focus({ preventScroll: true });
+    void openFilePreview(doc, target, opts.filePreviewCallers, abort.signal).finally(() => {
+      if (filePreviewAbort !== abort) return;
+      if (target.selection_revision && filePreviewRecord === visit && !opener.isConnected && doc.activeElement === doc.body) {
+        savedFilePreviewPane?.focusRow(target.record_id);
+      }
+      filePreviewAbort = null; filePreviewRecord = null;
+    });
+  };
+  const previewListedFile = (fileId: string, opener: HTMLElement, keyboard: boolean): void => {
     const record = explorerRecords.find(row => row.record_id === fileId);
     if (!record || activeTab !== 'files' || explorerDetail !== null || !opts.filePreviewCallers || fileBatch.busy()) return;
-    filePreviewAbort?.abort(); const abort = new AbortController(); filePreviewAbort = abort;
-    filePreviewRecord = { id: fileId, slug: explorerSelectedSlug, fromList: true };
-    // WebKit pointer clicks need not focus a button; the viewer returns to this row when it closes.
-    opener.focus({ preventScroll: true });
-    void openFilePreview(doc, { record_id: fileId, filename: String(record.hot_fields.filename ?? 'File preview') }, opts.filePreviewCallers, abort.signal).finally(() => {
-      if (filePreviewAbort === abort) { filePreviewAbort = null; filePreviewRecord = null; }
-    });
+    if (explorerSelectedSlug === SAVED_FILES_SLUG) {
+      const file = savedFiles.snapshot().files.find(row => row.file_id === fileId);
+      if (file && savedFilePreviewPane?.open(file, opener, keyboard)) return;
+    }
+    openListedFilePreview({ record_id: fileId, filename: String(record.hot_fields.filename ?? 'File preview') }, opener);
   };
   const openDocumentSearchFile = async (fileId: string): Promise<void> => {
     if (activeTab !== 'search' || !documentSearch.state().matches.some(hit => hit.file_ref === fileId)) return;
@@ -13960,7 +14745,7 @@ export const bootstrapDataRoute = (
       focusMemoryEditAction(memoryEditOpeningId);
       return;
     }
-    if (formResponseDiscardGuardOpen) {
+    if (formResponseDiscard) {
       focusFormResponseDiscardGuard();
       return;
     }
@@ -14024,6 +14809,9 @@ export const bootstrapDataRoute = (
       focusMemoryEditAction(memoryEditOpeningId);
       return;
     }
+    clearMemoryDetail();
+    memoryPendingDeleteId = undefined;
+    dropMemoryDeleteCheck();
     memoryOriginFilter = filter;
     memoryFilteringOrigin = filter;
     memoryEntries = [];
@@ -14345,9 +15133,7 @@ export const bootstrapDataRoute = (
     if (memoryCompose.submitting) return;
     memoryComposeReturnFocus = { kind: 'add' };
     memoryCompose = { open: true, mode: 'create', kind: '', summary: '', body: '', submitting: false };
-    memoryDetailOpenSeq += 1;
-    memoryDetail = null;
-    memoryDetailReturnId = null;
+    clearMemoryDetail();
     memoryPendingDeleteId = undefined;
     dropMemoryDeleteCheck();
     render();
@@ -14426,9 +15212,7 @@ export const bootstrapDataRoute = (
       memoryEditOpeningId = null;
       memoryEditError = null;
       memoryComposeReturnFocus = { kind: 'edit', memoryId: memory_id };
-      memoryDetailOpenSeq += 1;
-      memoryDetail = null;
-      memoryDetailReturnId = null;
+      clearMemoryDetail();
       render();
       captureMemoryComposeBaseline();
       focusMemoryComposeField('kind');
@@ -14541,6 +15325,15 @@ export const bootstrapDataRoute = (
     heading?.scrollIntoView?.({ block: 'nearest' });
   };
 
+  const findMemoryReaderFocus = (scope: Element | null | undefined, previous: HTMLElement): HTMLElement | undefined => {
+    if (!scope) return undefined;
+    const keys = [DATA_ROUTE_ACTION_ATTR, MEMORY_ROW_ID_ATTR, MEMORY_FILTER_VALUE_ATTR, MEMORY_LENS_VALUE_ATTR, 'href'];
+    return Array.from(scope.querySelectorAll?.<HTMLElement>(
+      `button, a[href], [${MEMORY_DETAIL_HEADING_ATTR}], .memory-reader-entries`,
+    ) ?? []).find(candidate => candidate.tagName === previous.tagName
+      && keys.every(key => candidate.getAttribute(key) === previous.getAttribute(key)));
+  };
+
   const focusMemoryDetailReturnTarget = (memoryId: string | null): void => {
     const queryable = routeRoot as unknown as {
       querySelector?: (selector: string) => HTMLElement | null;
@@ -14553,12 +15346,8 @@ export const bootstrapDataRoute = (
         ) ?? []).find(
           (candidate) => candidate.getAttribute(MEMORY_ROW_ID_ATTR) === memoryId,
         ) ?? null;
-    const add = queryable.querySelector?.(
-      `[${DATA_ROUTE_ACTION_ATTR}="${MEMORY_ADD_ACTION}"]`,
-    ) ?? null;
-    const target = view ?? add;
-    target?.focus?.({ preventScroll: true });
-    target?.scrollIntoView?.({ block: 'nearest' });
+    if (focusListTarget(view)) view?.scrollIntoView?.({ block: 'nearest' });
+    else focusMemoryOriginFilter(memoryOriginFilter);
   };
 
   /** Open the detail view; lazy-loads the full body via `memory.get`. */
@@ -14575,7 +15364,6 @@ export const bootstrapDataRoute = (
     const seq = ++memoryDetailOpenSeq;
     memoryPendingDeleteId = undefined;
     dropMemoryDeleteCheck();
-    memoryDetailReturnId = memory_id;
     memoryDetail = { memory_id, loading: true };
     render();
     focusMemoryDetailHeading();
@@ -14588,7 +15376,6 @@ export const bootstrapDataRoute = (
       ) return;
       memoryDetail = { memory_id, loading: false, entry };
       render();
-      focusMemoryDetailHeading();
     } catch (err) {
       if (
         disposed
@@ -14597,7 +15384,6 @@ export const bootstrapDataRoute = (
       ) return;
       memoryDetail = { memory_id, loading: false, error: errMessage(err) };
       render();
-      focusMemoryDetailHeading();
     }
   };
 
@@ -14606,10 +15392,8 @@ export const bootstrapDataRoute = (
       focusMemoryDeleteConfirm(memoryDeletingId);
       return;
     }
-    const returnId = memoryDetailReturnId ?? memoryDetail?.memory_id ?? null;
-    memoryDetailOpenSeq += 1;
-    memoryDetail = null;
-    memoryDetailReturnId = null;
+    const returnId = memoryDetail?.memory_id ?? null;
+    clearMemoryDetail();
     memoryPendingDeleteId = undefined;
     dropMemoryDeleteCheck();
     render();
@@ -14750,9 +15534,7 @@ export const bootstrapDataRoute = (
       await deleteCaller({ memory_id });
       if (disposed) return;
       if (memoryDetail?.memory_id === memory_id) {
-        memoryDetailOpenSeq += 1;
-        memoryDetail = null;
-        memoryDetailReturnId = null;
+        clearMemoryDetail();
       }
       memoryPendingDeleteId = undefined;
       memoryDeletingId = null;
@@ -14925,9 +15707,7 @@ export const bootstrapDataRoute = (
   const openMemoryImport = (): void => {
     memoryImport = { open: true, text: '', submitting: false };
     memoryCompose = { ...memoryCompose, open: false };
-    memoryDetailOpenSeq += 1;
-    memoryDetail = null;
-    memoryDetailReturnId = null;
+    clearMemoryDetail();
     memoryPendingDeleteId = undefined;
     dropMemoryDeleteCheck();
     render();
@@ -15443,6 +16223,10 @@ export const bootstrapDataRoute = (
     ) ?? dialog?.querySelector('.work-entity-dialog-title') ?? null) as (
       HTMLElement | null
     );
+    if (dialog?.classList?.contains('work-entity-reader--inline')
+      && doc.defaultView?.getComputedStyle?.(dialog).position === 'sticky') {
+      queryable.querySelector?.('.work-entity-list-row-button[aria-current="true"]')?.scrollIntoView?.({ block: 'nearest' });
+    }
     target?.focus?.({ preventScroll: true });
     target?.scrollIntoView?.({ block: 'nearest' });
   };
@@ -15484,7 +16268,7 @@ export const bootstrapDataRoute = (
     const action = origin.mode === 'create'
       ? 'open-create-work-entity-dialog'
       : origin.kind === 'booking'
-        ? 'edit-booking-detail'
+        ? bookingDetailId === null ? 'open-work-entity-detail' : 'edit-booking-detail'
         : 'open-edit-work-entity';
     const exact = Array.from(queryable.querySelectorAll?.(
       `[${SHARED_ACTION_ATTR}="${action}"]`,
@@ -15624,8 +16408,7 @@ export const bootstrapDataRoute = (
     const record = response.entity, id = remindersSurface.detailId();
     if (disposed || activeTab !== 'reminder' || !id || !record || (record._kind !== 'task' && record._kind !== 'commitment')
       || hasDataInFlightWork() || !remindersSurface.beforeLeave()) return;
-    const origin = { hash: dataHistory.current().hash, id, kind: record._kind, recordId: record.id,
-      scrollTop: workSearchScrollHost()?.scrollTop ?? 0 };
+    const origin = { hash: dataHistory.current().hash, id, kind: record._kind, recordId: record.id, ...captureReminderReturn() };
     const previous = navigationGeneration;
     await selectTab(record._kind, false, undefined, false, undefined, true);
     if (disposed || navigationGeneration !== previous + 1 || (activeTab as DataTabId) !== record._kind) return;
@@ -15633,16 +16416,15 @@ export const bootstrapDataRoute = (
     opts.todayReminderNavigation?.follow(id, serializeShellRoute('data', record._kind, record.id));
     await openEditWorkEntityDialog(record._kind, record.id, 'read', false, record, response.source_freshness);
   };
-  const openReminderMail = async (message: MailMessageSnapshot, ref: ReminderMailReference): Promise<void> => {
+  const openReminderMail = async (message: MailMessageSnapshot, ref: ReminderMailReference, current: () => boolean): Promise<void> => {
     const id = remindersSurface.detailId(), navigation = navigationGeneration;
-    if (disposed || activeTab !== 'reminder' || !id || !opts.collectionGetCaller || !remindersSurface.beforeLeave()) return;
+    if (!current() || !id || !opts.collectionGetCaller) return;
     const response = await opts.collectionGetCaller({ platform: 'mail', slug: ref.slug, record_id: ref.record_id });
-    if (disposed || activeTab !== 'reminder' || navigation !== navigationGeneration || remindersSurface.detailId() !== id) return;
+    if (!current() || navigation !== navigationGeneration) return;
     const record = response.record;
     if (!record || record.record_id !== ref.record_id || record.source_id !== ref.source_id || record.received_at !== ref.received_at)
       throw new Error('This email was removed or replaced. Reopen it from Mail.');
-    const origin = { hash: dataHistory.current().hash, id, slug: ref.slug, recordId: ref.record_id,
-      scrollTop: workSearchScrollHost()?.scrollTop ?? 0 };
+    const origin = { hash: dataHistory.current().hash, id, slug: ref.slug, recordId: ref.record_id, ...captureReminderReturn() };
     await selectTab('mail', false, ref.slug, false, undefined, true);
     if (disposed || navigationGeneration !== navigation + 1 || (activeTab as DataTabId) !== 'mail') return;
     reminderMailReturn = origin;
@@ -15652,6 +16434,12 @@ export const bootstrapDataRoute = (
     await mailMessageSurface.open({ slug: ref.slug, record_id: ref.record_id, expected_reminder_ref: ref }, message);
     if (!disposed && activeReminderMail()) render();
   };
+  const restoreReminderReturn = (position: ReminderReturnPosition, target: 'linked-mail' | 'linked-record'): void => {
+    render();
+    const host = workSearchScrollHost(); if (host) host.scrollTop = position.scrollTop;
+    const pane = reminderPane(); if (pane && position.paneTop !== undefined) pane.scrollTop = position.paneTop;
+    routeRoot.querySelector<HTMLElement>(`[${REMINDERS_FOCUS_ATTR}="${target}"]`)?.focus({ preventScroll: true });
+  };
   const returnToMailReminder = (alreadyNavigated = false, afterLeave = false): boolean => {
     const origin = reminderMailReturn;
     if (!origin || !activeReminderMail() || disposed || hasDataInFlightWork()) return false;
@@ -15660,9 +16448,7 @@ export const bootstrapDataRoute = (
     loadGeneration++; navigationGeneration++; explorerSeq++;
     explorerDetail = null; activeTab = 'reminder'; loading = false;
     if (alreadyNavigated) dataHistory.adopt(dataAddress(origin.hash, origin.id)); else syncDataHash();
-    render();
-    const scroll = workSearchScrollHost(); if (scroll) scroll.scrollTop = origin.scrollTop;
-    routeRoot.querySelector<HTMLElement>('[data-recued-reminders-focus="linked-mail"]')?.focus({ preventScroll: true });
+    restoreReminderReturn(origin, 'linked-mail');
     return true;
   };
   const returnToReminder = (alreadyNavigated = false, afterLeave = false): boolean => {
@@ -15676,12 +16462,11 @@ export const bootstrapDataRoute = (
     workEntityState = closeDialogTransition(workEntityState); retireWorkEntityDialogDraft();
     activeTab = 'reminder'; loading = false;
     if (alreadyNavigated) dataHistory.adopt(dataAddress(origin.hash, origin.id)); else syncDataHash();
-    render();
-    const scroll = workSearchScrollHost(); if (scroll) scroll.scrollTop = origin.scrollTop;
-    routeRoot.querySelector<HTMLElement>('[data-recued-reminders-focus="linked-record"]')?.focus({ preventScroll: true });
+    restoreReminderReturn(origin, 'linked-record');
     return true;
   };
-  const closeWorkEntityDialog = (discardChanges = false, returnToNote = false, returnToCommitment = false, returnToTask = false): void => {
+  const closeWorkEntityDialog = (discardChanges = false, returnToNote = false, returnToCommitment = false, returnToTask = false,
+    commitmentListReturn?: { focusId: string; notice: string }): void => {
     if (activeSelectionNote()?.returning) return;
     if (workReminder.block()) return;
     if (projectWork?.taskActions.busy()) { focusProjectTaskStatus(); return; }
@@ -15689,6 +16474,7 @@ export const bootstrapDataRoute = (
       workEntityState.dialog === null
       || workEntityState.dialog.submitting === true
     ) return;
+    if (activeTab === 'commitment' && showWorkListReader() && !mailMessageSurface.beforeLeave()) return;
     if (workEntityDiscardGuardOpen && !discardChanges) {
       closeWorkEntityDiscardGuard();
       return;
@@ -15767,7 +16553,9 @@ export const bootstrapDataRoute = (
       if (discardChanges && activeTab === 'note') { noteMode = 'read'; workEntityDialogBaseline = null; }
       returnToRelatedWork(); return;
     }
-    const readerReturn = workSearchReturn ? null : workReaderNavigation.returnPosition();
+    const listReader = activeWorkListReader();
+    const readerReturn = listReader ? { kind: listReader.kind, id: commitmentListReturn?.focusId ?? listReader.id, scrollTop: workSearchScrollHost()?.scrollTop ?? 0 }
+      : workSearchReturn ? null : workReaderNavigation.returnPosition();
     workEntityState = closeDialogTransition(workEntityState);
     retireWorkEntityDialogDraft();
     if (blockerToday && opts.taskBlockerNavigation?.back(blockerToday)) return;
@@ -15793,6 +16581,7 @@ export const bootstrapDataRoute = (
     if (exactSearchReturn) { returnToExactLinkSearch(); return; }
     if (workSearchReturn) { returnToWorkSearch(); return; }
     pendingWorkReaderListReturn = readerReturn;
+    if (commitmentListReturn) commitmentNotice = commitmentListReturn.notice;
     syncDataHash();
     render();
     focusWorkEntityDialogReturnTarget();
@@ -15803,11 +16592,16 @@ export const bootstrapDataRoute = (
     if (mailBulk.busy()) { focusMailBatch(); return; }
     if (taskBulk.busy()) { focusTaskBatch(); return; }
     if (noteBulk.busy()) { focusNoteBatch(); return; }
+    if (showBookingListReader() && (loadingBookingDetail || hasDataInFlightWork() || !mailMessageSurface.beforeLeave())) return;
     const sourceId = resolveCreateDialogSourceId(
       workEntityState.kind, sourceOverride ?? workEntityState.selected_source_id,
       enabledSourcesForKind(sources, workEntityState.kind),
     );
     if (sourceId === null) return;
+    if (showWorkListReader() && !duplicate) {
+      if (hasDataInFlightWork()) return;
+      workReaderNavigation.reset();
+    }
     selectionNoteReturn = null; noteWriteRevision = undefined;
     recoveredDraftReturn = null;
     contactWorkReturn = null;
@@ -16499,6 +17293,7 @@ export const bootstrapDataRoute = (
     if (activeTab !== 'project' || !projectWork || workEntityState.dialog?.mode !== 'edit'
       || workEntityState.dialog.entity_id !== projectWork.project.id) return undefined;
     return { project: projectWork.project, sections: projectWork.sections, editing: projectEditing, attention: projectWork.attention?.view(), communication: projectWork.communication?.view(),
+      desktop_workspace: projectWorkspaceBreakpoint?.matches === true,
       source_label: sources.find(source => source.id === projectWork!.project.source_id)?.source_label ?? 'Source unavailable',
       stale: projectWork.project.sync_state === 'stale_unreachable'
         || projectWork.freshness !== undefined && !['fresh', 'local'].includes(projectWork.freshness.state),
@@ -16843,7 +17638,15 @@ export const bootstrapDataRoute = (
             && commitmentRelated === related && activeTab === 'commitment' && commitmentMode === 'read'
             && workEntityDialogEntity === entity;
           if (!stillReading()) return;
-          void refreshActive(true); related.refresh(); await related.load();
+          // Keep loaded pages when the fresh record still belongs in the same place.
+          const sameListPosition = entity.lifecycle_state === expected.lifecycle_state && entity.due_status === expected.due_status
+            && entity.direction === expected.direction && entity.promised_for_at === expected.promised_for_at
+            && entity.deleted_at === expected.deleted_at && (commitmentListSearch === ''
+              || entity.statement === expected.statement && entity.counterparty_contact_id === expected.counterparty_contact_id);
+          if (showWorkListReader() && sameListPosition) {
+            workEntities = workEntities.map(row => row._kind === 'commitment' && row.id === id ? entity : row);
+          } else void refreshActive(true);
+          related.refresh(); await related.load();
           if (!stillReading() || interaction !== commitmentReadingInteraction) return;
           const active = doc.activeElement as HTMLElement | null;
           const ownsFocus = active === doc.body || active?.getAttribute('data-commitment-related-key') === relatedKey;
@@ -16913,10 +17716,11 @@ export const bootstrapDataRoute = (
     commitmentReader.reset(); commitmentRelated.reset();
     commitmentReader = origin.commitmentReader; commitmentRelated = origin.commitmentRelated;
     commitmentViewFilters = { ...origin.commitmentFilters }; commitmentListFilter = { ...origin.commitmentAppliedFilters };
+    commitmentListSearch = origin.commitmentAppliedSearch;
     if (origin.entity._kind !== 'commitment' && (origin.taskDependency || origin.source || origin.workLink)) taskRelated.refreshTasks({ owner: true });
     opts.taskBlockerNavigation?.restore(origin.todayReturn);
     relatedWorkReturn = origin.parent;
-    bookingReaderReturn = null; bookingActions.reset(); bookingReader.reset(); bookingChat.reset(); bookingDetailSeq++;
+    bookingReaderReturn = null; bookingListOrigin = null; bookingActions.reset(); bookingReader.reset(); bookingChat.reset(); bookingDetailSeq++;
     const kind = origin.entity._kind;
     activeTab = kind; loading = false; errors = {};
     workEntityState = origin.page; workEntities = origin.entities; workEntityTotal = origin.total;
@@ -16925,9 +17729,13 @@ export const bootstrapDataRoute = (
     workEntityDiscardGuardOpen = false; noteMode = taskMode = commitmentMode = 'read'; noteDetailsOpen = taskDetailsOpen = false;
     taskNotice = undefined; taskDiscardToReader = false;
     noteNotice = undefined; noteCopying = false; noteCopySequence++; noteDiscardToReader = false;
-    if (kind !== 'commitment') workReaderNavigation.resume(kind, origin.entity.id);
+    workReaderNavigation.resume(kind, origin.entity.id);
     if (alreadyNavigated) dataHistory.adopt(dataAddress(origin.hash, origin.entity.id)); else syncDataHash();
     render(); captureWorkEntityDialogBaseline();
+    if (origin.listScrollTop !== undefined) {
+      const host = workSearchScrollHost();
+      if (host) host.scrollTop = origin.listScrollTop;
+    }
     if (kind !== 'commitment' && (origin.taskDependency || origin.source || origin.workLink)) { void taskRelated.load(); void refreshActive(true); }
     // Restore the reader immediately, then refresh without taking its focus.
     refreshRelatedReader(kind, origin.entity.id, origin.linkedRecord?.key);
@@ -16939,9 +17747,11 @@ export const bootstrapDataRoute = (
     workReaderCopy.reset();
     const origin: RelatedWorkOrigin = { parent: relatedWorkReturn, entity, hash: dataHistory.current().hash,
       page: workEntityState, entities: [...workEntities], total: workEntityTotal, project: projectWork,
+      listScrollTop: showWorkListReader() ? workSearchScrollHost()?.scrollTop : undefined,
       projectReturn: projectChildReturn, searchReturn: workSearchReturn, duplicate: duplicateContext,
       reader: noteReader, find: noteFind, related: noteRelated, taskReader, taskFind, taskRelated, readerNavigation: workReaderNavigation, mailWork: mailWorkReturn, calendarWork: calendarWorkReturn, taskBlocker: taskBlockerReturn,
       commitmentReader, commitmentRelated, commitmentFilters: { ...commitmentViewFilters }, commitmentAppliedFilters: { ...commitmentListFilter },
+      commitmentAppliedSearch: commitmentListSearch,
       todayReturn: opts.taskBlockerNavigation?.snapshot() };
     relatedWorkReturn = origin;
     workReaderNavigation.suspend(); workReaderNavigation = makeWorkReaderNavigation();
@@ -17087,6 +17897,7 @@ export const bootstrapDataRoute = (
     // Recovery data never enters here as a confirmed entity.
     confirmed?: WorkEntity,
     confirmedFreshness?: WorkEntityGetRpcResponse['source_freshness'],
+    listOrigin?: WorkReaderListOrigin,
   ): Promise<void> => {
     flushWorkReading();
     if (taskBlockerReturn && (kind !== 'task' || id !== taskBlockerReturn.dependency)) taskBlockerReturn = null;
@@ -17117,12 +17928,27 @@ export const bootstrapDataRoute = (
     noteDraft.suspend(); suspendWorkDrafts();
     retireRunVerificationForDifferentItem(kind, id);
     const seq = ++workEntityDialogOpenSeq;
+    const listGeneration = loadGeneration;
+    const listStillCurrent = () => {
+      if (!listOrigin) return true;
+      const scope = workReaderScope();
+      return scope?.generation === listOrigin.scope.generation && scope.key === listOrigin.scope.key
+        && (kind !== 'commitment' || (listGeneration === loadGeneration && scope.ready !== false && scope.ids.includes(id)));
+    };
+    const finishFailedRead = () => {
+      pendingWorkEntityDialogOpen = null;
+      loadingWorkEntityDetail = false;
+      if (listOrigin && activeWorkReader()?.kind === 'commitment' && workEntityDialogEntity?._kind === 'commitment') {
+        bindCommitmentFollowUp(workEntityDialogEntity);
+      }
+    };
     const taskBeingRead = kind === 'task' && taskMode === 'read' && workEntityDialogEntity?._kind === 'task' && workEntityDialogEntity.id === id ? workEntityDialogEntity : null;
     if (kind === 'task') taskNotice = undefined;
     if (kind === 'note') { noteCopying = false; noteCopySequence += 1; noteNotice = undefined; }
     if (kind !== 'booking') {
       bookingDetailSeq += 1;
       bookingDetailId = null;
+      bookingListOrigin = null;
       bookingDetail = null;
       bookingDetailError = null;
       loadingBookingDetail = false;
@@ -17156,8 +17982,8 @@ export const bootstrapDataRoute = (
         if (registered) sources = [...registered.sources];
       } catch (err) {
         if (disposed || seq !== workEntityDialogOpenSeq) return;
-        pendingWorkEntityDialogOpen = null;
-        loadingWorkEntityDetail = false;
+        finishFailedRead();
+        if (!listStillCurrent()) { render(); return; }
         errors = { ...errors, work_entities: errMessage(err) };
         if (kind === 'task' && noteIntent !== 'read') taskNotice = `Could not open the editor. ${errMessage(err)}`;
         if (kind === 'note' && noteIntent !== 'read') noteNotice = { kind: 'error', text: `Could not open the editor. ${errMessage(err)}` };
@@ -17173,13 +17999,22 @@ export const bootstrapDataRoute = (
     // A newer open (any kind) or a tab switch away happened while the fetch was
     // in flight → don't install this now-stale dialog / URL.
     if (disposed || seq !== workEntityDialogOpenSeq || activeTab !== kind) return;
+    if (!listStillCurrent()) {
+      finishFailedRead();
+      render();
+      return;
+    }
     if (entity === null || entity._kind !== kind || entity.id !== id) {
-      pendingWorkEntityDialogOpen = null;
-      loadingWorkEntityDetail = false;
+      finishFailedRead();
       errors = { ...errors, work_entities: `No ${kind} was returned for ${id}.` };
       render();
       if (!preserveFocus) focusWorkEntityDialogReturnTarget();
       return;
+    }
+    if (listOrigin && workEntityState.selected_source_id !== null && entity.source_id !== workEntityState.selected_source_id) {
+      finishFailedRead();
+      errors = { ...errors, work_entities: `This ${listOrigin.scope.kind} is no longer in the selected source. Refresh the list to see current results.` };
+      render(); focusWorkEntityDialogReturnTarget(); return;
     }
     if (taskBeingRead && noteIntent !== 'read' && (entity.source_id !== taskBeingRead.source_id || entity.source_record_id !== taskBeingRead.source_record_id || entity.created_at !== taskBeingRead.created_at)) {
       pendingWorkEntityDialogOpen = null; loadingWorkEntityDetail = false; taskNotice = 'This task changed identity. Close and reopen it before editing.'; render(); return;
@@ -17190,7 +18025,8 @@ export const bootstrapDataRoute = (
       getCanonicalSchema(kind),
     );
     workEntityDialogEntity = entity;
-    if (kind === 'task' || kind === 'note') workReaderNavigation.resume(kind, id);
+    if (listOrigin) workReaderNavigation.start(listOrigin.scope.kind, id, listOrigin.scrollTop, listOrigin);
+    if (kind === 'task' || kind === 'note' || kind === 'commitment') workReaderNavigation.resume(kind, id);
     noteCopying = false; noteCopySequence += 1; noteNotice = undefined; noteDiscardToReader = false;
     if (entity._kind === 'task') {
       bindWorkReading(entity, taskReader, taskFind, Boolean(confirmed || opts.workEntityGetCaller)); bindTaskRelated(entity, { source_freshness: openedFreshness });
@@ -17298,7 +18134,8 @@ export const bootstrapDataRoute = (
     bookingReader.capture(routeRoot, workSearchScrollHost());
     return { parent: bookingReaderReturn, response: bookingDetail, hash: dataHistory.current().hash,
       state: workEntityState, entities: [...workEntities], total: workEntityTotal, errors: { ...errors },
-      position: { ...bookingReader.snapshot(), focus }, target, search: workSearchReturn, lifecycle: bookingLifecycleFilter };
+      position: { ...bookingReader.snapshot(), focus }, target, search: workSearchReturn, lifecycle: bookingLifecycleFilter,
+      list: bookingListOrigin, scope: loadedBookingListScope };
   };
   const openBookingCustomer = async (contact: ContactRecord): Promise<void> => {
     if (!mailMessageSurface.beforeLeave()) return;
@@ -17334,11 +18171,18 @@ export const bootstrapDataRoute = (
     bookingReaderReturn = origin.parent; activeTab = 'booking';
     workEntityState = origin.state; workEntities = origin.entities; workEntityTotal = origin.total; errors = { ...origin.errors };
     workSearchReturn = origin.search; bookingLifecycleFilter = origin.lifecycle;
+    bookingListOrigin = origin.list; loadedBookingListScope = origin.scope;
+    loading = false; loadingMoreWorkEntities = false;
     bookingActions.reset(); bookingReader.reset();
     bookingDetailId = expected.id; bookingDetail = null; bookingDetailError = null; loadingBookingDetail = true;
     resetBookingManageLinkState(); const sequence = ++bookingDetailSeq, navigation = navigationGeneration, interaction = bookingReadingInteraction;
     if (alreadyNavigated) dataHistory.adopt(dataAddress(origin.hash, expected.id)); else syncDataHash();
     render();
+    // A customer or history visit can interrupt a list read for the newly selected filters.
+    if (origin.list && loadedBookingListScope !== bookingListScope()) {
+      bookingSearchRefresh.cancel();
+      pendingLoadPromise = refreshActive(true);
+    }
     const current = () => !disposed && activeTab === 'booking' && navigation === navigationGeneration && sequence === bookingDetailSeq && bookingDetailId === expected.id;
     void (async () => {
       try {
@@ -17358,8 +18202,17 @@ export const bootstrapDataRoute = (
     return true;
   };
 
-  const openBookingDetail = async (id: string, confirmed?: WorkEntityGetRpcResponse, preserveReturn = false): Promise<void> => {
-    if (!preserveReturn && bookingDetailId !== id) bookingReaderReturn = null;
+  const openBookingDetail = async (id: string, confirmed?: WorkEntityGetRpcResponse, preserveReturn = false,
+    listOrigin?: BookingListOrigin): Promise<void> => {
+    const sameBooking = bookingDetailId === id;
+    const listed = listOrigin ? workEntities.find(row => row._kind === 'booking' && row.id === id) : undefined;
+    let position: BookingReaderPosition | undefined;
+    if (sameBooking && bookingListOrigin && bookingDetail?.entity) {
+      bookingReader.capture(routeRoot, workSearchScrollHost());
+      position = bookingReader.snapshot();
+    }
+    if (!preserveReturn && !sameBooking) bookingReaderReturn = null;
+    bookingListOrigin = listOrigin ?? (sameBooking && !preserveReturn ? bookingListOrigin : null);
     bookingActions.reset(); bookingReader.reset();
     retireRunVerificationForDifferentItem('booking', id);
     const seq = ++bookingDetailSeq;
@@ -17374,7 +18227,7 @@ export const bootstrapDataRoute = (
     bookingDetailError = null;
     loadingBookingDetail = true;
     resetBookingManageLinkState();
-    syncDataHash();
+    syncDataHash(bookingListOrigin?.hash === dataHistory.current().hash);
     render();
     try {
       const response = confirmed ?? (opts.workEntityGetCaller !== undefined
@@ -17384,13 +18237,14 @@ export const bootstrapDataRoute = (
               workEntities.find((entity) => entity._kind === 'booking' && entity.id === id)
               ?? null,
           });
-      if (response.entity && (response.entity._kind !== 'booking' || response.entity.id !== id)) throw new Error('This booking could not be confirmed.');
       if (
         disposed
         || seq !== bookingDetailSeq
         || activeTab !== 'booking'
         || bookingDetailId !== id
       ) return;
+      if (listed?._kind === 'booking') requireSameBooking(listed, response);
+      else if (response.entity && (response.entity._kind !== 'booking' || response.entity.id !== id)) throw new Error('This booking could not be confirmed.');
       bookingDetail = response;
       bookingDetailError = null;
     } catch (err) {
@@ -17409,22 +18263,37 @@ export const bootstrapDataRoute = (
         && activeTab === 'booking'
         && bookingDetailId === id
       ) {
+        const active = doc.activeElement;
+        const focusRow = listOrigin && active?.getAttribute?.(SHARED_ACTION_ATTR) === 'open-work-entity-detail'
+          && active.getAttribute('data-entity-id') === id;
+        if (bookingListOrigin && bookingDetail?.entity?._kind === 'booking') {
+          bookingReader.bind(bookingIdentity(bookingDetail.entity));
+          const focus = focusRow ? 'heading' : active?.getAttribute?.('data-booking-focus') ?? undefined;
+          bookingReader.resume(position ?? { top: workSearchScrollHost()?.scrollTop ?? 0, focus });
+        }
         loadingBookingDetail = false;
         syncDataHash();
         render();
+        if (focusRow && bookingDetail?.entity) focusBooking('heading', true);
         if (bookingDetail?.entity) opts.onOwnerRecordOpened?.({ collection: 'booking', id });
       }
     }
   };
 
-  const closeBookingDetail = (): void => {
-    if (bookingReaderReturn) { returnToBookingReader(); return; }
-    if (relatedWorkReturn?.workLink?.tab === 'booking') { returnToRelatedWork(); return; }
-    if (exactSearchReturn) { returnToExactLinkSearch(); return; }
-    if (workSearchReturn) { returnToWorkSearch(); return; }
-    if (!mailMessageSurface.beforeLeave()) return;
+  const closeBookingDetail = (alreadyNavigated = false, afterLeave = false): boolean => {
+    if (bookingReaderReturn) return returnToBookingReader(alreadyNavigated, afterLeave);
+    if (relatedWorkReturn?.workLink?.tab === 'booking') return returnToRelatedWork(alreadyNavigated, afterLeave);
+    if (exactSearchReturn) return returnToExactLinkSearch(alreadyNavigated, afterLeave);
+    if (workSearchReturn) return returnToWorkSearch(alreadyNavigated, afterLeave);
+    if (hasDataInFlightWork() || (!afterLeave && hasUnsavedWorkEntityDialog())) return false;
+    if (afterLeave) { flushEditorDrafts(); if (!mailMessageSurface.releaseComposeAfterLeave()) return false; }
+    if (!mailMessageSurface.beforeLeave()) return false;
+    const list = bookingListOrigin, id = bookingDetailId;
+    const listTop = showBookingListReader() ? workSearchScrollHost()?.scrollTop : undefined;
+    bookingListOrigin = null;
     retireRunVerification();
     bookingActions.reset(); bookingReader.reset();
+    workEntityDialogOpenSeq++; pendingWorkEntityDialogOpen = null; loadingWorkEntityDetail = false;
     bookingDetailSeq += 1;
     bookingDetailId = null;
     bookingDetail = null;
@@ -17433,8 +18302,10 @@ export const bootstrapDataRoute = (
     resetBookingManageLinkState();
     workEntityState = closeDialogTransition(workEntityState);
     retireWorkEntityDialogDraft();
-    syncDataHash();
+    if (list && id !== null) pendingWorkReaderListReturn = { kind: 'booking', id, scrollTop: listTop ?? list.scrollTop };
+    if (list && alreadyNavigated) dataHistory.adopt(dataAddress(list.hash, undefined)); else syncDataHash();
     render();
+    return true;
   };
 
   /** Mint and copy a visitor manage link for the open Reception-origin booking.
@@ -17640,11 +18511,14 @@ export const bootstrapDataRoute = (
     if (disposed || activeLens !== 'data' || activeTab !== 'commitment' || dialog?.mode !== 'edit'
       || dialog.submitting || workEntityDiscardGuardOpen || opened?._kind !== 'commitment'
       || opened.id !== dialog.entity_id || pendingWorkEntityDialogOpen || !close || !canCloseCommitment(opened, outcome)) return;
+    const inline = showWorkListReader();
+    if (inline && (hasDataInFlightWork() || workReminder.block() || !mailMessageSurface.beforeLeave())) return;
     if (hasUnsavedWorkEntityDialog()) {
       workEntityState = setDialogSubmitErrorTransition(workEntityState, 'Save or discard your edits before closing the commitment.');
       render(); focusTaskCompletionError(); return;
     }
     const seq = workEntityDialogOpenSeq;
+    const list = inline ? workReaderScope() : null;
     const stillHere = (): boolean => !disposed && seq === workEntityDialogOpenSeq
       && activeTab === 'commitment' && workEntityState.dialog?.entity_id === opened.id;
     workEntityState = setDialogSubmittingTransition(workEntityState, true);
@@ -17658,6 +18532,25 @@ export const bootstrapDataRoute = (
         || entity.source_id !== opened.source_id || entity.source_record_id !== opened.source_record_id || entity.created_at !== opened.created_at
         || entity.lifecycle_state !== (outcome === 'fulfill' ? 'fulfilled' : 'cancelled')) {
         throw new Error('The server did not confirm the close. Reopen the commitment to check it.');
+      }
+      const status = commitmentViewFilters.status;
+      const currentList = list && showWorkListReader() ? workReaderScope() : null;
+      if (list && currentList?.key === list.key && currentList.ready !== false && !entity.pending_write
+        && (status === 'open' || status === 'overdue')) {
+        const index = currentList.ids.indexOf(opened.id);
+        if (index >= 0) {
+          // A confirmed close removes this row without dropping pages already loaded.
+          loadGeneration++;
+          loadingMoreWorkEntities = false;
+          workEntities = workEntities.filter(row => row._kind !== 'commitment' || row.id !== opened.id);
+          workEntityTotal = Math.max(workEntities.length, workEntityTotal - 1);
+          workEntityState = setDialogSubmittingTransition(workEntityState, false);
+          closeWorkEntityDialog(false, false, false, false, {
+            focusId: currentList.ids[index + 1] ?? currentList.ids[index - 1] ?? opened.id,
+            notice: outcome === 'fulfill' ? 'Commitment marked fulfilled.' : 'Commitment cancelled.',
+          });
+          return;
+        }
       }
       workEntityDialogEntity = entity; commitmentMode = 'read'; commitmentNotice = undefined;
       workEntityState = openEditDialogTransition(workEntityState, entity, getCanonicalSchema('commitment'));
@@ -18163,6 +19056,7 @@ export const bootstrapDataRoute = (
       if (kind === 'booking' && bookingDetailId === id) {
         bookingDetailSeq += 1;
         bookingDetailId = null;
+        bookingListOrigin = null;
         bookingDetail = null;
         bookingDetailError = null;
         loadingBookingDetail = false;
@@ -18801,22 +19695,15 @@ export const bootstrapDataRoute = (
   };
 
   const captureFormResponseEditorBaseline = (): void => {
+    retireFormResponseEditorDraft();
     formResponseEditorBaseline = formResponseEditorDraft === null
       ? null
       : formResponseEditorFingerprint(formResponseEditorDraft);
-    formResponseDiscardGuardOpen = false;
-    formResponseDiscardReturnId = null;
-    formResponseDiscardPendingTab = null;
-    formResponseDiscardPendingHref = null;
-    pendingFormResponseDiscardTabFocus = null;
   };
 
   const retireFormResponseEditorDraft = (): void => {
     formResponseEditorBaseline = null;
-    formResponseDiscardGuardOpen = false;
-    formResponseDiscardReturnId = null;
-    formResponseDiscardPendingTab = null;
-    formResponseDiscardPendingHref = null;
+    formResponseDiscard = null;
     pendingFormResponseDiscardTabFocus = null;
   };
 
@@ -18847,15 +19734,14 @@ export const bootstrapDataRoute = (
     };
   };
 
-  const focusFormResponseBack = (): void => {
-    const queryable = routeRoot as unknown as {
-      querySelector?: (selector: string) => HTMLElement | null;
-    };
-    const back = queryable.querySelector?.(
-      `[${DATA_ROUTE_ACTION_ATTR}="close-form-response"]`,
-    ) ?? null;
-    back?.focus?.({ preventScroll: true });
-    back?.scrollIntoView?.({ block: 'nearest' });
+  const formResponseRow = (id: string): HTMLElement | undefined =>
+    Array.from(routeRoot.querySelectorAll?.<HTMLElement>(`[${DATA_ROUTE_ACTION_ATTR}="open-form-response"]`) ?? [])
+      .find(row => row.getAttribute(DATA_ROUTE_FORM_RESPONSE_ID_ATTR) === id);
+
+  const focusFormResponseControl = (selector: string): void => {
+    const target = routeRoot.querySelector?.<HTMLElement>(selector);
+    target?.focus?.({ preventScroll: true });
+    target?.scrollIntoView?.({ block: 'nearest' });
   };
 
   const focusDataTab = (tab: DataTabId): void => {
@@ -18887,34 +19773,21 @@ export const bootstrapDataRoute = (
   };
 
   const closeFormResponseDiscardGuard = (): void => {
-    if (!formResponseDiscardGuardOpen) return;
-    const pendingTab = formResponseDiscardPendingTab;
-    const pendingHref = formResponseDiscardPendingHref;
-    formResponseDiscardGuardOpen = false;
-    formResponseDiscardReturnId = null;
-    formResponseDiscardPendingTab = null;
-    formResponseDiscardPendingHref = null;
+    const destination = formResponseDiscard;
+    if (!destination) return;
+    formResponseDiscard = null;
     render();
-    if (pendingTab !== null) focusDataTab(pendingTab);
-    else if (pendingHref !== null) focusFormResponseAutomate();
-    else focusFormResponseBack();
+    if (destination.kind === 'tab') focusDataTab(destination.tab);
+    else if (destination.kind === 'link') focusFormResponseAutomate();
+    else if (destination.kind === 'row') formResponseRow(destination.id)?.focus({ preventScroll: true });
+    else focusFormResponseControl(`[${DATA_ROUTE_ACTION_ATTR}="${destination.kind === 'editor' ? 'close-form-response-editor' : 'close-form-response'}"]`);
   };
 
-  const showFormResponseDiscardGuard = (
-    pendingTab: DataTabId | null = null,
-    pendingHref: string | null = null,
-  ): void => {
-    if (formResponseDiscardGuardOpen) {
-      focusFormResponseDiscardGuard();
-      return;
+  const showFormResponseDiscardGuard = (destination: FormResponseDiscardDestination = { kind: 'list' }): void => {
+    if (!formResponseDiscard) {
+      formResponseDiscard = destination;
+      render();
     }
-    formResponseDiscardReturnId = pendingTab === null && pendingHref === null
-      ? formResponseDetailId
-      : null;
-    formResponseDiscardPendingTab = pendingTab;
-    formResponseDiscardPendingHref = pendingHref;
-    formResponseDiscardGuardOpen = true;
-    render();
     focusFormResponseDiscardGuard();
   };
 
@@ -18926,8 +19799,37 @@ export const bootstrapDataRoute = (
         !== formResponseEditorBaseline;
   };
 
-  const openFormResponse = async (submission_id: string): Promise<void> => {
+  const openFormResponseEditor = (): void => {
+    if (!showFormResponseWorkspace() || !formResponseDetail || formResponseEditorOpen || savingFormResponse
+      || formResponseRunModal || formResponseDiscard || !opts.formResponseUpdateCaller || !opts.formResponseSetStateCaller) return;
+    formResponseEditorOpen = true;
+    render();
+    focusFormResponseControl(`[${DATA_ROUTE_FORM_RESPONSE_EMAIL_ATTR}]`);
+  };
+
+  const closeFormResponseEditor = (discardChanges = false): void => {
+    if (!formResponseEditorOpen || savingFormResponse) return;
+    if (!discardChanges && hasUnsavedFormResponseEditor()) {
+      showFormResponseDiscardGuard({ kind: 'editor' });
+      return;
+    }
+    formResponseEditorOpen = false;
+    formResponseEditorDraft = formResponseDetail ? formResponseEditorDraftFrom(formResponseDetail) : null;
+    formResponseSaveError = null;
+    pendingFormResponseEditorFocus = null;
+    captureFormResponseEditorBaseline();
+    render();
+    focusFormResponseControl(`[${DATA_ROUTE_ACTION_ATTR}="open-form-response-editor"]`);
+  };
+
+  const openFormResponse = async (submission_id: string, fromList = false): Promise<void> => {
     if (submission_id.trim().length === 0) return;
+    if (fromList) {
+      formResponseListOrigin ??= { hash: dataHistory.current().hash, scrollTop: workSearchScrollHost()?.scrollTop ?? 0 };
+    } else if (formResponseDetailId !== submission_id) {
+      formResponseListOrigin = null;
+    }
+    if (formResponseDetailId !== submission_id) formResponseEditorOpen = false;
     if (pendingFormResponseEditorFocus?.submissionId !== submission_id) {
       pendingFormResponseEditorFocus = null;
     }
@@ -18953,11 +19855,11 @@ export const bootstrapDataRoute = (
     loadingFormResponseDetail = true;
     savingFormResponse = false;
     formResponseSaveError = null;
-    if (errors.form_responses !== undefined) {
+    if (!formResponseListOrigin && errors.form_responses !== undefined) {
       errors = { ...errors };
       delete errors.form_responses;
     }
-    syncDataHash();
+    syncDataHash(formResponseListOrigin?.hash === dataHistory.current().hash);
     render();
     try {
       if (opts.formResponseGetCaller === undefined) {
@@ -18970,6 +19872,9 @@ export const bootstrapDataRoute = (
         || !isReceivedTab(activeTab)
         || formResponseDetailId !== submission_id
       ) return;
+      if (result.response !== null && result.response.submission_id !== submission_id) {
+        throw new Error('Recued could not confirm this response.');
+      }
       formResponseDetail = result.response;
       formResponseEditorDraft = result.response === null
         ? null
@@ -18980,7 +19885,7 @@ export const bootstrapDataRoute = (
       if (disposed || seq !== formResponseDetailSeq) return;
       formResponseDetail = null;
       formResponseDetailError = errMessage(err);
-      errors = { ...errors, form_responses: formResponseDetailError };
+      if (!formResponseListOrigin) errors = { ...errors, form_responses: formResponseDetailError };
     } finally {
       if (!disposed && seq === formResponseDetailSeq) {
         loadingFormResponseDetail = false;
@@ -18990,27 +19895,28 @@ export const bootstrapDataRoute = (
     }
   };
 
-  const closeFormResponse = (discardChanges = false): void => {
-    if (savingFormResponse) return;
-    if (formResponseDiscardGuardOpen && !discardChanges) {
-      closeFormResponseDiscardGuard();
-      return;
+  const closeFormResponse = (discardChanges = false, alreadyNavigated = false): boolean => {
+    if (savingFormResponse || formResponseListOrigin && formResponseRunModal) return false;
+    if (formResponseDiscard && !discardChanges) {
+      if (!alreadyNavigated) closeFormResponseDiscardGuard();
+      return false;
     }
     if (!discardChanges && hasUnsavedFormResponseEditor()) {
-      showFormResponseDiscardGuard();
-      return;
+      if (!alreadyNavigated) showFormResponseDiscardGuard();
+      return false;
     }
+    const origin = formResponseListOrigin;
+    const scrollTop = showFormResponseWorkspace() ? workSearchScrollHost()?.scrollTop : origin?.scrollTop;
     const activeElement = doc.activeElement as HTMLElement | null | undefined;
-    const returnId = formResponseDiscardReturnId
-      ?? (activeElement?.getAttribute?.(DATA_ROUTE_ACTION_ATTR)
-        === 'close-form-response'
-        ? formResponseDetailId
-        : null);
+    const returnId = origin || discardChanges || activeElement?.getAttribute?.(DATA_ROUTE_ACTION_ATTR) === 'close-form-response'
+      ? formResponseDetailId : null;
     retireRunVerification();
     resetFormResponseAutomation();
     pendingFormResponseDetailFocusId = null;
     formResponseDetailSeq += 1;
     formResponseDetailId = null;
+    formResponseListOrigin = null;
+    formResponseEditorOpen = false;
     formResponseDetail = null;
     formResponseEditorDraft = null;
     retireFormResponseEditorDraft();
@@ -19023,28 +19929,27 @@ export const bootstrapDataRoute = (
       errors = { ...errors };
       delete errors.form_responses;
     }
-    syncDataHash();
+    if (alreadyNavigated && origin) dataHistory.adopt(dataAddress(origin.hash, undefined)); else syncDataHash();
     render();
+    const host = workSearchScrollHost();
+    if (host && scrollTop !== undefined) host.scrollTop = scrollTop;
     if (returnId !== null) {
-      const queryable = routeRoot as unknown as {
-        querySelector?: (selector: string) => HTMLElement | null;
-        querySelectorAll?: (selector: string) => ArrayLike<HTMLElement>;
-      };
-      const row = Array.from(
-        queryable.querySelectorAll?.(
-          `[${DATA_ROUTE_ACTION_ATTR}="open-form-response"]`,
-        ) ?? [],
-      ).find(
-        (candidate) =>
-          candidate.getAttribute(DATA_ROUTE_FORM_RESPONSE_ID_ATTR) === returnId,
-      );
-      const tab = collectionNavigationTarget('form_response');
-      (row ?? tab)?.focus?.({ preventScroll: true });
+      const row = formResponseRow(returnId);
+      (row ?? collectionNavigationTarget('form_response'))?.focus?.({ preventScroll: true });
     }
+    return true;
+  };
+
+  const updateFormResponseList = (id: string, response: FormResponse | null): void => {
+    formResponseListVersion += 1;
+    formResponses = response === null ? formResponses.filter(row => row.submission_id !== id)
+      : formResponses.map(row => row.submission_id === id ? { ...row, visitor: response.visitor,
+        updated_at: response.updated_at, lifecycle_state: response.lifecycle_state, state_changed_at: response.state_changed_at } : row);
   };
 
   const saveFormResponse = async (): Promise<void> => {
     const anchor = formResponseDetail;
+    let ownerSequence = formResponseDetailSeq;
     if (
       anchor === null
       || opts.formResponseUpdateCaller === undefined
@@ -19107,6 +20012,7 @@ export const bootstrapDataRoute = (
       });
       if (disposed || formResponseDetail !== anchor) return;
       let response = updated.response;
+      if (response !== null && response.submission_id !== anchor.submission_id) throw new Error('Recued could not confirm the saved response.');
       if (response !== null && lifecycle !== response.lifecycle_state) {
         const stateResult = await opts.formResponseSetStateCaller({
           submission_id: anchor.submission_id,
@@ -19115,14 +20021,18 @@ export const bootstrapDataRoute = (
         response = stateResult.response;
       }
       if (disposed || formResponseDetail !== anchor) return;
+      if (response !== null && response.submission_id !== anchor.submission_id) throw new Error('Recued could not confirm the saved response.');
       formResponseDetail = response;
       formResponseEditorDraft = response === null
         ? null
         : formResponseEditorDraftFrom(response);
       captureFormResponseEditorBaseline();
       if (response === null) formResponseSaveError = 'That answer is gone.';
-      pendingLoadPromise = refreshActive(true);
-      await pendingLoadPromise;
+      if (formResponseListOrigin) updateFormResponseList(anchor.submission_id, response);
+      else {
+        pendingLoadPromise = refreshActive(true);
+        await pendingLoadPromise;
+      }
     } catch (error) {
       if (disposed || formResponseDetail !== anchor) return;
       formResponseSaveError = errMessage(error);
@@ -19132,10 +20042,15 @@ export const bootstrapDataRoute = (
         submissionId: anchor.submission_id,
         control: 'save',
       };
-      await openFormResponse(anchor.submission_id);
-      if (!disposed) formResponseSaveError = errMessage(error);
+      const reload = openFormResponse(anchor.submission_id);
+      ownerSequence = formResponseDetailSeq;
+      await reload;
+      if (!disposed && ownerSequence === formResponseDetailSeq) {
+        formResponseSaveError = errMessage(error);
+        if (formResponseListOrigin && formResponseDetailError === null) updateFormResponseList(anchor.submission_id, formResponseDetail);
+      }
     } finally {
-      if (!disposed && formResponseDetailId === anchor.submission_id) {
+      if (!disposed && ownerSequence === formResponseDetailSeq && formResponseDetailId === anchor.submission_id) {
         savingFormResponse = false;
         render();
       }
@@ -19169,7 +20084,7 @@ export const bootstrapDataRoute = (
   const exportFormResponses = async (format: 'json' | 'csv'): Promise<void> => {
     if (
       opts.formResponseExportCaller === undefined
-      || exportingFormResponseFormat !== null
+      || exportingFormResponseFormat !== null || savingFormResponse || formResponseDiscard
     ) return;
     exportingFormResponseFormat = format;
     if (errors.form_responses !== undefined) {
@@ -19315,6 +20230,13 @@ export const bootstrapDataRoute = (
     suspendContactActivity();
     cancelContactEditOpen();
     const activeElement = doc.activeElement as HTMLElement | null | undefined;
+    const priorPreviewReturn = contactDetail?.email === trimmed ? contactDetail.previewReturn : undefined;
+    const previewReturn = priorPreviewReturn
+      ?? (contactPreviewSelection?.email === trimmed
+        && activeElement?.getAttribute?.(DATA_ROUTE_ACTION_ATTR) === 'open-contact-detail'
+        && contactPreviewElement()?.contains(activeElement)
+        ? { hash: dataHistory.current().hash, email: trimmed, scrollTop: workSearchScrollHost()?.scrollTop ?? 0 }
+        : undefined);
     pendingContactDetailFocusEmail =
       focusHeading || renderedActiveTab === 'contact'
       && activeTab === 'contact'
@@ -19331,6 +20253,7 @@ export const bootstrapDataRoute = (
     const navigation = navigationGeneration;
     const pendingDetail: ContactDetailState = {
       email: trimmed,
+      ...(previewReturn ? { previewReturn } : {}),
       from_search: contactSearchReturn?.email === trimmed || contactSearchReturn?.lookupId === trimmed
         || contactSearchReturn?.lookupId !== undefined && confirmed?.contact.contact_id === contactSearchReturn.lookupId || recentSourceReturn?.record.kind === 'contact',
       from_note: relatedWorkReturn?.entity._kind === 'note',
@@ -19451,6 +20374,7 @@ export const bootstrapDataRoute = (
     if (!contributionsResult.ok) nextErrors.contact_contributions = contributionsResult.message;
     contactDetail = {
       email: trimmed,
+      ...(previewReturn ? { previewReturn } : {}),
       from_search: contactSearchReturn?.email === trimmed || contactSearchReturn?.lookupId === trimmed
         || contactSearchReturn?.lookupId !== undefined && confirmed?.contact.contact_id === contactSearchReturn.lookupId || recentSourceReturn?.record.kind === 'contact',
       from_note: relatedWorkReturn?.entity._kind === 'note',
@@ -19934,7 +20858,7 @@ export const bootstrapDataRoute = (
     }
   };
 
-  const closeContactDetail = (): void => {
+  const closeContactDetail = (alreadyNavigated = false): void => {
     if (contactDetail === null) return;
     if (bookingReaderReturn?.target.kind === 'contact') { returnToBookingReader(); return; }
     if (relatedWorkReturn) { returnToRelatedWork(); return; }
@@ -19943,6 +20867,7 @@ export const bootstrapDataRoute = (
     suspendContactActivity();
     if (recentSourceReturn?.record.kind === 'contact') { returnToRecentSourceSearch(); return; }
     if (contactSearchReturn) { returnToContactSearch(); return; }
+    const previewReturn = contactDetail.previewReturn;
     const activeElement = doc.activeElement as HTMLElement | null | undefined;
     const returnEmail =
       activeElement?.getAttribute?.(DATA_ROUTE_ACTION_ATTR)
@@ -19958,26 +20883,14 @@ export const bootstrapDataRoute = (
     // an error banner over a list that is fine.
     const { timeline: _t, contact_detail: _d, ...rest } = errors;
     errors = rest;
-    syncDataHash();
+    if (alreadyNavigated && previewReturn) dataHistory.adopt(dataAddress(previewReturn.hash, undefined));
+    else syncDataHash();
     render();
-    if (returnEmail !== null) {
-      const row = Array.from(
-        routeRoot.querySelectorAll<HTMLElement>(
-          `[${DATA_ROUTE_CONTACT_EMAIL_ATTR}]`,
-        ),
-      ).find(
-        (candidate) =>
-          candidate.getAttribute(DATA_ROUTE_ACTION_ATTR)
-            === 'open-contact-detail'
-          && candidate.getAttribute(DATA_ROUTE_CONTACT_EMAIL_ATTR)
-            === returnEmail,
-      );
-      const search = routeRoot.querySelector(
-        `[${DATA_ROUTE_CONTACT_SEARCH_ATTR}]`,
-      ) as HTMLElement | null;
-      const tab = collectionNavigationTarget('contact');
-      (row ?? search ?? tab)?.focus?.({ preventScroll: true });
-    }
+    if (previewReturn) {
+      const host = workSearchScrollHost();
+      if (host) host.scrollTop = previewReturn.scrollTop;
+      focusContactList(previewReturn.email, CONTACT_PREVIEW_ACTION);
+    } else if (returnEmail !== null) focusContactList(returnEmail);
   };
 
   // ── D-205 #2b — the merge scan page ─────────────────────────────────────
@@ -20516,6 +21429,10 @@ export const bootstrapDataRoute = (
     routeRoot.querySelector<HTMLElement>('[data-project-focus="task-status"]')?.focus({ preventScroll: true });
   };
   const onClick = (ev: Event): void => {
+    if (activeTab === 'files' && fileBrowserBreakpoint?.matches) {
+      const sourceOptions = routeRoot.querySelector<HTMLDetailsElement>(`${FILE_SOURCE_OPTIONS}[open]`);
+      if (sourceOptions && !sourceOptions.contains(ev.target as Node)) sourceOptions.open = false;
+    }
     if (searchWriting() && (ev.target as Element | null)?.closest?.('button, a, summary')) {
       ev.preventDefault(); return;
     }
@@ -20528,6 +21445,7 @@ export const bootstrapDataRoute = (
       ev.preventDefault(); workReminder.block(); return;
     }
     if (workLinkedFrom.handleClick(ev) || recordLinkInsert.handleClick(ev) || workLinkPreviews.handleClick(ev)) return;
+    if (activeLens === 'data' && activeTab === 'mail_fact') mailFacts.rememberLink(ev as MouseEvent, routeRoot);
     const noteLink = (ev.target as HTMLElement | null)?.closest?.<HTMLAnchorElement>('a[data-task-note-link],a[data-note-note-link]');
     if (noteLink && (activeTab === 'task' && taskMode === 'read' || activeTab === 'note' && noteMode === 'read')) {
       const click = ev as MouseEvent;
@@ -20588,7 +21506,10 @@ export const bootstrapDataRoute = (
       return;
     }
     if (activeLens === 'data' && activeTab === 'files' && explorerSelectedSlug === SAVED_FILES_SLUG
-      && batchAction?.startsWith(FILE_BATCH_ACTION)) { fileBatch.handleAction(batchAction); return; }
+      && batchAction?.startsWith(FILE_BATCH_ACTION)) {
+      if (fileBrowserBreakpoint?.matches) batchTarget?.focus({ preventScroll: true });
+      fileBatch.handleAction(batchAction); return;
+    }
     if (fileBatch.busy()) { ev.preventDefault(); focusFileBatch(); return; }
     if (contactRecovery.busy()) { ev.preventDefault(); return; }
     // Form-renderer array Add/Remove for the work-entity dialog's
@@ -20627,7 +21548,7 @@ export const bootstrapDataRoute = (
           };
           render();
         } else if (href !== null) {
-          showFormResponseDiscardGuard(null, href);
+          showFormResponseDiscardGuard({ kind: 'link', href });
         }
         return;
       }
@@ -20657,7 +21578,7 @@ export const bootstrapDataRoute = (
     }
     if (activeLens === 'data' && (activeTab === 'calendar' || activeTab === 'mail') && calendarCreateSurface.handleAction(action, target)) return;
     if (activeLens === 'data' && activeTab === 'calendar' && explorerDetail === null
-      && calendarAgenda.handleAction(action, target)) return;
+      && calendarAgenda.handleAction(action, target, (ev as MouseEvent).detail === 0)) return;
     if (action === 'calendar-duplicate-original') {
       const target = calendarDuplicateReturn;
       if (!target || activeTab !== 'calendar' || explorerSelectedSlug !== target.slug || explorerDetail?.record_id !== target.recordId) return;
@@ -20697,8 +21618,11 @@ export const bootstrapDataRoute = (
     if (action.startsWith(MAIL_READER_ACTION)) {
       if (activeLens === 'data' && activeTab === 'mail') {
         if (!mailMessageSurface.beforeLeave()) return;
-        if (!calendarCreateSurface.beforeLeave(() => mailReaderNavigation.handle(action))) return;
-        target.focus({ preventScroll: true }); mailReaderNavigation.handle(action);
+        const navigate = () => {
+          target.focus({ preventScroll: true });
+          mailReaderNavigation.handle(action, target.getAttribute(COLLECTION_RECORD_ID_ATTR), explorerDetail?.record_id);
+        };
+        if (calendarCreateSurface.beforeLeave(navigate)) navigate();
       }
       return;
     }
@@ -20739,6 +21663,28 @@ export const bootstrapDataRoute = (
     }
     if (memoryEditOpeningId !== null && action.startsWith('memory-')) {
       focusMemoryEditAction(memoryEditOpeningId);
+      return;
+    }
+    if (action === COLLECTION_RAIL_TOGGLE_ACTION) {
+      if (activeLens !== 'data' || !collectionCollapseBreakpoint?.matches) return;
+      const rail = routeRoot.querySelector<HTMLElement>(`[${DATA_ROUTE_TABLIST_ATTR}]`);
+      if (!collectionsCollapsed && rail) collectionRailScrollTop = rail.scrollTop;
+      collectionsCollapsed = !collectionsCollapsed;
+      routeRoot.setAttribute(COLLECTION_RAIL_COLLAPSED_ATTR, String(collectionsCollapsed));
+      target.textContent = collectionRailToggleLabel();
+      target.setAttribute('aria-expanded', String(!collectionsCollapsed));
+      if (!collectionsCollapsed && rail) {
+        rail.scrollTop = collectionRailScrollTop;
+        revealCollectionTab(collectionNavigationTarget(activeTab));
+      }
+      target.focus?.({ preventScroll: true });
+      try {
+        const storage = doc.defaultView?.localStorage;
+        if (collectionsCollapsed) storage?.setItem(COLLECTION_RAIL_STORAGE_KEY, '1');
+        else storage?.removeItem(COLLECTION_RAIL_STORAGE_KEY);
+      } catch {
+        // The layout still updates when storage is unavailable.
+      }
       return;
     }
     if (action === 'select-tab') {
@@ -20914,7 +21860,12 @@ export const bootstrapDataRoute = (
       || recordsState.purging
       || recordsState.loadingNamespaceKey !== null
       || recordsState.loadingKind !== null
-      || recordsImport.hasInFlightWork();
+      || recordsImport.hasInFlightWork()
+      || (recordsInspectorReadId !== null && action !== RECORDS_OPEN_RECORD_ACTION && action !== RECORDS_CLOSE_RECORD_ACTION);
+    if (action === CUSTOMER_WATCH_ACTION) {
+      if (!recordsNavigationLocked && !recordsState.loading) customerDecisionWatch.open();
+      return;
+    }
     if (action === RECORDS_IMPORT_OPEN || action === RECORDS_IMPORT_RETRY) {
       if (recordsNavigationLocked || recordsState.loading) return;
       if (action === RECORDS_IMPORT_RETRY) void recordsImport.retry();
@@ -20962,7 +21913,7 @@ export const bootstrapDataRoute = (
     if (action === RECORDS_OPEN_RECORD_ACTION) {
       if (recordsNavigationLocked) return;
       const id = target.getAttribute(RECORDS_ID_ATTR);
-      if (id !== null) void openRecordsRecord(id);
+      if (id !== null) void openRecordsRecord(id, (ev as MouseEvent).detail > 0 ? 'pointer' : 'keyboard');
       return;
     }
     if (action === RECORDS_OPEN_REFERENCE_ACTION) {
@@ -20973,19 +21924,8 @@ export const bootstrapDataRoute = (
       return;
     }
     if (action === RECORDS_CLOSE_RECORD_ACTION) {
-      if (recordsNavigationLocked) return;
-      const recordId = recordsState.detail?.id ?? null;
-      recordsSeq += 1;
-      recordsState = {
-        ...recordsState,
-        detail: null,
-        diagnostics: null,
-        deletePending: false,
-        deleting: false,
-        error: undefined,
-      };
-      render();
-      if (recordId !== null) focusRecordsListReturn(recordId);
+      if (recordsNavigationLocked || (recordsListReturn !== null && hasRecordsInFlightWork())) return;
+      closeRecordsRecord();
       return;
     }
     if (action === RECORDS_DELETE_RECORD_ACTION) {
@@ -21152,11 +22092,14 @@ export const bootstrapDataRoute = (
     }
     if (action === COLLECTION_SELECT_INSTANCE_ACTION) {
       const slug = target.getAttribute(COLLECTION_INSTANCE_SLUG_ATTR);
+      if (activeTab === 'files' && fileBrowserBreakpoint?.matches) target.focus({ preventScroll: true });
       if (slug !== null) void selectExplorerInstance(slug);
       return;
     }
     if (action === 'file-open-preview') {
-      const id = target.getAttribute(COLLECTION_RECORD_ID_ATTR); if (id) previewListedFile(id, target); return;
+      const id = target.getAttribute(COLLECTION_RECORD_ID_ATTR);
+      if (id) previewListedFile(id, target, (ev as MouseEvent).detail === 0);
+      return;
     }
     if (action === 'file-open-details') {
       const id = target.getAttribute('data-file-details-id'); if (id) void openExplorerRecord(id); return;
@@ -21187,6 +22130,129 @@ export const bootstrapDataRoute = (
       return;
     }
     if (action === SEARCH_CLEAR_TYPE_ACTION) { selectUniversalSearchType('all'); return; }
+    if (action === SEARCH_CLEAR_RUN_FILTERS) {
+      if (activeLens === 'data' && activeTab === 'search' && !searchWriting() && runSearch.setFilters({})) {
+        runOpenSequence++; runOpening = undefined; runOpenError = undefined;
+        pendingNavigationSearchRestore = null;
+        if (universalSearchTimer === null) void runSearch.load(universalSearchQuery.trim());
+        render(); routeRoot.querySelector<HTMLElement>(`[${SEARCH_RUN_FILTER}="outcome"]`)?.focus({ preventScroll: true });
+        opts.onViewChange?.(currentView());
+      }
+      return;
+    }
+    if (action === SEARCH_OPEN_SETTING) {
+      const mouse = ev as MouseEvent;
+      if (mouse.button > 0 || mouse.ctrlKey || mouse.metaKey || mouse.shiftKey || mouse.altKey) return;
+      ev.preventDefault();
+      if (activeLens !== 'data' || activeTab !== 'search' || universalSearchTimer !== null || searchWriting()
+        || universalSearchType !== 'all' && universalSearchType !== 'setting' || !opts.settingsSearchTargets || !opts.openSetting) return;
+      const entry = settingsSearchResults(opts.settingsSearchTargets, universalSearchQuery).matches.find(row => row.id === target.getAttribute(SEARCH_SETTING_ID));
+      if (!entry) return;
+      rememberSearchNavigation(settingsFinderHash(entry), SEARCH_OPEN_SETTING, SEARCH_SETTING_ID, entry.id);
+      opts.openSetting(entry);
+      return;
+    }
+    if (action === SEARCH_REFRESH_SAVED_VIEWS) {
+      if (activeLens === 'data' && activeTab === 'search' && universalSearchTimer === null && !searchWriting()
+        && (universalSearchType === 'all' || universalSearchType === 'saved_view') && !savedViewSearch.state().loading && !savedViewOpening) {
+        savedViewOpenSequence++; savedViewOpenError = undefined;
+        void savedViewSearch.load(universalSearchQuery.trim(), true);
+      }
+      return;
+    }
+    if (action === SEARCH_OPEN_SAVED_VIEW) {
+      const mouse = ev as MouseEvent;
+      if (mouse.button > 0 || mouse.ctrlKey || mouse.metaKey || mouse.shiftKey || mouse.altKey) return;
+      ev.preventDefault();
+      if (activeLens !== 'data' || activeTab !== 'search' || savedViewOpening || savedViewSearch.state().loading || universalSearchTimer !== null || searchWriting()
+        || universalSearchType !== 'all' && universalSearchType !== 'saved_view') return;
+      const selected = savedViewSearch.state().matches.find(row => row.id === target.getAttribute(SEARCH_SAVED_VIEW_ID));
+      if (!selected || !opts.openSavedView || selected.id === currentSavedViewSearchId()) return;
+      const sequence = ++savedViewOpenSequence, navigation = navigationGeneration, typeGeneration = universalSearchTypeGeneration;
+      const query = universalSearchQuery, originScroll = workSearchScrollHost()?.scrollTop ?? 0;
+      const current = () => !disposed && activeLens === 'data' && activeTab === 'search' && sequence === savedViewOpenSequence
+        && navigation === navigationGeneration && typeGeneration === universalSearchTypeGeneration && query === universalSearchQuery;
+      savedViewOpening = selected.id; savedViewOpenError = undefined; render();
+      routeRoot.querySelector<HTMLElement>(`[${SEARCH_SAVED_VIEW_FOCUS}]`)?.focus({ preventScroll: true });
+      void (async () => {
+        try {
+          if (!await savedViewSearch.resolve(selected) || !current()) return;
+          // Reopening a modified saved Search first gives the visible search
+          // its own address, even while unrelated inventory reads are pending.
+          if (doc.defaultView?.location.hash === savedViewSearchHref(selected.id)) syncDataHash();
+          if (doc.defaultView?.location.hash === savedViewSearchHref(selected.id)) throw Error('The originating search address could not be kept.');
+          rememberSearchNavigation(savedViewSearchHref(selected.id), SEARCH_OPEN_SAVED_VIEW, SEARCH_SAVED_VIEW_ID, selected.id, savedViewSearchAliases(selected), originScroll);
+          opts.openSavedView?.(selected.id);
+        } catch { if (current()) savedViewOpenError = 'This saved view could not be confirmed. It may have changed, been hidden or been removed. Refresh saved views and try again.'; }
+        finally { if (current()) { savedViewOpening = undefined; render(); } }
+      })();
+      return;
+    }
+    if (action === SEARCH_REFRESH_CONNECTIONS) {
+      if (activeLens === 'data' && activeTab === 'search' && universalSearchTimer === null && !searchWriting()
+        && (universalSearchType === 'all' || universalSearchType === 'connection') && !connectionSearch.state().loading && !connectionOpening) {
+        connectionOpenSequence++; connectionOpenError = undefined;
+        void connectionSearch.load(universalSearchQuery.trim(), true);
+      }
+      return;
+    }
+    if (action === SEARCH_OPEN_CONNECTION) {
+      const mouse = ev as MouseEvent;
+      if (mouse.button > 0 || mouse.ctrlKey || mouse.metaKey || mouse.shiftKey || mouse.altKey) return;
+      ev.preventDefault();
+      if (activeLens !== 'data' || activeTab !== 'search' || connectionOpening || universalSearchTimer !== null || searchWriting()
+        || universalSearchType !== 'all' && universalSearchType !== 'connection') return;
+      const selected = connectionSearch.state().matches.find(row => row.key === target.getAttribute(SEARCH_CONNECTION_KEY));
+      if (!selected || !opts.openConnection || connectionSearch.state().sources.find(source => source.kind === selected.kind)?.loading) return;
+      const sequence = ++connectionOpenSequence, navigation = navigationGeneration, typeGeneration = universalSearchTypeGeneration;
+      const query = universalSearchQuery, originScroll = workSearchScrollHost()?.scrollTop ?? 0;
+      const current = () => !disposed && activeLens === 'data' && activeTab === 'search' && sequence === connectionOpenSequence
+        && navigation === navigationGeneration && typeGeneration === universalSearchTypeGeneration && query === universalSearchQuery;
+      connectionOpening = selected.key; connectionOpenError = undefined; render();
+      routeRoot.querySelector<HTMLElement>(`[${SEARCH_CONNECTION_FOCUS}]`)?.focus({ preventScroll: true });
+      void (async () => {
+        try {
+          if (!await connectionSearch.resolve(selected) || !current()) return;
+          rememberSearchNavigation(selected.href, SEARCH_OPEN_CONNECTION, SEARCH_CONNECTION_KEY, selected.key, undefined, originScroll);
+          opts.openConnection?.(selected.href);
+        } catch { if (current()) connectionOpenError = 'This connection could not be confirmed. It may have changed or been removed. Refresh connections and try again.'; }
+        finally { if (current()) { connectionOpening = undefined; render(); } }
+      })();
+      return;
+    }
+    if (action === SEARCH_REFRESH_RUNS || action === SEARCH_MORE_RUNS) {
+      if (activeLens === 'data' && activeTab === 'search' && universalSearchTimer === null
+        && (universalSearchType === 'all' || universalSearchType === 'run') && !runSearch.state().loading && !runOpening) {
+        runOpenSequence++; runOpenError = undefined;
+        void runSearch.load(universalSearchQuery.trim(), action === SEARCH_MORE_RUNS, action === SEARCH_REFRESH_RUNS);
+      }
+      return;
+    }
+    if (action === SEARCH_OPEN_RUN || action === SEARCH_REVIEW_RUNS) {
+      const mouse = ev as MouseEvent;
+      if (mouse.button > 0 || mouse.ctrlKey || mouse.metaKey || mouse.shiftKey || mouse.altKey) return;
+      ev.preventDefault();
+      if (activeLens !== 'data' || activeTab !== 'search' || runOpening || runSearch.state().loading || universalSearchTimer !== null
+        || universalSearchType !== 'all' && universalSearchType !== 'run') return;
+      const selected = action === SEARCH_REVIEW_RUNS ? runSearch.state().matches[0]
+        : runSearch.state().matches.find(row => row.run_id === target.getAttribute(SEARCH_RUN_ID));
+      if (!selected) return;
+      const sequence = ++runOpenSequence, navigation = navigationGeneration, typeGeneration = universalSearchTypeGeneration;
+      const query = universalSearchQuery, originScroll = workSearchScrollHost()?.scrollTop ?? 0;
+      const current = () => !disposed && activeLens === 'data' && activeTab === 'search' && sequence === runOpenSequence
+        && navigation === navigationGeneration && typeGeneration === universalSearchTypeGeneration && query === universalSearchQuery;
+      runOpening = selected.run_id; runOpenError = undefined; render();
+      routeRoot.querySelector<HTMLElement>(`[${SEARCH_RUN_FOCUS}]`)?.focus({ preventScroll: true });
+      void (async () => {
+        try {
+          if (!await runSearch.resolve(selected) || !current()) return;
+          rememberSearchNavigation(runSearchHref(selected.run_id), SEARCH_OPEN_RUN, SEARCH_RUN_ID, selected.run_id, undefined, originScroll);
+          opts.openRun?.(selected.run_id);
+        } catch (failure) { if (current()) runOpenError = humanizeRpcError(failure); }
+        finally { if (current()) { runOpening = undefined; render(); } }
+      })();
+      return;
+    }
     if (action === SEARCH_REFRESH_DECISIONS) {
       if (activeTab === 'search' && !decisionSearch.state().loading) {
         decisionOpenSequence++; decisionOpening = undefined; decisionOpenError = undefined;
@@ -21230,7 +22296,8 @@ export const bootstrapDataRoute = (
       opts.onViewChange?.(currentView()); return;
     }
     if (activeTab === 'search' && universalSearchType !== 'all') {
-      const type = action === SEARCH_OPEN_PROMPT || action === SEARCH_REFRESH_PROMPTS ? 'scheduled_prompt'
+      const type = [SEARCH_OPEN_FOLLOW_UP, SEARCH_MANAGE_FOLLOW_UP, SEARCH_MORE_FOLLOW_UPS, SEARCH_REFRESH_FOLLOW_UPS].includes(action) ? 'follow_up'
+        : action === SEARCH_OPEN_PROMPT || action === SEARCH_REFRESH_PROMPTS ? 'scheduled_prompt'
         : action === SEARCH_OPEN_REMINDER_ACTION || action === SEARCH_MORE_REMINDERS_ACTION ? 'reminder'
         : action === SEARCH_OPEN_CHAT_ACTION || action === SEARCH_MORE_CHATS_ACTION ? 'chat'
         : action === SEARCH_OPEN_DRAFT_ACTION || action === SEARCH_MORE_DRAFTS_ACTION || action === SEARCH_OPEN_RECOVERY_DRAFT || action === SEARCH_REFRESH_RECOVERY_DRAFTS ? 'draft'
@@ -21243,6 +22310,25 @@ export const bootstrapDataRoute = (
       if (type && type !== universalSearchType) { ev.preventDefault(); return; }
     }
     if (action.startsWith('universal-search-open-')) finishRecentSearch();
+    if (action === SEARCH_MORE_FOLLOW_UPS || action === SEARCH_REFRESH_FOLLOW_UPS) {
+      if (activeTab !== 'search' || searchWriting() || universalSearchTimer !== null || followUpSearch.state().loading) return;
+      target.focus({ preventScroll: true });
+      const state = followUpSearch.state();
+      void followUpSearch.load(universalSearchQuery.trim(), action === SEARCH_MORE_FOLLOW_UPS && (state.error ? state.retry_append === true : state.next_cursor !== null));
+      return;
+    }
+    if (action === SEARCH_OPEN_FOLLOW_UP || action === SEARCH_MANAGE_FOLLOW_UP) {
+      const click = ev as MouseEvent;
+      if (click.button > 0 || click.ctrlKey || click.metaKey || click.shiftKey || click.altKey) return;
+      const id = target.getAttribute(SEARCH_FOLLOW_UP_ID), state = followUpSearch.state();
+      const watch = state.matches.find(row => row.id === id);
+      const href = watch ? action === SEARCH_MANAGE_FOLLOW_UP ? mailFollowUpHref(watch.id) : followUpResultHref(watch) : undefined;
+      if (activeTab !== 'search' || searchWriting() || state.loading || universalSearchTimer !== null || !watch || target.getAttribute('href') !== href) { ev.preventDefault(); return; }
+      const aliases = [watch.mail_ref, ...(watch.reply_ref ? [watch.reply_ref] : []), ...(watch.delivery_failure ? [watch.delivery_failure.report_ref] : [])].map(ref =>
+        serializeSourceRecordAddress({ tab: 'mail', collectionSlug: ref.slug, recordId: ref.record_id }));
+      rememberSearchNavigation(href!, action, SEARCH_FOLLOW_UP_ID, watch.id, aliases);
+      return;
+    }
     if (action === SEARCH_MORE_REMINDERS_ACTION) {
       const state = reminderSearch.state(); target.focus({ preventScroll: true });
       if (!state.loading) void loadReminderSearch(state.error ? state.retry_append === true : state.next_cursor !== null);
@@ -21260,6 +22346,9 @@ export const bootstrapDataRoute = (
       const mouse = ev as MouseEvent;
       if (mouse.button > 0 || mouse.ctrlKey || mouse.metaKey || mouse.shiftKey || mouse.altKey) return;
       ev.preventDefault();
+      // ⛔ Opening a scheduled prompt does not depend on reply watches: the marketplace guard's "is every source
+      // empty" test sat here, so a plain click did nothing whenever a reply watch matched, and always on a
+      // server without them (found at the 26.11.26 cut). As at 26.11.22:
       if (activeTab !== 'search' || promptOpening || promptSearch.state().loading || universalSearchTimer !== null) return;
       const id = target.getAttribute(SEARCH_PROMPT_ID), revision = Number(target.getAttribute(SEARCH_PROMPT_REVISION));
       const selected = promptSearch.state().matches.find(row => row.schedule_id === id && row.revision === revision);
@@ -21685,8 +22774,26 @@ export const bootstrapDataRoute = (
       if (id !== null) void linkContactRelationship(id);
       return;
     }
+    if (action === CONTACT_PREVIEW_ACTION) {
+      const email = target.getAttribute(DATA_ROUTE_CONTACT_EMAIL_ATTR);
+      if (email === null || !contactPreviewBreakpoint?.matches || contactDialog !== null) return;
+      if (contactPreviewSelection?.email === email) {
+        closeContactPreview();
+        return;
+      }
+      contactPreviewSelection = { email, query: contactSearch.trim() };
+      render();
+      const heading = routeRoot.querySelector<HTMLElement>(`#${CONTACT_PREVIEW_HEADING_ID}`);
+      if (focusListTarget(heading)) heading?.scrollIntoView?.({ block: 'nearest' });
+      return;
+    }
+    if (action === CONTACT_PREVIEW_CLOSE_ACTION) {
+      closeContactPreview();
+      return;
+    }
     if (action === 'open-contact-detail') {
       const email = target.getAttribute(DATA_ROUTE_CONTACT_EMAIL_ATTR);
+      if (target.closest?.(`[${CONTACT_PREVIEW_ATTR}]`)) focusListTarget(target);
       if (email !== null) void openContactDetail(email);
       return;
     }
@@ -21709,7 +22816,20 @@ export const bootstrapDataRoute = (
     }
     if (action === 'open-form-response') {
       const submissionId = target.getAttribute(DATA_ROUTE_FORM_RESPONSE_ID_ATTR);
-      if (submissionId !== null) void openFormResponse(submissionId);
+      if (!submissionId || savingFormResponse || formResponseRunModal) return;
+      if (formResponseDiscard) { focusFormResponseDiscardGuard(); return; }
+      const fromList = activeLens === 'data' && activeTab === 'form_response' && workListReaderBreakpoint?.matches === true
+        && target.closest?.('.data-form-response-workspace-list') != null;
+      if (fromList) {
+        if (submissionId === formResponseDetailId && loadingFormResponseDetail) return;
+        if (submissionId === formResponseDetailId && formResponseDetail !== null) {
+          focusFormResponseControl(`[${DATA_ROUTE_FORM_RESPONSE_DETAIL_HEADING_ATTR}]`);
+          return;
+        }
+        if (hasUnsavedFormResponseEditor()) { showFormResponseDiscardGuard({ kind: 'row', id: submissionId }); return; }
+        target.focus({ preventScroll: true });
+      }
+      void openFormResponse(submissionId, fromList);
       return;
     }
     if (action === DATA_ROUTE_FORM_RESPONSE_DISCARD_KEEP_ACTION) {
@@ -21717,30 +22837,37 @@ export const bootstrapDataRoute = (
       return;
     }
     if (action === DATA_ROUTE_FORM_RESPONSE_DISCARD_COMMIT_ACTION) {
-      const pendingTab = formResponseDiscardPendingTab;
-      if (pendingTab !== null) {
+      const destination = formResponseDiscard;
+      if (!destination) return;
+      if (destination.kind === 'tab') {
         retireFormResponseEditorDraft();
-        const navigation = selectTab(pendingTab);
-        pendingFormResponseDiscardTabFocus = pendingTab;
-        focusDataTab(pendingTab);
+        const navigation = selectTab(destination.tab);
+        pendingFormResponseDiscardTabFocus = destination.tab;
+        focusDataTab(destination.tab);
         void navigation;
         return;
       }
-      const pendingHref = formResponseDiscardPendingHref;
-      if (pendingHref !== null) {
+      if (destination.kind === 'link') {
         retireFormResponseEditorDraft();
         const view = doc.defaultView;
         if (view !== null && view !== undefined) {
-          view.location.hash = pendingHref;
+          view.location.hash = destination.href;
         } else {
           render();
           focusFormResponseAutomate();
         }
         return;
       }
-      closeFormResponse(true);
+      if (destination.kind === 'row') {
+        closeFormResponseEditor(true);
+        formResponseRow(destination.id)?.focus({ preventScroll: true });
+        void openFormResponse(destination.id, true);
+      } else if (destination.kind === 'editor') closeFormResponseEditor(true);
+      else closeFormResponse(true);
       return;
     }
+    if (action === 'open-form-response-editor') { openFormResponseEditor(); return; }
+    if (action === 'close-form-response-editor') { closeFormResponseEditor(); return; }
     if (action === 'close-form-response') {
       closeFormResponse();
       return;
@@ -21755,6 +22882,7 @@ export const bootstrapDataRoute = (
       return;
     }
     if (action === 'discover-form-response-automations') {
+      if (savingFormResponse || formResponseDiscard || formResponseRunModal) return;
       // The open detail is already the discovery anchor, and the lookup has
       // its own response/sequence guards. Do not queue behind an unrelated
       // silent list refresh that may still be in flight or replace the route's
@@ -21766,6 +22894,7 @@ export const bootstrapDataRoute = (
       return;
     }
     if (action === 'review-form-response-automation') {
+      if (savingFormResponse || formResponseDiscard) return;
       const recipeId = target.getAttribute(
         DATA_ROUTE_FORM_RESPONSE_RUN_RECIPE_ATTR,
       );
@@ -21773,7 +22902,7 @@ export const bootstrapDataRoute = (
       return;
     }
     if (action === 'load-more-form-responses') {
-      if (formResponseLoadMoreQueued || loadingMoreFormResponses) return;
+      if (formResponseLoadMoreQueued || loadingMoreFormResponses || savingFormResponse || formResponseDiscard) return;
       formResponseLoadMoreQueued = true;
       if (doc.activeElement === target && isReceivedTab(activeTab)) {
         pendingFormResponseLoadMoreFocus = true;
@@ -22026,6 +23155,7 @@ export const bootstrapDataRoute = (
     if (action === 'file-usage') { if (!fileLifecycle?.busy) pendingLoadPromise = loadFileUsage(); return; }
     if (action === 'file-toggle-archived') {
       if (!beforeLeaveFileRename()) return;
+      if (fileBrowserBreakpoint?.matches) target.focus({ preventScroll: true });
       fileBatch.reset();
       savedFiles.cancel();
       showArchivedFiles = !showArchivedFiles; fileLifecycle = undefined; fileLifecycleGeneration++;
@@ -22123,8 +23253,25 @@ export const bootstrapDataRoute = (
       const kind = target.getAttribute('data-kind');
       const id = target.getAttribute('data-entity-id');
       if (kind !== null && id !== null && isWorkEntityTab(kind as DataTabId)) {
-        if ((kind === 'task' || kind === 'note') && !workEntityState.dialog)
-          workReaderNavigation.start(kind, id, workSearchScrollHost()?.scrollTop ?? 0);
+        const scrollTop = workSearchScrollHost()?.scrollTop ?? 0;
+        if ((kind === 'task' || kind === 'note' || kind === 'commitment') && target.closest(`.work-entity-list-view[data-kind="${kind}"]`)) {
+          if ((workEntityState.dialog && !showWorkListReader()) || hasDataInFlightWork()) return;
+          if (workListReaderBreakpoint?.matches && !workSearchReturn && !exactSearchReturn) {
+            const scope = workReaderScope();
+            if (scope?.kind === kind) {
+              if (scope.ready === false || !scope.ids.includes(id)) return;
+              if (activeWorkReader()?.id === id && !pendingWorkEntityDialogOpen && !workReaderNavigation.busy()) {
+                focusWorkEntityDialog(); return;
+              }
+              if (kind === 'commitment' && (workReminder.block() || !mailMessageSurface.beforeLeave())) return;
+              const hash = activeWorkListReader()?.hash ?? dataHistory.current().hash;
+              workReaderNavigation.suspend();
+              void openEditWorkEntityDialog(kind, id, 'read', false, undefined, undefined, { scope, hash, scrollTop });
+              return;
+            }
+          }
+        }
+        if ((kind === 'task' || kind === 'note') && !workEntityState.dialog) workReaderNavigation.start(kind, id, scrollTop);
         void openEditWorkEntityDialog(kind as WorkEntityKind, id);
       }
       return;
@@ -22132,7 +23279,17 @@ export const bootstrapDataRoute = (
     if (action === 'open-work-entity-detail') {
       const kind = target.getAttribute('data-kind');
       const id = target.getAttribute('data-entity-id');
-      if (kind === 'booking' && id !== null) void openBookingDetail(id);
+      if (kind !== 'booking' || id === null) return;
+      const fromList = activeLens === 'data' && activeTab === 'booking' && workListReaderBreakpoint?.matches
+        && target.closest('.work-entity-list-view[data-kind="booking"]');
+      if (!fromList) { void openBookingDetail(id); return; }
+      if (workEntityState.dialog || pendingWorkEntityDialogOpen || hasDataInFlightWork() || loading
+        || loadedBookingListScope !== bookingListScope() || !mailMessageSurface.beforeLeave()) return;
+      if (bookingDetailId === id && loadingBookingDetail) return;
+      if (bookingDetailId === id && bookingDetail?.entity) { focusBooking('heading', true); return; }
+      target.focus({ preventScroll: true });
+      const origin = bookingListOrigin ?? { hash: dataHistory.current().hash, scrollTop: workSearchScrollHost()?.scrollTop ?? 0 };
+      void openBookingDetail(id, undefined, false, origin);
       return;
     }
     if (action === 'close-booking-detail') {
@@ -22141,6 +23298,8 @@ export const bootstrapDataRoute = (
     }
     if (action === 'edit-booking-detail') {
       const id = target.getAttribute('data-entity-id');
+      if (showBookingListReader() && (workEntityState.dialog || pendingWorkEntityDialogOpen || hasDataInFlightWork()
+        || !mailMessageSurface.beforeLeave())) return;
       if (id !== null) void openEditWorkEntityDialog('booking', id);
       return;
     }
@@ -22174,7 +23333,6 @@ export const bootstrapDataRoute = (
     if (action.startsWith(WORK_COPY_ACTION)) {
       const reading = activeWorkReader();
       if (reading && target.closest?.(`.work-entity-${reading.kind}-reader`)
-        || activeTab === 'commitment' && commitmentMode === 'read' && target.closest?.('.work-entity-commitment-reader')
         || activeTab === 'booking' && !workEntityState.dialog && target.closest?.('.work-entity-booking-detail')) workReaderCopy.handle(action);
       return;
     }
@@ -22270,11 +23428,16 @@ export const bootstrapDataRoute = (
       const heading = Array.from(reader?.querySelectorAll<HTMLElement>('[data-note-heading]') ?? [])
         .find(candidate => candidate.getAttribute('data-note-heading') === target.getAttribute('data-note-heading-target'));
       if (content && heading) {
-        content.scrollTop += heading.getBoundingClientRect().top - content.getBoundingClientRect().top - 16;
+        if (reader?.classList.contains('work-entity-reader--inline') && content.scrollHeight <= content.clientHeight) {
+          heading.scrollIntoView({ block: 'nearest' });
+        } else {
+          content.scrollTop += heading.getBoundingClientRect().top - content.getBoundingClientRect().top - 16;
+        }
         heading.focus({ preventScroll: true });
       }
       return;
     }
+    if (action === 'review-refund-credits') { refundCreditReview.open(); return; }
     if (action === 'draft-commitment-follow-up') { void commitmentFollowUp.draft(); return; }
     if (action === 'edit-commitment') {
       if (workEntityDialogEntity?._kind === 'commitment' && !pendingWorkEntityDialogOpen
@@ -22445,6 +23608,30 @@ export const bootstrapDataRoute = (
       && target.hasAttribute(SEARCH_INPUT_ATTR)
     ) {
       if (searchWriting()) { target.value = universalSearchQuery; return; }
+      runOpenSequence++; runOpening = undefined; runOpenError = undefined;
+      const settings = routeRoot.querySelector<HTMLElement>(`[${SEARCH_SETTING_GROUP}]`);
+      settings?.setAttribute('aria-busy', 'true');
+      for (const hit of Array.from(settings?.querySelectorAll(`[${SEARCH_SETTING_ID}]`) ?? [])) hit.setAttribute('aria-disabled', 'true');
+      savedViewOpenSequence++; savedViewOpening = undefined; savedViewOpenError = undefined;
+      routeRoot.querySelector(`[${SEARCH_SAVED_VIEW_FOCUS}]`)?.remove();
+      const savedViews = routeRoot.querySelector<HTMLElement>(`[${SEARCH_SAVED_VIEW_GROUP}]`);
+      savedViews?.setAttribute('aria-busy', 'true');
+      for (const hit of Array.from(savedViews?.querySelectorAll(`[${SEARCH_SAVED_VIEW_ID}]`) ?? [])) hit.setAttribute('aria-disabled', 'true');
+      for (const button of Array.from(savedViews?.querySelectorAll('button') ?? [])) button.disabled = true;
+      connectionOpenSequence++; connectionOpening = undefined; connectionOpenError = undefined;
+      routeRoot.querySelector(`[${SEARCH_CONNECTION_FOCUS}]`)?.remove();
+      const connections = routeRoot.querySelector<HTMLElement>(`[${SEARCH_CONNECTION_GROUP}]`);
+      connections?.setAttribute('aria-busy', 'true');
+      for (const hit of Array.from(connections?.querySelectorAll(`[${SEARCH_CONNECTION_KEY}]`) ?? [])) hit.setAttribute('aria-disabled', 'true');
+      for (const button of Array.from(connections?.querySelectorAll('button') ?? [])) button.disabled = true;
+      routeRoot.querySelector(`[${SEARCH_RUN_FOCUS}]`)?.remove();
+      // Keep the input's native editing history while making the debounce
+      // boundary visible to pointer and keyboard users, including space edits.
+      const runs = routeRoot.querySelector<HTMLElement>(`[${SEARCH_RUN_GROUP}]`);
+      runs?.setAttribute('aria-busy', 'true');
+      for (const hit of Array.from(runs?.querySelectorAll(`[${SEARCH_RUN_ID}]`) ?? [])) hit.setAttribute('aria-disabled', 'true');
+      for (const button of Array.from(runs?.querySelectorAll('button') ?? [])) button.disabled = true;
+      for (const select of Array.from(runs?.querySelectorAll('select') ?? [])) select.disabled = true;
       if (target.value.trim() === '') finishRecentSearch();
       if (universalSearchQuery.trim() !== target.value.trim()) {
         retireUniversalSearch(false, target.value); retireSearchTypeCounts(routeRoot);
@@ -22546,6 +23733,9 @@ export const bootstrapDataRoute = (
       if (activeTab === 'task' && action === 'task-bulk-priority') { taskBulk.setPriority(target.value); return; }
       if (activeTab === 'task' && action === 'task-bulk-shift-days') { taskBulk.setShiftDays(target.value); return; }
       if (action === 'search-work-entities') {
+        if (showBookingListReader() && (hasDataInFlightWork() || !mailMessageSurface.beforeLeave())) {
+          target.value = workEntityState.search_query; return;
+        }
         if (activeTab === 'task' && taskBulk.busy()) { target.value = workEntityState.search_query; return; }
         if (activeTab === 'task') taskBulk.reset();
         if (activeTab === 'note' && noteBulk.busy()) { target.value = workEntityState.search_query; return; }
@@ -22686,6 +23876,36 @@ export const bootstrapDataRoute = (
     if (fileBatch.busy()) { render(); focusFileBatch(); return; }
     const target = ev.target as HTMLInputElement | HTMLSelectElement | null;
     if (target === null || typeof target.getAttribute !== 'function') return;
+    if (target.getAttribute(SHARED_ACTION_ATTR) === RECORDS_PACK_PICKER_ACTION) {
+      if (activeLens === 'data' && activeTab === 'records'
+        && target.getAttribute('aria-disabled') !== 'true' && !hasRecordsInFlightWork()) {
+        void selectRecordsNamespace(target.value);
+      } else {
+        const namespace = recordsState.selectedNamespace;
+        target.value = namespace === null ? '' : recordsOwnerKey(namespace.owner);
+      }
+      return;
+    }
+    if (target.hasAttribute(SEARCH_FOLLOW_UP_FILTER) && activeLens === 'data' && activeTab === 'search') {
+      const filters = parseMailFollowUpFilters({ ...followUpSearch.state().filters, state: target.value === 'all' ? undefined : target.value });
+      if (!searchWriting() && filters) {
+        followUpSearch.setFilters(filters); pendingNavigationSearchRestore = null;
+        if (universalSearchTimer === null) void followUpSearch.load(universalSearchQuery.trim());
+        opts.onViewChange?.(currentView());
+      }
+      render(); return;
+    }
+    const runFilter = target.getAttribute(SEARCH_RUN_FILTER);
+    if (runFilter && activeLens === 'data' && activeTab === 'search') {
+      if (!searchWriting() && (runFilter === 'outcome' || runFilter === 'time_range')
+        && runSearch.setFilters({ ...runSearch.state().filters, [runFilter]: target.value })) {
+        runOpenSequence++; runOpening = undefined; runOpenError = undefined;
+        pendingNavigationSearchRestore = null;
+        if (universalSearchTimer === null) void runSearch.load(universalSearchQuery.trim());
+        opts.onViewChange?.(currentView());
+      }
+      render(); return;
+    }
     const reminderDateField = target.getAttribute(REMINDER_DATE_FIELD);
     if (activeLens === 'data' && activeTab === 'search' && target.hasAttribute(SEARCH_TRIAGE_FIELD)) {
       searchReminderTriage.handleChange(target); return;
@@ -22814,6 +24034,7 @@ export const bootstrapDataRoute = (
     if (taskBulk.busy()) { render(); focusTaskBatch(); return; }
     if (noteBulk.busy()) { render(); focusNoteBatch(); return; }
     if (action === 'select-source') {
+      if (showBookingListReader() && (hasDataInFlightWork() || !mailMessageSurface.beforeLeave())) { render(); return; }
       taskBulk.reset();
       noteBulk.reset();
       const options = sourceOptionsForKind(sources, workEntityState.kind);
@@ -22826,6 +24047,7 @@ export const bootstrapDataRoute = (
       return;
     }
     if (action === 'filter-booking-lifecycle' && activeTab === 'booking') {
+      if (showBookingListReader() && (hasDataInFlightWork() || !mailMessageSurface.beforeLeave())) { render(); return; }
       const next = target.value;
       if (next === 'all' || BOOKING_LIFECYCLE_STATES.includes(next as BookingLifecycleState)) {
         bookingLifecycleFilter = next as BookingLifecycleState | 'all';
@@ -22861,6 +24083,52 @@ export const bootstrapDataRoute = (
   };
 
   const onKeyDown = (ev: KeyboardEvent): void => {
+    if (ev.key === 'Escape' && !ev.defaultPrevented && !ev.isComposing && activeLens === 'data' && activeTab === 'mail_fact'
+      && mailFacts.closeReaderFromKeyboard(ev.target as Element | null)) {
+      ev.preventDefault(); ev.stopPropagation(); return;
+    }
+    if (ev.key === 'Escape' && !ev.defaultPrevented && !ev.isComposing && showFormResponseWorkspace() && !formResponseDiscard
+      && !formResponseRunModal && (ev.target as HTMLElement | null)?.closest?.('.data-form-response-reader, .data-form-response-workspace-list [aria-current="true"]')) {
+      ev.preventDefault(); ev.stopPropagation();
+      if (formResponseEditorOpen) closeFormResponseEditor();
+      else closeFormResponse();
+      return;
+    }
+    if (ev.key === 'Escape' && !ev.defaultPrevented && !ev.isComposing && activeLens === 'data' && activeTab === 'reminder'
+      && (ev.target as HTMLElement | null)?.closest?.('.reminders-reader, .reminders-workspace-list .reminders-open-row[aria-current="true"]')
+      && remindersSurface.closeReaderFromKeyboard()) {
+      ev.preventDefault(); ev.stopPropagation(); return;
+    }
+    if (ev.key === 'Escape' && !ev.defaultPrevented && !ev.isComposing && showBookingListReader() && !workEntityState.dialog
+      && (ev.target as HTMLElement | null)?.closest?.('.work-entity-booking-detail, .work-entity-booking-workspace [aria-current="true"]')
+      && closeBookingDetail()) {
+      ev.preventDefault(); ev.stopPropagation(); return;
+    }
+    if (ev.key === 'Escape' && !ev.isComposing && activeTab === 'files') {
+      const sourceOptions = (ev.target as HTMLElement | null)?.closest?.<HTMLDetailsElement>(`${FILE_SOURCE_OPTIONS}[open]`);
+      if (sourceOptions) {
+        sourceOptions.open = false;
+        sourceOptions.querySelector<HTMLElement>('summary')?.focus({ preventScroll: true });
+        ev.preventDefault(); ev.stopPropagation(); return;
+      }
+    }
+    if (savedFilePreviewPane?.handleKeyDown(ev)) return;
+    if (ev.key === 'Escape' && !ev.defaultPrevented && !ev.isComposing && activeLens === 'data' && activeTab === 'records'
+      && recordsListReturn !== null && !hasRecordsInFlightWork()
+      && (ev.target as HTMLElement | null)?.closest?.('.records-inspector-workspace')) {
+      ev.preventDefault(); ev.stopPropagation(); closeRecordsRecord(); return;
+    }
+    if (ev.key === 'Escape' && !ev.defaultPrevented && !ev.isComposing && contactPreviewSelection && contactDialog === null) {
+      const target = ev.target as HTMLElement | null;
+      if (target?.closest?.(`[${CONTACT_PREVIEW_ATTR}]`)
+        || (target?.getAttribute?.(DATA_ROUTE_ACTION_ATTR) === CONTACT_PREVIEW_ACTION
+          && target.getAttribute(DATA_ROUTE_CONTACT_EMAIL_ATTR) === contactPreviewSelection.email)) {
+        ev.preventDefault();
+        ev.stopPropagation();
+        closeContactPreview();
+        return;
+      }
+    }
     if (ev.key === 'Escape' && !ev.isComposing && activeTab === 'task' && taskFiltersOpen
       && (ev.target as HTMLElement | null)?.closest?.('#work-entity-task-filter-panel')) {
       ev.preventDefault(); ev.stopPropagation(); taskFiltersOpen = false; render();
@@ -22882,7 +24150,8 @@ export const bootstrapDataRoute = (
       routeRoot.querySelector<HTMLElement>('[data-contact-activity-focus="apply"]')?.focus({ preventScroll: true });
       void contactActivity.apply(); return;
     }
-    if (activeLens === 'data' && activeTab === 'mail' && mailMessageSurface.handleKeyDown(ev)) return;
+    if (activeLens === 'data' && activeTab === 'mail'
+      && (mailMessageSurface.handleKeyDown(ev) || mailReaderNavigation.handlePaneKeyDown(ev))) return;
     if (activeTab === 'note' && noteMode === 'read' && !workEntityDiscardGuardOpen && noteFind.handleKeyDown(ev)) return;
     if (activeTab === 'task' && taskMode === 'read' && !workEntityDiscardGuardOpen && taskFind.handleKeyDown(ev)) return;
     if (calendarCreateSurface.handleKeyDown(ev)) return;
@@ -22934,6 +24203,7 @@ export const bootstrapDataRoute = (
     if (
       activeLens === 'data'
       && activeTab === 'records'
+      && recordsInspectorReadId === null
       && recordsKindTab?.getAttribute(SHARED_ACTION_ATTR)
         === RECORDS_SELECT_KIND_ACTION
       && recordsKindTab.getAttribute('aria-disabled') !== 'true'
@@ -22973,7 +24243,7 @@ export const bootstrapDataRoute = (
     if (
       !memoryImportDiscardGuardOpen
       && !memoryComposeDiscardGuardOpen
-      && !formResponseDiscardGuardOpen
+      && !formResponseDiscard
       && contactDialog === null
       && workEntityState.dialog === null
     ) return;
@@ -22989,7 +24259,7 @@ export const bootstrapDataRoute = (
       ? queryable.querySelector?.(
           `[${MEMORY_COMPOSE_DISCARD_GUARD_ATTR}]`,
         ) ?? null
-      : formResponseDiscardGuardOpen
+      : formResponseDiscard
       ? queryable.querySelector?.(
           `[${DATA_ROUTE_FORM_RESPONSE_DISCARD_GUARD_ATTR}]`,
         ) ?? null
@@ -23005,6 +24275,14 @@ export const bootstrapDataRoute = (
         ? queryable.querySelector?.(`[${DATA_ROUTE_CONTACT_DIALOG_ATTR}]`) ?? null
         : queryable.querySelector?.('.work-entity-dialog') ?? null;
     if (overlay === null) return;
+    if (overlay.classList?.contains('work-entity-reader--inline')) {
+      const target = ev.target as HTMLElement | null;
+      if (ev.key === 'Escape' && !ev.defaultPrevented && target
+        && (overlay.contains(target) || target.matches?.('.work-entity-list-row-button[aria-current="true"]'))) {
+        ev.preventDefault(); ev.stopPropagation(); closeWorkEntityDialog();
+      }
+      return;
+    }
     if (ev.key === 'Escape') {
       ev.preventDefault();
       ev.stopPropagation();
@@ -23012,7 +24290,7 @@ export const bootstrapDataRoute = (
         closeMemoryImportDiscardGuard();
       } else if (memoryComposeDiscardGuardOpen) {
         closeMemoryComposeDiscardGuard();
-      } else if (formResponseDiscardGuardOpen) {
+      } else if (formResponseDiscard) {
         closeFormResponseDiscardGuard();
       } else if (contactDiscardGuardOpen) {
         closeContactDiscardGuard();
@@ -23021,38 +24299,15 @@ export const bootstrapDataRoute = (
       } else if (contactDialog !== null) {
         closeContactDialog();
       } else {
-        closeWorkEntityDialog(false, workEntityState.kind === 'note' && noteMode === 'edit' && workEntityState.dialog?.mode === 'edit');
+        closeWorkEntityDialog(false, workEntityState.kind === 'note' && noteMode === 'edit' && workEntityState.dialog?.mode === 'edit',
+          commitmentMode === 'edit' && activeWorkListReader()?.kind === 'commitment', taskMode === 'edit' && activeWorkListReader()?.kind === 'task');
       }
       return;
     }
     if (ev.key !== 'Tab') return;
-    const focusable = Array.from(overlay.querySelectorAll<HTMLElement>(
-      'button:not([disabled]), input:not([disabled]), select:not([disabled]), '
-      + 'textarea:not([disabled]), a[href], [tabindex]:not([tabindex="-1"])',
-    )).filter(
-      (candidate) =>
-        !candidate.hasAttribute('hidden')
-        && candidate.getAttribute('aria-hidden') !== 'true',
-    );
-    const first = focusable[0];
-    const last = focusable.at(-1);
-    if (first === undefined || last === undefined) {
-      ev.preventDefault();
-      return;
-    }
-    const activeElement = doc.activeElement;
-    if (activeElement === overlay) {
-      ev.preventDefault();
-      (ev.shiftKey ? last : first).focus({ preventScroll: true });
-      return;
-    }
-    if (ev.shiftKey && (activeElement === first || !overlay.contains(activeElement))) {
-      ev.preventDefault();
-      last.focus({ preventScroll: true });
-    } else if (!ev.shiftKey && (activeElement === last || !overlay.contains(activeElement))) {
-      ev.preventDefault();
-      first.focus({ preventScroll: true });
-    }
+    if (ev.isComposing) return;
+    ev.preventDefault();
+    focusNextInDialog(overlay, doc.activeElement, ev.shiftKey);
   };
 
   routeRoot.addEventListener('click', onClick);
@@ -23068,7 +24323,9 @@ export const bootstrapDataRoute = (
       && ['pointerdown', 'keydown', 'wheel', 'touchstart', 'input'].includes(event.type)) taskReader.interact(routeRoot);
     if (activeLens === 'data' && activeTab === 'project' && ['pointerdown', 'keydown', 'wheel', 'input', 'change'].includes(event.type)) projectInteraction++;
     if (activeLens === 'data' && activeTab === 'booking' && ['pointerdown', 'keydown', 'wheel'].includes(event.type)
-      && (event.target as HTMLElement | null)?.closest?.('.work-entity-booking-detail')) { bookingReadingInteraction++; bookingReader.interact(); }
+      && (event.target as HTMLElement | null)?.closest?.('.work-entity-booking-detail, .work-entity-booking-workspace')) {
+      bookingReadingInteraction++; bookingReader.interact();
+    }
     if (activeTab === 'commitment' && (event.type === 'wheel' || event.type === 'pointerdown' || event.type === 'keydown')
       && (event.target as HTMLElement | null)?.closest?.('.work-entity-commitment-reader')) commitmentReadingInteraction++;
     if ((event.target as HTMLElement | null)?.closest?.('.work-entity-note-reader, .work-entity-task-reader')) captureWorkReading();
@@ -23134,7 +24391,8 @@ export const bootstrapDataRoute = (
   const isCollectionNavigation = (target: EventTarget | null): boolean => {
     const element = target as HTMLElement | null;
     return element?.hasAttribute?.(DATA_ROUTE_TAB_ATTR) === true
-      || element?.hasAttribute?.(DATA_ROUTE_COLLECTION_PICKER_ATTR) === true;
+      || element?.hasAttribute?.(DATA_ROUTE_COLLECTION_PICKER_ATTR) === true
+      || isCollectionRailToggle(element);
   };
   let collectionNavigationHasFocus = false;
   const onCollectionFocusIn = (event: FocusEvent): void => {
@@ -23146,15 +24404,16 @@ export const bootstrapDataRoute = (
     const element = event.target as HTMLElement;
     // Browsers can blur the now-hidden control before the media-query event.
     // Retain ownership only for that transition, not for an ordinary blur.
-    const hiddenByBreakpoint = collectionPickerBreakpoint?.matches
-      ? element.hasAttribute(DATA_ROUTE_TAB_ATTR)
-      : element.hasAttribute(DATA_ROUTE_COLLECTION_PICKER_ATTR);
+    const hiddenByBreakpoint = isCollectionRailToggle(element)
+      ? !collectionCollapseBreakpoint?.matches
+      : usesCollectionPicker() !== element.hasAttribute(DATA_ROUTE_COLLECTION_PICKER_ATTR);
     if (!hiddenByBreakpoint || event.relatedTarget !== null) collectionNavigationHasFocus = false;
   };
   const onCollectionBreakpointChange = (): void => {
     if (disposed || activeLens !== 'data' || !collectionNavigationHasFocus) return;
     const focused = doc.activeElement;
     if (focused !== null && focused !== doc.body && !isCollectionNavigation(focused)) return;
+    if (isCollectionRailToggle(focused) && collectionCollapseBreakpoint?.matches) return;
     collectionNavigationTarget(activeTab)?.focus({ preventScroll: true });
   };
   const onCollectionRailBreakpointChange = (): void => {
@@ -23163,10 +24422,99 @@ export const bootstrapDataRoute = (
       ?.setAttribute('aria-orientation', collectionRailBreakpoint?.matches ? 'vertical' : 'horizontal');
     revealCollectionTab(collectionNavigationTarget(activeTab));
   };
+  const onRecordsDesktopBreakpointChange = (): void => {
+    if (disposed || activeLens !== 'data' || activeTab !== 'records') return;
+    const focus = activeRecordsFocusIdentity();
+    const focusInInspector = doc.activeElement?.closest?.('.records-inspector-workspace, .records-view-controls') != null;
+    if (recordsDesktopBreakpoint?.matches && doc.activeElement?.closest?.(
+      '.records-pack-summary, .records-export-actions, .records-import, .records-changes, .records-outbox, .records-kind-toolbar',
+    )) recordsManagementOpen = true;
+    render();
+    if (focus?.action === RECORDS_PACK_PICKER_ACTION || focus?.action === RECORDS_SELECT_NAMESPACE_ACTION) {
+      focusRecordsPack();
+    } else if (!recordsDesktopBreakpoint?.matches && focusInInspector && recordsState.detail !== null
+      && !routeRoot.querySelector?.('.records-detail')?.contains(doc.activeElement)) {
+      focusRecordsDetailHeading();
+    }
+  };
+  const onMailReadingPaneBreakpointChange = (): void => {
+    if (!disposed && activeLens === 'data' && activeTab === 'mail' && explorerDetail !== null) render();
+  };
+  const onCalendarMonthBreakpointChange = (): void => {
+    if (!disposed && activeLens === 'data' && activeTab === 'calendar' && explorerDetail === null
+      && routeRoot.querySelector?.('[data-calendar-month]')) render();
+  };
+  const onFileBrowserBreakpointChange = (): void => {
+    if (!disposed && activeLens === 'data' && activeTab === 'files') render();
+  };
+  const onContactPreviewBreakpointChange = (): void => {
+    if (!disposed && activeLens === 'data' && activeTab === 'contact' && contactDetail === null
+      && contactDialog === null && contactScan === null && contactImport === null) render();
+  };
+  const onWorkListReaderBreakpointChange = (): void => {
+    if (!disposed && activeLens === 'data' && activeTab === 'mail_fact') {
+      mailFacts.workspaceChanged(doc.activeElement);
+      return;
+    }
+    if (!disposed && activeLens === 'data' && activeTab === 'form_response' && formResponseListOrigin && formResponseDetailId !== null) {
+      const active = doc.activeElement as HTMLElement | null;
+      const listFocus = active?.closest?.('.data-form-response-workspace-list');
+      if (workListReaderBreakpoint?.matches && (formResponseEditorControlFrom(active) || hasUnsavedFormResponseEditor())) {
+        formResponseEditorOpen = true;
+      }
+      render();
+      if (!workListReaderBreakpoint?.matches && listFocus && !formResponseDiscard) {
+        focusFormResponseControl(loadingFormResponseDetail ? `[${DATA_ROUTE_ACTION_ATTR}="close-form-response"]`
+          : `[${DATA_ROUTE_FORM_RESPONSE_DETAIL_HEADING_ATTR}]`);
+      }
+      return;
+    }
+    if (!disposed && activeLens === 'data' && activeTab === 'reminder') {
+      if (remindersSurface.detailId() && !remindersSurface.hasListReader()) return;
+      const listFocus = !workListReaderBreakpoint?.matches && doc.activeElement?.closest?.('.reminders-workspace-list');
+      render();
+      if (listFocus) routeRoot.querySelector<HTMLElement>(`[${REMINDERS_FOCUS_ATTR}="detail"]`)?.focus();
+      return;
+    }
+    if (!disposed && activeLens === 'data' && activeTab === 'booking' && bookingListOrigin && bookingDetailId !== null) {
+      const active = doc.activeElement;
+      const listFocus = active?.closest?.('.work-entity-booking-workspace .work-entity-page-body');
+      const readerFocus = active?.getAttribute?.('data-booking-focus');
+      render();
+      if (!workEntityState.dialog) {
+        if (!workListReaderBreakpoint?.matches && listFocus) focusBooking(loadingBookingDetail || !bookingDetail?.entity ? 'back' : 'heading', true);
+        else if (readerFocus) focusBooking(readerFocus, true);
+      }
+      return;
+    }
+    if (disposed || !activeWorkReader() || !activeWorkListReader()) return;
+    const restoreModalFocus = !workListReaderBreakpoint?.matches
+      && doc.activeElement?.closest?.('.work-entity-list-workspace .work-entity-page-body') != null;
+    render();
+    if (restoreModalFocus) focusWorkEntityDialog();
+  };
+  const onProjectWorkspaceBreakpointChange = (): void => {
+    if (disposed || activeLens !== 'data' || activeTab !== 'project' || !projectWork || projectEditing) return;
+    const hadProjectFocus = doc.activeElement?.closest?.('.project-overview [data-project-focus]') != null;
+    render();
+    if (hadProjectFocus) doc.activeElement?.closest?.('.project-overview [data-project-focus]')?.scrollIntoView?.({ block: 'nearest' });
+  };
+  const onMemoryReaderBreakpointChange = (): void => {
+    if (!disposed && activeLens === 'memory' && memoryDetail !== null) render();
+  };
   doc.addEventListener('focusin', onCollectionFocusIn);
   doc.addEventListener('focusout', onCollectionFocusOut);
   collectionPickerBreakpoint?.addEventListener?.('change', onCollectionBreakpointChange);
+  collectionCollapseBreakpoint?.addEventListener?.('change', onCollectionBreakpointChange);
   collectionRailBreakpoint?.addEventListener?.('change', onCollectionRailBreakpointChange);
+  recordsDesktopBreakpoint?.addEventListener?.('change', onRecordsDesktopBreakpointChange);
+  mailReadingPaneBreakpoint?.addEventListener?.('change', onMailReadingPaneBreakpointChange);
+  calendarMonthBreakpoint?.addEventListener?.('change', onCalendarMonthBreakpointChange);
+  fileBrowserBreakpoint?.addEventListener?.('change', onFileBrowserBreakpointChange);
+  contactPreviewBreakpoint?.addEventListener?.('change', onContactPreviewBreakpointChange);
+  workListReaderBreakpoint?.addEventListener?.('change', onWorkListReaderBreakpointChange);
+  projectWorkspaceBreakpoint?.addEventListener?.('change', onProjectWorkspaceBreakpointChange);
+  memoryReaderBreakpoint?.addEventListener?.('change', onMemoryReaderBreakpointChange);
 
   startRefresh();
   // Bind the queued open to the route the user actually requested. Ordinary
@@ -23280,6 +24628,15 @@ export const bootstrapDataRoute = (
     // D-315 — the same for Mail facts: a later page, or a load under way.
     if (activeLens === 'data' && activeTab === 'task' && taskBulk.holdsList()) return;
     if (activeLens === 'data' && activeTab === 'note' && noteBulk.holdsList()) return;
+    if (activeLens === 'data' && activeTab === 'commitment' && workListReaderBreakpoint?.matches
+      && (activeWorkListReader() !== undefined || loadingMoreWorkEntities || workEntities.length > DEFAULT_LIMIT
+        || (doc.activeElement as HTMLElement | null)?.closest?.('.work-entity-list-view[data-kind="commitment"]'))) return;
+    if (activeLens === 'data' && activeTab === 'booking' && workListReaderBreakpoint?.matches
+      && (bookingListOrigin !== null || loadingMoreWorkEntities || workEntities.length > DEFAULT_LIMIT
+        || doc.activeElement?.closest?.('.work-entity-list-view[data-kind="booking"]'))) return;
+    if (activeLens === 'data' && activeTab === 'form_response' && workListReaderBreakpoint?.matches
+      && (formResponseListOrigin || loadingMoreFormResponses || formResponses.length > DEFAULT_LIMIT
+        || doc.activeElement?.closest?.('.data-form-response-list'))) return;
     if (activeLens === 'data' && activeTab === 'mail_fact' && mailFacts.isBusy()) return;
     // D-324 — nor a time being changed or a cancel waiting for its answer.
     if (activeLens === 'data' && activeTab === 'reminder' && remindersSurface.isBusy()) return;
@@ -23287,7 +24644,7 @@ export const bootstrapDataRoute = (
       && (projectWork.taskActions.holdsList() || Object.values(projectWork.sections).some(section => section.loading))) return;
     if (activeLens === 'data' && activeTab === 'records'
       && (recordsState.loading || recordsState.page > 1 || recordsViewHasDraft(recordsState)
-        || recordsState.detail !== null || recordsState.purgePending || recordsState.outboxOpen
+        || recordsState.detail !== null || recordsListReturn !== null || recordsState.purgePending || recordsState.outboxOpen
         || hasRecordsInFlightWork()
         || (doc.activeElement as HTMLElement | null)?.closest?.('.records-view-controls, .records-pagination') != null)) return;
     pendingLoadPromise = refreshActive(true);
@@ -23484,6 +24841,7 @@ export const bootstrapDataRoute = (
     hasInFlightWork: hasDataInFlightWork,
     hasUnsavedChanges: () => ((activeTab === 'note' && noteMode === 'edit' || isWorkDraftKind(activeTab) || activeTab === 'booking') && hasUnsavedWorkEntityDialog())
       || activeTab === 'contact' && (bookingReaderReturn?.target.kind === 'contact' || relatedWorkReturn?.workLink?.tab === 'contact' || relatedWorkReturn?.linkedRecord?.kind === 'contact') && hasUnsavedContactDialog()
+      || activeTab === 'form_response' && formResponseListOrigin !== null && hasUnsavedFormResponseEditor()
       || hasFileRenameChanges() || mailMessageSurface.hasUnsavedChanges() || calendarEventSurface.hasUnsavedChanges() || calendarCreateSurface.hasUnsavedChanges() || recordsImport.hasUnsavedChanges() || mailFacts.hasUnsavedChanges() || remindersSurface.hasUnsavedChanges() || workReminder.hasDraft(),
     unsavedChangesPrompt: () => (hasFileRenameChanges() ? 'Leave Data? Your filename change is not saved.' : mailReminders.hasDraft()
       ? 'Leave Data? Your reminder changes are not saved.' : mailMessageSurface.hasUnsavedChanges()
@@ -23496,6 +24854,7 @@ export const bootstrapDataRoute = (
         ? 'Leave Data? Your reminder changes are not saved.'
       : activeTab === 'contact' && (bookingReaderReturn?.target.kind === 'contact' || relatedWorkReturn?.workLink?.tab === 'contact' || relatedWorkReturn?.linkedRecord?.kind === 'contact') && hasUnsavedContactDialog() ? 'Leave Data? Your contact changes are not saved.'
         : activeTab === 'booking' && hasUnsavedWorkEntityDialog() ? 'Leave Data? Your booking changes are not saved.'
+        : activeTab === 'form_response' && formResponseListOrigin !== null && hasUnsavedFormResponseEditor() ? 'Leave Data? Your form-response changes are not saved.'
         : activeTab === 'note' && noteMode === 'edit' && hasUnsavedWorkEntityDialog() ? `Leave Data? Your note is not saved. ${noteDraft.message()}`
         : isWorkDraftKind(activeTab) && hasUnsavedWorkEntityDialog() ? `Leave Data? Your ${activeTab} changes are not saved. ${workDrafts[activeTab].message()}`
         : null),
@@ -23514,7 +24873,7 @@ export const bootstrapDataRoute = (
       await fileBatch.whenSettled();
       await pendingLoadPromise;
       await projectViewLoad;
-      if (activeTab === 'search') await Promise.all([assetSearch.whenLoaded(), draftSearch.whenLoaded(), chatSearch.whenLoaded(), reminderSearch.whenLoaded(), promptSearch.whenLoaded(), decisionSearch.whenLoaded(), searchReminderTriage.whenSettled(), searchPromptBulk.whenSettled()]);
+      if (activeTab === 'search') await Promise.all([assetSearch.whenLoaded(), draftSearch.whenLoaded(), followUpSearch.whenLoaded(), chatSearch.whenLoaded(), reminderSearch.whenLoaded(), promptSearch.whenLoaded(), decisionSearch.whenLoaded(), runSearch.whenLoaded(), connectionSearch.whenLoaded(), savedViewSearch.whenLoaded(), searchReminderTriage.whenSettled(), searchPromptBulk.whenSettled()]);
       if (activeTab === 'calendar' && explorerDetail === null) await calendarAgenda.whenLoaded();
       if (activeTab === 'reminder') await remindersSurface.whenLoaded();
     },
@@ -23523,8 +24882,10 @@ export const bootstrapDataRoute = (
       || reminderMailReturn?.hash === hash && returnToMailReminder(true, true)
       || reminderWorkReturn?.hash === hash && returnToReminder(true, true)
       || projectChildReturn?.attention && projectChildReturn.hash === hash && returnToProjectOverview(true, true)
-      || workSearchReturn?.kind === 'booking' && workSearchReturn.hash === hash && returnToWorkSearch(true, true)
+      || workSearchReturn?.hash === hash && returnToWorkSearch(true, true)
       || findBookingReturn(hash) !== null && returnToBookingReader(true, true, hash)
+      || activeTab === 'booking' && bookingListOrigin?.hash === hash && closeBookingDetail(true, true)
+      || activeTab === 'form_response' && formResponseListOrigin?.hash === hash && closeFormResponse(true, true)
       || exactSearchReturn?.hash === hash && returnToExactLinkSearch(true, true)
       || recentSourceReturn?.hash === hash && returnToRecentSourceSearch(true, true)
       || contactWorkReturn?.hash === hash && returnToContactWork(true, true)
@@ -23533,13 +24894,22 @@ export const bootstrapDataRoute = (
       || calendarWorkReturn?.hash === hash && returnToCalendarWorkOrigin(true, true)
       || relatedWorkReturn?.hash === hash && returnToRelatedWork(true, true)),
     navigateDeepLink: (hash) => {
+      if (!disposed && activeLens === 'data' && activeTab === 'records'
+        && recordsListReturn?.hash === hash && !hasDataInFlightWork() && !recordsImport.hasUnsavedChanges()) {
+        closeRecordsRecord(true);
+        return true;
+      }
       if (!disposed && activeLens === 'data' && selectionNoteReturn?.hash === hash && returnToSelectionNoteOrigin(true)) return true;
       if (!disposed && activeLens === 'data' && sourceDetour?.hash === hash && returnToSourceDetour(true)) return true;
       if (!disposed && reminderMailReturn?.hash === hash && returnToMailReminder(true)) return true;
       if (!disposed && reminderWorkReturn?.hash === hash && returnToReminder(true)) return true;
       if (workReminder.hasDraft()) return false;
-      if (!disposed && activeLens === 'data' && workSearchReturn?.kind === 'booking' && workSearchReturn.hash === hash) return returnToWorkSearch(true);
+      if (!disposed && activeLens === 'data' && workSearchReturn?.hash === hash) return returnToWorkSearch(true);
       if (!disposed && activeLens === 'data' && findBookingReturn(hash) && returnToBookingReader(true, false, hash)) return true;
+      if (!disposed && activeLens === 'data' && activeTab === 'booking' && bookingListOrigin?.hash === hash) return closeBookingDetail(true);
+      if (!disposed && activeLens === 'data' && activeTab === 'form_response' && formResponseListOrigin?.hash === hash) {
+        return closeFormResponse(false, true);
+      }
       if (exactSearchReturn && hash !== exactSearchReturn.hash && hash !== exactSearchReturn.destination
         && !(exactSearchReturn.result.match.target.tab === 'contact' && contactDetail?.contact?.contact_id === exactSearchReturn.result.match.target.id
           && hash === serializeShellRoute('data', 'contact', contactDetail.email))) exactSearchReturn = null;
@@ -23554,11 +24924,12 @@ export const bootstrapDataRoute = (
       if (!disposed && activeLens === 'data' && mailWorkReturn?.hash === hash && returnToMailWorkOrigin(true)) return true;
       if (!disposed && activeLens === 'data' && calendarWorkReturn?.hash === hash && returnToCalendarWorkOrigin(true)) return true;
       if (!disposed && activeLens === 'data' && relatedWorkReturn?.hash === hash && returnToRelatedWork(true)) return true;
-      if (!disposed && activeLens === 'data' && !workSearchReturn && activeWorkReader() && workReaderNavigation.returnPosition()
+      const listHash = activeWorkListReader()?.hash;
+      if (!disposed && activeLens === 'data' && !workSearchReturn && activeWorkReader() && (listHash || workReaderNavigation.returnPosition())
         && !hasDataInFlightWork()) {
         const view = currentView(true);
-        const parent = savedViewLinked && savedViewBinding !== undefined && view !== null && sameSavedDataViewDefinition(view, savedViewBinding.definition)
-          ? serializeShellRoute('views', savedViewBinding.id) : serializeShellRoute('data', activeTab);
+        const parent = listHash ?? (savedViewLinked && savedViewBinding !== undefined && view !== null && sameSavedDataViewDefinition(view, savedViewBinding.definition)
+          ? serializeShellRoute('views', savedViewBinding.id) : serializeShellRoute('data', activeTab));
         if (hash === parent) {
           dataHistory.adopt(dataAddress(hash, undefined));
           closeWorkEntityDialog(); return true;
@@ -23587,6 +24958,11 @@ export const bootstrapDataRoute = (
         && hash === (mailInbox.position()?.hash ?? '#data/mail') && !hasDataInFlightWork()) {
         if (!mailMessageSurface.beforeLeave()) return false;
         closeExplorerDetail(true); return true;
+      }
+      if (!disposed && activeLens === 'data' && activeTab === 'contact' && contactDetail?.previewReturn?.hash === hash
+        && contactDialog === null && openingContactEditEmail === null && !hasDataInFlightWork() && mailMessageSurface.beforeLeave()) {
+        closeContactDetail(true);
+        return true;
       }
       if (disposed || activeLens !== 'data' || activeTab !== 'contact' || !contactSearchReturn
         || hash !== contactSearchReturn.hash || contactDialog !== null || openingContactEditEmail !== null
@@ -23649,12 +25025,15 @@ export const bootstrapDataRoute = (
       sphereControl?.dispose();
       if (disposed) return;
       if (activeTab === 'search') {
+        // A saved Search view can itself be the destination. Only the Search
+        // address that created a return snapshot may refresh that snapshot.
+        const sourceHash = dataHistory.current().hash;
         const saved = readSearchAssetReturn<SearchResume>(doc, searchContinuityOwner);
-        if (saved) saveSearchAssetReturn(doc, searchContinuityOwner, { ...saved, state: captureSearchState() });
+        if (saved?.returnHash === sourceHash) saveSearchAssetReturn(doc, searchContinuityOwner, { ...saved, state: captureSearchState() });
         const chat = readSearchChatReturn<SearchResume>(doc, searchContinuityOwner);
-        if (chat) saveSearchChatReturn(doc, searchContinuityOwner, { ...chat, state: captureSearchState() });
+        if (chat?.returnHash === sourceHash) saveSearchChatReturn(doc, searchContinuityOwner, { ...chat, state: captureSearchState() });
         const navigation = readSearchNavigationReturn<SearchResume>(doc, searchContinuityOwner);
-        if (navigation) saveSearchNavigationReturn(doc, searchContinuityOwner, { ...navigation, state: captureSearchState() });
+        if (navigation?.returnHash === sourceHash) saveSearchNavigationReturn(doc, searchContinuityOwner, { ...navigation, state: captureSearchState() });
       }
       if (opts.projectViewMemory && activeLens === 'data' && activeTab === 'project' && projectWork && !projectEditing && workEntityState.dialog?.entity_id === projectWork.project.id) {
         opts.projectViewMemory.value = { ...projectWork.viewState(), identity: projectAttentionIdentity(projectWork.project),
@@ -23667,15 +25046,18 @@ export const bootstrapDataRoute = (
       recentWorkPanel.reset(); pinnedWorkPanel.reset(); recordPins.reset(); sourceRecordCopy.reset();
       workReaderCopy.reset();
       workLinkPreviews.dispose(); recordLinkInsert.dispose(); searchRecordPreviews.dispose(); workLinkedFrom.dispose();
+      refundCreditReview.dispose();
+      customerDecisionWatch.dispose();
       noteRelated.reset(); commitmentRelated.reset(); commitmentChat.reset(); bookingActions.reset(); bookingReader.reset(); bookingChat.reset(); bookingReaderReturn = null; discardRelatedWorkReturn();
       noteFind.reset(); taskFind.reset();
       workReaderNavigation.reset(); pendingWorkReaderListReturn = null;
       retireUniversalSearch();
       contactRecovery.dispose();
       assetSearch.dispose();
-      draftSearch.dispose(); chatSearch.dispose(); reminderSearch.dispose(); promptSearch.dispose(); decisionSearch.dispose(); searchReminderTriage.dispose(); searchPromptBulk.dispose();
+      draftSearch.dispose(); followUpSearch.dispose(); chatSearch.dispose(); reminderSearch.dispose(); promptSearch.dispose(); decisionSearch.dispose(); runSearch.dispose(); connectionSearch.dispose(); savedViewSearch.dispose(); searchReminderTriage.dispose(); searchPromptBulk.dispose();
       documentSearch.dispose();
       savedFiles.dispose();
+      savedFilePreviewPane?.dispose();
       mailReaderNavigation.reset();
       mailBulk.dispose();
       mailInbox.dispose();
@@ -23709,6 +25091,7 @@ export const bootstrapDataRoute = (
       workProjectPickers.reset();
       workTaskPickers.reset();
       taskBlockers.dispose();
+      taskReplyWatches.dispose();
       disposeUploadWidget();
       routeRoot.removeEventListener('click', onClick);
       routeRoot.removeEventListener('toggle', onNoteRelatedToggle, true);
@@ -23740,7 +25123,16 @@ export const bootstrapDataRoute = (
       doc.removeEventListener('focusin', onCollectionFocusIn);
       doc.removeEventListener('focusout', onCollectionFocusOut);
       collectionPickerBreakpoint?.removeEventListener?.('change', onCollectionBreakpointChange);
+      collectionCollapseBreakpoint?.removeEventListener?.('change', onCollectionBreakpointChange);
       collectionRailBreakpoint?.removeEventListener?.('change', onCollectionRailBreakpointChange);
+      recordsDesktopBreakpoint?.removeEventListener?.('change', onRecordsDesktopBreakpointChange);
+      mailReadingPaneBreakpoint?.removeEventListener?.('change', onMailReadingPaneBreakpointChange);
+      calendarMonthBreakpoint?.removeEventListener?.('change', onCalendarMonthBreakpointChange);
+      fileBrowserBreakpoint?.removeEventListener?.('change', onFileBrowserBreakpointChange);
+      contactPreviewBreakpoint?.removeEventListener?.('change', onContactPreviewBreakpointChange);
+      workListReaderBreakpoint?.removeEventListener?.('change', onWorkListReaderBreakpointChange);
+      projectWorkspaceBreakpoint?.removeEventListener?.('change', onProjectWorkspaceBreakpointChange);
+      memoryReaderBreakpoint?.removeEventListener?.('change', onMemoryReaderBreakpointChange);
       try {
         opts.root.removeChild(routeRoot);
       } catch {

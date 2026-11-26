@@ -25,7 +25,7 @@
 import { createHash } from 'node:crypto';
 import type { BrowserControlEvidence } from '@recued/contracts';
 import { browserControlScope } from './browser-control-scope.js';
-import { browserDataEntries, type BrowserEntrySnapshot } from './browser-data-entries.js';
+import { browserDataEntries, displayedChildrenOf, renderedTextOf, type BrowserEntrySnapshot } from './browser-data-entries.js';
 import { browserReadRanges, type BrowserReadRange } from './browser-entry-view.js';
 import { browserTableHeaders } from './browser-table-headers.js';
 
@@ -159,12 +159,25 @@ export const parseInspectHtml = (html: string, preserveStructure = false): Outli
   return root;
 };
 
+const selectedTextOf = (field: OutlineElement): string | undefined => {
+  const text = field.attrs['data-recued-selected-text'];
+  return (field.tag === 'input' || field.tag === 'textarea') && typeof text === 'string' && text !== '' ? text : undefined;
+};
+
+/** The exact selection when a read scoped to the field itself. */
+export const scopedSelectedText = (html: string): string | undefined => {
+  if (!html.includes(' data-recued-selected-text=')) return undefined;
+  const { children } = parseInspectHtml(html);
+  const field = children.length === 1 ? children[0] : undefined;
+  return field?.kind === 'element' ? selectedTextOf(field) : undefined;
+};
+
 /** The elements that start a line of their own. Anything else (a `span`, a custom element) is
  *  see-through: its text joins the line around it, and the blocks inside it are lines of their
  *  own. */
 const BLOCK = new Set(['address', 'article', 'aside', 'blockquote', 'body', 'caption', 'center', 'dd', 'details',
   'dialog', 'div', 'dl', 'dt', 'fieldset', 'figcaption', 'figure', 'footer', 'form', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
-  'header', 'hgroup', 'hr', 'iframe', 'legend', 'li', 'main', 'menu', 'nav', 'ol', 'p', 'pre', 'search', 'section', 'table',
+  'header', 'hgroup', 'hr', 'iframe', 'legend', 'li', 'main', 'menu', 'nav', 'object', 'ol', 'p', 'pre', 'search', 'section', 'table',
   'tbody', 'td', 'tfoot', 'th', 'thead', 'tr', 'ul']);
 const CELL = new Set(['td', 'th']);
 const LIST = new Set(['ul', 'ol', 'menu']);
@@ -173,6 +186,7 @@ const FIELD_WORDS: Record<string, string> = { checkbox: 'checkbox', radio: 'radi
   file: 'file picker', password: 'password field', email: 'email field', tel: 'phone field', url: 'address field',
   date: 'date field', time: 'time field', 'datetime-local': 'date field', month: 'month field', week: 'week field',
   color: 'color picker' };
+const BOUNDED_INPUTS = new Set(['range', 'number', 'date', 'datetime-local', 'time', 'month', 'week']);
 const ROLE_WORDS: Record<string, string> = { textbox: 'text field', searchbox: 'search box', combobox: 'list',
   checkbox: 'checkbox', radio: 'radio button', switch: 'switch', slider: 'slider', spinbutton: 'number field',
   tab: 'tab', menuitem: 'menu item', menuitemcheckbox: 'menu item', menuitemradio: 'menu item', option: 'option' };
@@ -185,6 +199,36 @@ const squash = (text: string) => text.replace(/\s+/g, ' ');
 const attr = (element: OutlineElement, name: string): string | undefined => {
   const value = element.attrs[name];
   return typeof value === 'string' && value.trim() !== '' ? squash(value).trim() : undefined;
+};
+const videoCaption = (element: OutlineElement): string | undefined =>
+  element.tag === 'video' ? attr(element, 'data-recued-media-caption') : undefined;
+
+const CURRENT_KINDS = new Set(['page', 'step', 'location', 'date', 'time']);
+const currentMarker = (element: OutlineElement): string => {
+  const current = attr(element, 'aria-current')?.toLowerCase();
+  if (current === undefined || current === 'false') return '';
+  return CURRENT_KINDS.has(current) ? `[current ${current}]` : '[current]';
+};
+
+export const capturedAriaLabel = (element: OutlineElement): string | undefined =>
+  attr(element, 'data-recued-labelledby-name') ?? attr(element, 'aria-label');
+
+const capturedHref = (element: OutlineElement): string | undefined => {
+  const resolved = element.attrs['data-recued-resolved-href'];
+  const href = typeof resolved === 'string' ? resolved || undefined : element.attrs.href;
+  return typeof href === 'string' && !href.endsWith('…') ? href : undefined;
+};
+
+/** The native destination when the Bridge observed one, with a fallback for older captures. */
+export const capturedLinkUrl = (element: OutlineElement, base?: string): URL | undefined => {
+  const href = capturedHref(element);
+  if (href === undefined) return undefined;
+  try {
+    const url = new URL(href, base);
+    return /^https?:$/.test(url.protocol) && !url.username && !url.password ? url : undefined;
+  } catch {
+    return undefined;
+  }
 };
 
 /** 2026-11-21 (D-402, task P) — the kind of card an element is, as `within.card` names it and the Bridge's
@@ -212,13 +256,14 @@ export const isOfCardKind = (element: OutlineElement, kind: string): boolean => 
  *  only white space, a no-break space among it, and Wikipedia writes each `&nbsp;` in a `span` of
  *  its own, so "First appeared" arrives as `First<span></span>appeared`. */
 type Piece =
-  /** `whole`: the text in full where `text` shortens it (a picture's description). */
-  | { text: string; ref?: undefined; gap?: true; whole?: string }
+  /** `whole`: the text in full where `text` shortens it. `plain` can omit outline annotations. */
+  | { text: string; ref?: undefined; gap?: true; whole?: string; plain?: string }
   /** `whole`: the label with every picture's description in full. `plain`: what the page's text
    *  shows of it (slice Q): a link's words, and nothing for a field, a button or another control. */
-  | { text: string; ref: string; anchor?: string; whole?: string; plain?: string;
+  | { text: string; ref: string; anchor?: string; whole?: string; plain?: string; help?: string; interactionNote?: string;
       /** Display annotations do not consume the page-content clipping budget. */
-      typeLabel?: string };
+      typeLabel?: string; limits?: string;
+      suggestions?: { choices: string[]; partial: boolean } };
 
 /** Each gap as the space it held ("b. 1894", "1881 – 1953"), but none at a line's edge, after an
  *  opening bracket or before a closing mark ("Did you know..."). A link shows as `[label](eN)`. */
@@ -242,8 +287,53 @@ const joinTexts = (texts: string[]): string => texts.reduce((all, next) =>
   all + (/\w$/.test(all) && /^\w/.test(next) ? ' ' : '') + next, '');
 /** Every text inside an element, in order, for a label. */
 const textInside = (node: OutlineNode): string => node.kind === 'text' ? node.text
-  : node.tag === 'img' ? (attr(node, 'alt') ?? '') : joinTexts(node.children.map(textInside));
+  : renderedTextOf(node) ?? (node.tag === 'img' ? (attr(node, 'alt') ?? '') : joinTexts(node.children.map(textInside)));
 const words = (text: string) => squash(text).trim();
+
+const nativeSuggestions = (element: OutlineElement): { choices: string[]; partial: boolean } | undefined => {
+  const captured = element.attrs['data-recued-suggestions'];
+  if (typeof captured !== 'string') return undefined;
+  let pairs: unknown;
+  try { pairs = JSON.parse(captured); } catch { return undefined; }
+  if (!Array.isArray(pairs)) return undefined;
+  const choices = pairs.flatMap(pair => {
+    if (!Array.isArray(pair) || pair.length !== 2 || typeof pair[0] !== 'string' || typeof pair[1] !== 'string') return [];
+    const [label, value] = pair;
+    return [label && label !== value ? `${JSON.stringify(value)} (${label})` : JSON.stringify(value)];
+  });
+  const partial = Object.hasOwn(element.attrs, 'data-recued-suggestions-incomplete');
+  return choices.length || partial ? { choices, partial } : undefined;
+};
+
+const svgLinkRef = (node: OutlineElement): boolean => node.tag === 'a' && attr(node, 'ref') !== undefined;
+
+/** Visible SVG labels, with one line per group of adjacent labels. */
+const svgLabelLines = (svg: OutlineElement): string[] => {
+  const text = (node: OutlineNode): string => node.kind === 'text' ? node.text
+    : svgLinkRef(node) ? '' : node.children.map(text).join('');
+  const lines: string[] = [];
+  const visit = (group: OutlineElement) => {
+    let labels: string[] = [];
+    const flush = () => {
+      if (labels.length) lines.push(labels.join(' | '));
+      labels = [];
+    };
+    for (const child of group.children) {
+      if (child.kind !== 'element' || svgLinkRef(child)) continue;
+      if (child.tag === 'text') {
+        const label = words(text(child));
+        if (label) labels.push(label);
+      } else if (['svg', 'g', 'switch', 'a'].includes(child.tag)) {
+        flush();
+        visit(child);
+      }
+    }
+    flush();
+  };
+  visit(svg);
+  return lines;
+};
+
 /** What an element with no text inside it is called by something inside it, such as Hacker
  *  News's vote arrow, a `div` titled "upvote" inside a link. */
 const nameInside = (node: OutlineNode): string | undefined => {
@@ -333,12 +423,13 @@ const CONTROL_ROLES = new Set(['button', 'checkbox', 'radio', 'switch', 'slider'
  *  number that named another line. `firstLine` is the number the first line gets among the page's
  *  kept lines, for a contents link to name the line its section starts at. */
 export const outlinePage = (html: string,
-  options: { lineChars?: number; nextBlock?: () => string; url?: string; firstLine?: number } = {}): PageOutline => {
+  options: { lineChars?: number; nextBlock?: () => string; url?: string; firstLine?: number; region?: boolean } = {}): PageOutline => {
   const lineChars = options.lineChars ?? PAGE_OUTLINE_LINE_CHARS;
   const firstLine = options.firstLine ?? 1;
   let counter = 0;
   const nextBlock = options.nextBlock ?? (() => `b${String(++counter)}`);
   const root = parseInspectHtml(html);
+  const scopedTarget = options.region && root.children.length === 1 ? root.children[0] : undefined;
   const page = (() => {
     try {
       const url = new URL(options.url ?? '');
@@ -368,10 +459,12 @@ export const outlinePage = (html: string,
   // Slice Y — a field inside a label with no `for` is named by the label's own words, as a person
   // reads them beside it (`<label>Email <input></label>`): for a step naming it by its text.
   const labelAround = new WeakMap<OutlineElement, string>();
+  const labelledField = (node: OutlineElement): boolean => ['input', 'select', 'textarea'].includes(node.tag)
+    || node.tag === 'meter' && attr(node, 'value') !== undefined;
   const labelWords = (node: OutlineNode): string => node.kind === 'text' ? node.text
-    : FIELD_TAGS.has(node.tag) ? '' : joinTexts(node.children.map(labelWords));
+    : FIELD_TAGS.has(node.tag) || node.tag === 'meter' ? '' : joinTexts(node.children.map(labelWords));
   const fieldIn = (node: OutlineNode): OutlineElement | undefined => node.kind !== 'element' ? undefined
-    : node.tag === 'input' || node.tag === 'select' || node.tag === 'textarea' ? node
+    : labelledField(node) ? node
       : node.children.map(fieldIn).find((found) => found !== undefined);
   const index = (node: OutlineNode) => {
     if (node.kind !== 'element') return;
@@ -382,10 +475,21 @@ export const outlinePage = (html: string,
       const around = words(labelWords(node));
       if (field !== undefined && around !== '') labelAround.set(field, around);
     }
-    if (id && (node.tag === 'input' || node.tag === 'select' || node.tag === 'textarea')) fieldIds.add(id);
+    if (id && labelledField(node)) fieldIds.add(id);
     node.children.forEach(index);
   };
   index(root);
+
+  const meterReading = (node: OutlineElement): string | undefined => {
+    const value = attr(node, 'value');
+    if (value === undefined || !Number.isFinite(Number(value))) return undefined;
+    const id = attr(node, 'id');
+    const name = capturedAriaLabel(node) ?? (id === undefined ? undefined : labelFor.get(id))
+      ?? labelAround.get(node) ?? attr(node, 'title');
+    const min = attr(node, 'min'), max = attr(node, 'max');
+    const range = min !== undefined && max !== undefined ? ` (${min} to ${max})` : '';
+    return (name ? name + ' = ' : '') + value + range;
+  };
 
   // D-402 slice G (§4.1) — the row each element sits in: the nearest list item, table row, article or
   // row by its role above it (`li, tr, [role="row"], [role="listitem"], [role="option"],
@@ -499,35 +603,50 @@ export const outlinePage = (html: string,
   const actionable = (element: OutlineElement, pieces: Piece[]) => {
     const ref = attr(element, 'ref')!;
     const tag = element.tag;
+    const nativeLink = tag === 'a' || tag === 'area';
     const role = attr(element, 'role')?.split(/\s+/)[0];
-    const checked = element.attrs.checked === true || attr(element, 'aria-checked') === 'true';
-    const flags = `${checked ? ' checked' : ''}${element.attrs.disabled === true ? ' disabled' : ''}`;
-    const named = attr(element, 'aria-label') ?? (attr(element, 'id') ? labelFor.get(attr(element, 'id')!) : undefined)
-      ?? attr(element, 'placeholder') ?? attr(element, 'title');
+    const labelChoice = tag === 'label' ? attr(element, 'data-recued-label-choice') : undefined;
+    const inputType = tag === 'input' ? (attr(element, 'type') ?? 'text').toLowerCase() : '';
+    const checked = attr(element, 'aria-checked');
+    const mixed = checked === 'mixed' && (inputType === 'checkbox' || labelChoice === 'checkbox'
+      || role === 'checkbox' || role === 'menuitemcheckbox');
+    const state = mixed ? ' mixed' : element.attrs.checked === true || checked === 'true' ? ' checked' : '';
+    const flags = `${state}${element.attrs.disabled === true ? ' disabled' : ''}`;
+    const svgLabel = attr(element, 'data-recued-svg-label');
+    const ariaName = capturedAriaLabel(element);
+    const named = ariaName ?? (attr(element, 'id') ? labelFor.get(attr(element, 'id')!) : undefined)
+      ?? attr(element, 'placeholder') ?? attr(element, 'title') ?? svgLabel;
+    const reading = tag === 'meter' ? meterReading(element) : undefined;
     const gapped: Piece[] = [];
-    for (const child of element.children) inline(child, gapped, true);
+    const displayed = renderedTextOf(element);
+    if (displayed !== undefined) gapped.push({ text: displayed });
+    else for (const child of element.children) inline(child, gapped, true);
     const inner = closeGaps(gapped);
     const own = words(joinTexts(inner.filter((piece) => piece.ref === undefined).map((piece) => piece.text)));
     // The same with each picture's description whole, for the line in full and the page's text.
     const ownWhole = words(joinTexts(inner.filter((piece) => piece.ref === undefined).map((piece) => piece.whole ?? piece.text)));
     // Put the interaction kind beside the label the model selects. Keep the
     // same raw names below for lookup and the same plain text for page reads.
-    const kind = tag === 'input' ? FIELD_WORDS[(attr(element, 'type') ?? 'text').toLowerCase()] ?? 'text field'
+    const kind = labelChoice === 'radio' || labelChoice === 'checkbox' ? FIELD_WORDS[labelChoice]!
+      : tag === 'input' ? FIELD_WORDS[inputType] ?? 'text field'
       : tag === 'select' ? 'list' : tag === 'textarea' ? 'text area'
         : Object.hasOwn(element.attrs, 'contenteditable') && attr(element, 'contenteditable') !== 'false' ? 'text editor'
           : role !== undefined && role !== 'button' && role !== 'link' && ROLE_WORDS[role] !== undefined ? ROLE_WORDS[role]!
-            : tag === 'a' || role === 'link' ? 'link' : tag === 'button' || role === 'button' ? 'button' : tag;
+            : nativeLink || role === 'link' ? 'link' : tag === 'button' || role === 'button' ? 'button' : tag;
     let label: string;
     const literal = (key: string): string | undefined => typeof element.attrs[key] === 'string' ? element.attrs[key]
       : element.attrs[key] === true ? '' : undefined;
     const attributes = [['type', tag === 'input' || tag === 'button' ? literal('type') : undefined],
-      ['role', literal('role')], ['contenteditable', literal('contenteditable')]] as const;
-    const typeLabel = (tag === 'a' && literal('role') === undefined && literal('contenteditable') === undefined ? 'link' : tag)
+      ['role', literal('role')], ['contenteditable', literal('contenteditable')],
+      ['draggable', literal('draggable')?.toLowerCase() === 'true' ? 'true' : undefined]] as const;
+    const typeLabel = (nativeLink && literal('role') === undefined && literal('contenteditable') === undefined ? 'link' : tag)
       + attributes.filter(([, value]) => value !== undefined).map(([key, value]) => ` ${key}=${JSON.stringify(value)}`).join('')
-      + (tag === 'select' && Object.hasOwn(element.attrs, 'multiple') ? ' multiple' : '');
+      + ((tag === 'select' || tag === 'input' && literal('type') === 'file') && Object.hasOwn(element.attrs, 'multiple') ? ' multiple' : '');
+    const limits = BOUNDED_INPUTS.has(inputType) ? ['min', 'max', 'step'].flatMap(key => {
+      const value = attr(element, key);
+      return value === undefined ? [] : [` ${key}=${value}`];
+    }).join('') : '';
     if (tag === 'input') {
-      const type = (attr(element, 'type') ?? 'text').toLowerCase();
-      const kind = FIELD_WORDS[type] ?? 'text field';
       const value = attr(element, 'value');
       const name = named ?? (kind === 'button' ? value : undefined) ?? attr(element, 'name') ?? '';
       // A fallback name equal to the copyable #id adds no identity. Keep human
@@ -535,15 +654,28 @@ export const outlinePage = (html: string,
       const displayName = named === undefined && kind !== 'button' && name === attr(element, 'id') && /^[A-Za-z][\w-]*$/.test(name) ? '' : name;
       const shown = kind !== 'button' && kind !== 'checkbox' && kind !== 'radio button' && value !== undefined ? `${displayName ? ' = ' : ''}${JSON.stringify(value)}` : '';
       label = `${displayName}${shown}${flags}`.trim();
+    } else if (reading !== undefined) {
+      label = reading;
     } else if (tag === 'select') {
-      const options = element.children.flatMap(child => child.kind !== 'element' ? [] : child.tag === 'option' ? [child]
-        : child.tag === 'optgroup' ? child.children.filter((part): part is OutlineElement => part.kind === 'element' && part.tag === 'option') : []);
-      const chosen = options.filter(option => option.attrs.selected === true).map(option => words(textInside(option)));
+      const chosen: string[] = [];
+      const listed: string[] = [];
+      for (const child of element.children) {
+        if (child.kind !== 'element') continue;
+        const group = child.tag === 'optgroup' ? words(attr(child, 'label') ?? '') : '';
+        const options = child.tag === 'option' ? [child] : child.tag === 'optgroup'
+          ? child.children.filter((part): part is OutlineElement => part.kind === 'element' && part.tag === 'option') : [];
+        const names = options.map(option => {
+          const name = words(textInside(option));
+          if (option.attrs.selected === true) chosen.push(group ? `${group} / ${name}` : name);
+          return name;
+        });
+        if (names.length > 0) listed.push(group ? `${group} (${names.join(' | ')})` : names.join(' | '));
+      }
       // Every option: a long list is cut with its line, and its block names them all.
-      const listed = options.map((option) => words(textInside(option))).join(' | ');
       const selection = chosen.length ? ` = ${JSON.stringify(Object.hasOwn(element.attrs, 'multiple') ? chosen : chosen[0])}` : '';
       label = `${named ?? ''}${selection}${flags}`.trim();
-      if (listed) label += `${label ? ': ' : ''}${listed}`;
+      const choices = listed.join(' | ');
+      if (choices) label += `${label ? ': ' : ''}${choices}`;
     } else if (tag === 'textarea') {
       label = `${named ?? ''}${own ? `${named ? ' = ' : ''}${JSON.stringify(own)}` : ''}${flags}`.trim();
     } else if (literal('contenteditable') !== undefined && literal('contenteditable') !== 'false') {
@@ -555,11 +687,10 @@ export const outlinePage = (html: string,
       label += flags;
     }
     // A link to a part of this same page (a contents list) names that part's id, which Read part
-    // of a web page takes as a selector; the Bridge writes links as it reads them, so absolute. A
-    // field or a button names its own id, which a step can use once a page it loaded has no refs
-    // yet. Other links' ids are mostly generated (`up_45789`, `cite_ref-1`) and stay out.
+    // of a web page takes as a selector. A field or a button names its own id, which a step can use
+    // once a page it loaded has no refs yet. Other links' ids are mostly generated and stay out.
     const id = attr(element, 'id');
-    const anchor = tag === 'a' ? sectionOf(attr(element, 'href'))
+    const anchor = nativeLink ? sectionOf(capturedHref(element))
       : FIELD_TAGS.has(tag) && id !== undefined && /^[A-Za-z][\w-]*$/.test(id) ? `#${id}` : undefined;
     // In the page's text a link is its words; a field, a button or another control is not text.
     const control = FIELD_TAGS.has(tag) || (role !== undefined && CONTROL_ROLES.has(role))
@@ -570,47 +701,92 @@ export const outlinePage = (html: string,
     // label around it, which the outline shows as a line of their own.
     // What a list, a text area or an editor holds (its options, its text) is no name of it.
     const holds = tag === 'select' || tag === 'textarea' || kind === 'text editor';
-    const names = [attr(element, 'aria-label'), id !== undefined ? labelFor.get(id) : undefined, labelAround.get(element),
+    const names = [ariaName, id !== undefined ? labelFor.get(id) : undefined, labelAround.get(element),
       attr(element, 'placeholder'), attr(element, 'title'), holds ? undefined : own, holds ? undefined : ownWhole,
-      attr(element, 'alt'), holds ? undefined : nameInside(element),
+      attr(element, 'alt'), svgLabel, holds ? undefined : nameInside(element),
       tag === 'input' && (FIELD_WORDS[attr(element, 'type') ?? 'text'] === 'button') ? attr(element, 'value') : undefined,
       FIELD_TAGS.has(tag) && tag !== 'button' ? attr(element, 'name') : undefined]
       .filter((name): name is string => name !== undefined && name.trim() !== '');
     const fieldName = attr(element, 'name');
-    // D-345 slice E — the link's address, made whole against the page (the Bridge writes it as the page
-    // does, `/files/report.pdf`). A long one the Bridge cut (`…`) names no file.
-    const written = tag === 'a' ? attr(element, 'href') : undefined;
-    const href = (() => {
-      if (written === undefined || written.endsWith('…')) return undefined;
-      try {
-        const address = new URL(written, options.url);
-        return address.protocol === 'http:' || address.protocol === 'https:' ? address.href : undefined;
-      } catch {
-        return undefined;
-      }
-    })();
+    const href = nativeLink ? capturedLinkUrl(element, options.url)?.href : undefined;
     const landmark = controlScope.modal && controlScope.allowed.has(element) ? 'dialog' : landmarks.get(element);
     const fieldContext = attr(element, 'data-recued-field-context');
+    const selection = selectedTextOf(element);
+    const identityElement = selection === undefined ? element
+      : { ...element, attrs: { ...element.attrs, 'data-recued-selected-text': undefined } };
     const fieldIdentity = fieldContext !== undefined && fieldContext.length <= 4_000 && !fieldContext.endsWith('…')
-      ? createHash('sha256').update(JSON.stringify([element, fieldContext, landmark, controlScope.allowed.has(element)])).digest('hex') : undefined;
+      ? createHash('sha256').update(JSON.stringify([identityElement, fieldContext, landmark, controlScope.allowed.has(element)])).digest('hex') : undefined;
     const item = itemOf(element);
     const cards = item === undefined ? cardsOf(element) : undefined;
     out.controls.push({ ref, kind, names: [...new Set(names.map((name) => words(name)))], tag,
       ...(item !== undefined ? { item } : {}),
       ...(cards !== undefined ? { cards } : {}),
       ...(['input', 'button'].includes(tag) && attr(element, 'type') ? { type: attr(element, 'type')!.toLowerCase() } : {}),
-      ...(['a', 'button'].includes(tag) ? { label: words(named ?? ownWhole).slice(0, 160) } : {}),
+      ...(nativeLink || tag === 'button' ? { label: words(named ?? (ownWhole || attr(element, 'alt') || '')).slice(0, 160) } : {}),
       ...(fieldIdentity ? { field_identity: fieldIdentity } : {}),
       ...(landmark ? { landmark } : {}),
       ...(!controlScope.allowed.has(element) ? { blocked: true as const } : {}),
       ...(fieldName !== undefined && fieldName.trim() !== '' ? { field: `name:${fieldName.trim()}` }
         : id !== undefined && id.trim() !== '' ? { field: `id:${id.trim()}` } : {}),
       ...(href !== undefined ? { href } : {}) });
-    pieces.push({ text: label, ref, typeLabel,
+    const suggestions = tag === 'input' ? nativeSuggestions(element) : undefined;
+    const help = attr(element, 'data-recued-description');
+    const pasteLabel = [named, attr(element, 'placeholder')].some(label => /^\s*paste\b/i.test(label ?? ''));
+    const pasteAffordance = pasteLabel && controlScope.allowed.has(element)
+      && (tag === 'textarea' || tag === 'input' && /^(?:text|search|url|tel|email|number)$/.test(inputType)
+        || kind === 'text editor' || role === 'grid' || role === 'treegrid' || tag === 'section' || tag === 'div');
+    const mediaState = attr(element, 'data-recued-media-state');
+    const mediaTime = attr(element, 'data-recued-media-current');
+    const mediaDuration = attr(element, 'data-recued-media-duration');
+    const mediaNote = (tag === 'audio' || tag === 'video') && mediaState && mediaTime
+      ? ` [${mediaState} at ${mediaTime}${mediaDuration ? ` / ${mediaDuration}` : ''}. Seek with do:"seek", this ref, and at_seconds]` : '';
+    const caption = videoCaption(element);
+    const captionNote = caption ? ` [caption] ${caption}` : '';
+    const validation = controlScope.allowed.has(element) ? attr(element, 'data-recued-validation-message') : undefined;
+    const validationNote = validation ? ` [browser validation: ${validation}]` : '';
+    const quotedSelection = selection !== undefined && controlScope.allowed.has(element) ? JSON.stringify(selection) : undefined;
+    const selectedNote = quotedSelection === undefined ? '' : words(quotedSelection) === quotedSelection
+      ? ` [selected text: ${quotedSelection}]` : ' [selection in this field. Read this ref for exact selected_text]';
+    const current = currentMarker(element);
+    const interactionNote = selectedNote + mediaNote + captionNote + validationNote
+      + (current ? ` ${current}` : '')
+      + (element.attrs['data-recued-keyboard-item'] === true ? ' [keyboard-focused item]' : '')
+      + (element.attrs['data-recued-keyboard-owner'] === true ? ' [keyboard focus owner. Use this ref for press]' : '')
+      + (pasteAffordance ? ' [Paste text with do:"type", delivery:"paste" and this ref. Put the actual text, including tabs and newlines, in value. Finish any data call first and copy its result. $input is literal here.]' : '');
+    // An explicit read of an editor includes the current value already
+    // allowed in the cleaned capture. Whole-page text still omits it.
+    const scopedEdit = element !== scopedTarget ? undefined
+      : tag === 'textarea' || kind === 'text editor' ? ownWhole
+        : tag === 'input' && /^(?:text|search|url|tel|email|number)$/.test(inputType) ? attr(element, 'value') : undefined;
+    const readable = scopedEdit ?? reading ?? (control ? '' : ownWhole || named || attr(element, 'alt') || nameInside(element) || '');
+    const text = caption === undefined ? readable : element === scopedTarget ? caption : (readable + captionNote).trimStart();
+    const plain = current ? `${text || names[0] || kind} ${current}` : text;
+    pieces.push({ text: label, ref, typeLabel, ...(limits ? { limits } : {}), ...(suggestions ? { suggestions } : {}),
+      ...(help ? { help } : {}),
+      ...(interactionNote ? { interactionNote } : {}),
       ...(anchor !== undefined ? { anchor } : {}), ...(whole !== undefined ? { whole } : {}),
-      plain: control ? '' : ownWhole || named || attr(element, 'alt') || nameInside(element) || '' });
+      plain: validation ? `${plain ? `${plain} ` : ''}Browser validation for ${names[0] ?? kind}: ${validation}` : plain });
     // What can be acted on inside it (a link in a card that is itself a button) follows it.
     for (const piece of inner) if (piece.ref !== undefined) pieces.push(piece);
+  };
+
+  const markCurrent = (element: OutlineElement, pieces: Piece[]) => {
+    const marker = currentMarker(element);
+    if (marker) pieces.push({ text: ` ${marker} ` });
+  };
+
+  const displayNotes = new Set<OutlineElement>();
+  const displayOrderNote = (element: OutlineElement): string | undefined => {
+    if (displayNotes.size >= 3 || displayNotes.has(element)) return undefined;
+    const displayed = displayedChildrenOf(element);
+    if (!displayed) return undefined;
+    const labels = displayed.children.map(({ child }) =>
+      words(textInside(child)) || words(capturedAriaLabel(child) ?? nameInside(child) ?? ''));
+    if (labels.some(label => !label)) return undefined;
+    const note = `[Displayed ${displayed.direction.replaceAll('-', ' ')}] ${labels.join(' | ')}`;
+    if (note.length > 440) return undefined;
+    displayNotes.add(element);
+    return note;
   };
 
   /** The inline content of a node, into `pieces`. Inside something a person acts on, blocks are
@@ -625,6 +801,29 @@ export const outlinePage = (html: string,
       actionable(node, pieces);
       return;
     }
+    const order = displayOrderNote(node);
+    if (order !== undefined) pieces.push({ text: `${order} `, plain: '' });
+    if (node.attrs['data-recued-keyboard-item'] === true) pieces.push({ text: '[keyboard-focused item] ', plain: '' });
+    if (!inLabel) markCurrent(node, pieces);
+    const caption = !inLabel ? videoCaption(node) : undefined;
+    if (caption) {
+      pieces.push({ text: ` [caption] ${caption} `, plain: node === scopedTarget ? caption : undefined });
+      return;
+    }
+    if (node.tag === 'svg' && node.children.length > 0) {
+      svgReadLines(node).forEach((line, index) => {
+        if (index > 0) pieces.push({ text: ' / ' });
+        pieces.push(...line);
+      });
+      return;
+    }
+    if (node.tag === 'meter') {
+      const reading = meterReading(node);
+      if (reading !== undefined) {
+        pieces.push({ text: `[meter: ${reading}]` });
+        return;
+      }
+    }
     if (node.tag === 'img') {
       // A picture's description can be a sentence; a line shows its start, so the text beside it
       // (its caption) is not what the cut takes.
@@ -633,6 +832,8 @@ export const outlinePage = (html: string,
       if (alt) {
         pieces.push(alt.length > IMAGE_ALT_CHARS ? { text: `[image: ${alt.slice(0, IMAGE_ALT_CHARS).trimEnd()}…]`, whole: `[image: ${alt}]` }
           : { text: `[image: ${alt}]` });
+        const source = attr(node, 'data-recued-current-src');
+        if (source) pieces.push({ text: `[source: ${source}]` });
       }
       return;
     }
@@ -643,12 +844,29 @@ export const outlinePage = (html: string,
     // A label that names a field already says so on the field.
     if (node.tag === 'label' && attr(node, 'for') && fieldIds.has(attr(node, 'for')!)) return;
     if (!inLabel && BLOCK.has(node.tag)) return;
-    if (node.children.length === 0) {
+    const displayed = renderedTextOf(node);
+    if (displayed !== undefined) pieces.push({ text: displayed });
+    else if (node.children.length === 0) {
       // `wbr` and the other void elements hold no space.
       if (!VOID.has(node.tag)) pieces.push({ text: '', gap: true });
       return;
+    } else {
+      for (const child of node.children) inline(child, pieces, inLabel);
     }
-    for (const child of node.children) inline(child, pieces, inLabel);
+    if (node.tag === 'time') {
+      const datetime = attr(node, 'datetime');
+      if (datetime && datetime !== words(textInside(node))) pieces.push({ text: ` [datetime: ${datetime}]`, plain: '' });
+    }
+  };
+
+  const svgReadLines = (svg: OutlineElement): Piece[][] => {
+    const lines: Piece[][] = svgLabelLines(svg).map(text => [{ text }]);
+    for (const link of elements(svg).filter(svgLinkRef)) {
+      const pieces: Piece[] = [];
+      inline(link, pieces);
+      lines.push(pieces);
+    }
+    return lines;
   };
 
   /** Write one line: its pieces, cut at `lineChars` of text, the whole line kept when cut. */
@@ -656,12 +874,12 @@ export const outlinePage = (html: string,
     const pieces = closeGaps(gapped);
     const show = (piece: Piece, text = piece.text) => {
       if (piece.ref === undefined) return text;
-      const name = words(text);
+      const name = words(text + (piece.limits ?? ''));
       const label = piece.typeLabel ? `${piece.typeLabel}${name ? `: ${name}` : ''}` : name;
-      return `[${label}](${piece.ref}${piece.anchor ? ` ${piece.anchor}` : ''})`;
+      const shown = `[${label}](${piece.ref}${piece.anchor ? ` ${piece.anchor}` : ''})`;
+      return shown + (piece.interactionNote ?? '') + (piece.help ? ` [help: ${piece.help}]` : '');
     };
-    // The Bridge drops text that is only white space, so a link arrives touching the word or link
-    // beside it: it gets the space the page shows, but not after "(" or before ")" or ",".
+    // Fill missing spaces around referenced elements at word boundaries.
     const join = (shown: Array<{ text: string; ref: boolean }>) => shown.reduce((all, next, i) => {
       const touching = i > 0 && (next.ref || shown[i - 1]!.ref) && /[\w)\]…]$/.test(all) && /^[\w[]/.test(next.text);
       return all + (touching ? ' ' : '') + next.text;
@@ -670,7 +888,7 @@ export const outlinePage = (html: string,
     // In full: each picture's description whole (slice Q).
     const joinedWhole = join(pieces.map((piece) => ({ text: show(piece, piece.whole ?? piece.text), ref: piece.ref !== undefined })));
     // As the page's text: a link's words, no controls, never cut.
-    const joinedPlain = join(pieces.map((piece) => ({ text: piece.ref === undefined ? piece.whole ?? piece.text : piece.plain ?? '',
+    const joinedPlain = join(pieces.map((piece) => ({ text: piece.plain ?? (piece.ref === undefined ? piece.whole ?? piece.text : ''),
       ref: piece.ref !== undefined })));
     // Preformatted text keeps its line breaks when read in full, and is one line in the outline.
     const flat = words(joined);
@@ -736,6 +954,20 @@ export const outlinePage = (html: string,
     }
     rendered.push(`${prefix}${shown}`);
     out.lines.push({ text: `${prefix}${flatWhole}`, plain: plainText === '' ? '' : `${prefix}${plainText}`, heading, block, main: inMain });
+    for (const piece of pieces) {
+      if (piece.ref === undefined || !piece.suggestions) continue;
+      const { choices, partial } = piece.suggestions;
+      const name = `Suggestion values to type into ${piece.ref}${partial ? ' (partial)' : ''}`;
+      let row = '';
+      for (const choice of choices) {
+        if (row && name.length + row.length + choice.length + 5 > lineChars) {
+          line(prefix, [{ text: `${name}: ${row}` }]);
+          row = '';
+        }
+        row += row ? ' | ' + choice : choice;
+      }
+      line(prefix, [{ text: row ? `${name}: ${row}` : name }]);
+    }
   };
 
   /** A table row with nothing but text and things to act on in its cells is one line. */
@@ -761,18 +993,30 @@ export const outlinePage = (html: string,
     reached(element);
     const entersMain = element === mainElement;
     if (entersMain) inMain = true;
+    const order = displayOrderNote(element);
+    if (order !== undefined) noteLine(order, '');
+    if (element.attrs['data-recued-keyboard-item'] === true) {
+      const label = words(textInside(element)) || words(capturedAriaLabel(element) ?? '');
+      if (label) noteLine(`[keyboard-focused item] ${label.slice(0, 160)}`, '');
+    }
     let pieces: Piece[] = [];
+    markCurrent(element, pieces);
     const flush = () => {
       line(prefix, pieces, element.tag === 'pre');
       pieces = [];
     };
-    for (const child of element.children) {
+    const displayed = renderedTextOf(element);
+    if (displayed !== undefined) pieces.push({ text: displayed });
+    else for (const child of element.children) {
       if (child.kind === 'element' && attr(child, 'ref') !== undefined && region(child)) {
         // A region a person can act on (focus, mostly): its own line, then its content.
         flush();
         const name = attr(child, 'aria-label') ?? attr(child, 'title');
         line(prefix, [{ text: name ?? 'region', ref: attr(child, 'ref')! }]);
         container(child, prefix, listDepth);
+      } else if (child.kind === 'element' && child.tag === 'svg' && child.children.length > 0 && attr(child, 'ref') === undefined) {
+        flush();
+        for (const pieces of svgReadLines(child)) line(prefix, pieces);
       } else if (child.kind === 'element' && attr(child, 'ref') === undefined && BLOCK.has(child.tag)) {
         flush();
         blockLines(child, listDepth);
@@ -790,12 +1034,12 @@ export const outlinePage = (html: string,
   };
   const hasBlock = (node: OutlineNode): boolean => node.kind === 'element'
     && node.children.some((child) => child.kind === 'element' && attr(child, 'ref') === undefined
-      && (BLOCK.has(child.tag) || hasBlock(child)));
+      && (BLOCK.has(child.tag) || child.tag === 'svg' && child.children.length > 0 || hasBlock(child)));
 
   /** A line written whole, never cut: what the server says about the page, not the page's text. */
-  const noteLine = (text: string) => {
+  const noteLine = (text: string, plain = text) => {
     rendered.push(text);
-    out.lines.push({ text, plain: text, heading, block: undefined, main: inMain });
+    out.lines.push({ text, plain, heading, block: undefined, main: inMain });
   };
   /** Slice R — a frame from another site, which the Bridge names as a page of its own (`page`), or
    *  could not read (`unread`); a frame from this site has its content in place. */
@@ -817,17 +1061,21 @@ export const outlinePage = (html: string,
   const blockLines = (element: OutlineElement, listDepth: number) => {
     reached(element);
     const tag = element.tag;
-    if (tag === 'iframe') {
+    if (tag === 'iframe' || tag === 'object') {
       if (attr(element, 'page') !== undefined || element.attrs.unread !== undefined) noteLine(frameNote(element));
       else container(element, '', listDepth);
       return;
     }
     if (/^h[1-6]$/.test(tag)) {
       const pieces: Piece[] = [];
-      for (const child of element.children) inline(child, pieces, true);
+      const displayed = renderedTextOf(element);
+      if (displayed !== undefined) pieces.push({ text: displayed });
+      else for (const child of element.children) inline(child, pieces, true);
       heading = words(closeGaps(pieces).map((piece) => piece.text).join(''));
       const before = out.lines.length;
-      line(`${'#'.repeat(Number(tag[1]))} `, pieces);
+      const annotated: Piece[] = [];
+      markCurrent(element, annotated);
+      line(`${'#'.repeat(Number(tag[1]))} `, annotated.concat(pieces));
       // Its ids (on it, or on a part of it, as older wikis write them) name its line.
       if (out.lines.length > before) {
         for (const named of elements(element)) {
@@ -840,15 +1088,21 @@ export const outlinePage = (html: string,
     if ((tag === 'table' || ['table', 'grid', 'treegrid'].includes(attr(element, 'role') ?? '')) && tableSummaries < 3) {
       const summary = browserTableHeaders(element, false);
       const headers = summary.columns ?? summary.headers;
-      if (headers?.length) { line('', [{ text: `[table ${summary.columns ? 'columns' : 'header cells'}] ${headers.join(' | ')}` }]); tableSummaries++; }
+      if (headers?.length) line('', [{ text: `[table ${summary.columns ? 'columns' : 'header cells'}] ${headers.join(' | ')}` }]);
+      if (summary.sort) line('', [{ text: `[table sort] ${summary.sort.header} ${summary.sort.direction}` }]);
+      if (headers?.length || summary.sort) tableSummaries++;
     }
     if (tag === 'tr') {
       const cells = flatRow(element);
       if (cells) {
         const pieces: Piece[] = [];
+        markCurrent(element, pieces);
         cells.forEach((cell, i) => {
           if (i > 0) pieces.push({ text: ' | ' });
-          for (const child of cell.children) inline(child, pieces, true);
+          markCurrent(cell, pieces);
+          const displayed = renderedTextOf(cell);
+          if (displayed !== undefined) pieces.push({ text: displayed });
+          else for (const child of cell.children) inline(child, pieces, true);
         });
         line('| ', pieces);
         return;
@@ -859,7 +1113,9 @@ export const outlinePage = (html: string,
       return;
     }
     if (tag === 'li') {
-      container(element, `${'  '.repeat(Math.max(0, Math.min(listDepth, 4) - 1))}- `, listDepth);
+      const ordinal = attr(element, 'data-recued-list-ordinal');
+      const marker = ordinal !== undefined && /^-?\d{1,10}$/.test(ordinal) ? `${ordinal}. ` : '- ';
+      container(element, `${'  '.repeat(Math.max(0, Math.min(listDepth, 4) - 1))}${marker}`, listDepth);
       return;
     }
     if (tag === 'hr') return;
@@ -1132,7 +1388,7 @@ export const createPageReadStore = (options: { now?: () => number; ttlMs?: numbe
       const kept = touch(page);
       let next = kept?.next ?? 0;
       const firstBlock = next + 1;
-      const outline = outlinePage(read.html, { nextBlock: () => `b${String(++next)}`, url: read.url });
+      const outline = outlinePage(read.html, { nextBlock: () => `b${String(++next)}`, url: read.url, region: true });
       if (!kept) {
         keepWhole(page, read, outline, next, firstBlock);
         reads.get(page)!.whole = false;
@@ -1415,7 +1671,7 @@ export const pageReads = createPageReadStore();
 const ROLE_KINDS: Record<string, readonly string[]> = {
   field: ['text field', 'search box', 'email field', 'phone field', 'address field', 'password field', 'number field',
     'date field', 'time field', 'month field', 'week field', 'text area', 'text editor'],
-  button: ['button'], link: ['link'], checkbox: ['checkbox'], radio: ['radio button'], 'radio button': ['radio button'],
+  button: ['button', 'summary'], link: ['link'], checkbox: ['checkbox'], radio: ['radio button'], 'radio button': ['radio button'],
   list: ['list'], tab: ['tab'], 'menu item': ['menu item'], option: ['option'], switch: ['switch'], slider: ['slider'],
 };
 /** The most candidates a step's refusal names. */

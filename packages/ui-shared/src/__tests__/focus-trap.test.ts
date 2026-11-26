@@ -156,14 +156,16 @@ describe('wireFocusTrap', () => {
     expect(doc.activeElement).toBe(link); // last focusable
   });
 
-  it('a Tab in the middle of the trap is left to the browser', () => {
+  it('Tab and Shift+Tab traverse controls even when the browser skips buttons', () => {
     const doc = makeDoc();
-    const { panel, input } = buildDialog(doc);
+    const { panel, input, close, link } = buildDialog(doc);
     wire(doc, panel);
     input.focus(); // a middle focusable
     const r = doc.fireTab();
-    expect(r.defaultPrevented).toBe(false); // native Tab proceeds
-    expect(doc.activeElement).toBe(input);
+    expect(r.defaultPrevented).toBe(true);
+    expect(doc.activeElement).toBe(link);
+    doc.fireTab({ shift: true }); expect(doc.activeElement).toBe(input);
+    doc.fireTab({ shift: true }); expect(doc.activeElement).toBe(close);
   });
 
   it('pulls escaped focus back into the trap (Tab → first, Shift+Tab → last)', () => {
@@ -191,6 +193,22 @@ describe('wireFocusTrap', () => {
     expect(doc.activeElement).toBe(close);
     expect(doc.activeElement).not.toBe(disabled);
     expect(doc.activeElement).not.toBe(skip);
+  });
+
+  it('skips hidden and inert subtrees and keeps a radio group to one Tab stop', () => {
+    const doc = makeDoc(); const { panel, close, input, link } = buildDialog(doc);
+    for (const mark of ['hidden', 'inert']) {
+      const group = doc.createElement('div'); group.setAttribute(mark, '');
+      group.appendChild(doc.createElement('input')); panel.appendChild(group);
+    }
+    const radio = (checked: boolean) => {
+      const el = doc.createElement('input'); el.setAttribute('type', 'radio'); el.setAttribute('name', 'choice');
+      Object.assign(el, { checked }); panel.appendChild(el); return el;
+    };
+    radio(false); const checked = radio(true);
+    wire(doc, panel); close.focus(); doc.fireTab(); expect(doc.activeElement).toBe(input);
+    doc.fireTab(); expect(doc.activeElement).toBe(link); doc.fireTab(); expect(doc.activeElement).toBe(checked);
+    doc.fireTab(); expect(doc.activeElement).toBe(close);
   });
 
   it('release() detaches the listener and restores the opener', () => {
@@ -289,9 +307,9 @@ describe('wireFocusTrap', () => {
     inner.focus();
     doc.fireTab();
     expect(doc.activeElement).toBe(before);
-    // A Tab from the middle summary is native (not pulled back).
     summary.focus();
-    expect(doc.fireTab().defaultPrevented).toBe(false);
+    expect(doc.fireTab().defaultPrevented).toBe(true);
+    expect(doc.activeElement).toBe(inner);
   });
 
   it('skips the content of a collapsed <details> (only the summary tabs)', () => {

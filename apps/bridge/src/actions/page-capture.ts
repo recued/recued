@@ -67,6 +67,8 @@ export const FRAME_NOT_PICTURED = 'This page is a frame inside another page and 
  *  Down scrolls, so a line cut at the foot of one screen is whole at the head of the next. */
 export const PAGE_SCREEN_STEP = 0.875;
 
+export type ElementScrollPhase = 'focus' | 'move' | 'observe';
+
 /** The part of the viewport to picture: the element a ref or selector names, scrolled into view when
  *  it is not wholly in it, or the whole viewport. `unseen`: the element draws nothing that could be
  *  pictured.
@@ -79,19 +81,26 @@ export const PAGE_SCREEN_STEP = 0.875;
  *  self-contained. Slice U: a `scroll` measures with it too (`picture` false), which a frame's own
  *  page may take, since scrolling it needs no picture of the tab. */
 export const measurePageArea = (scope: PageInspectScope, expectedUrl?: string | null, screen?: number | null,
-  token?: string | null, step = 0.875, picture = true): PageMeasureAnswer => {
+  token?: string | null, step = 0.875, picture = true,
+  elementScroll?: { command_id: string; phase: ElementScrollPhase; direction?: 'left' | 'right' }): PageMeasureAnswer => {
   // Chrome passes arguments as JSON, so an absent one can arrive as null.
   if (document.documentElement.hasAttribute('data-recued-owner-surface')
     || (expectedUrl != null && location.href !== expectedUrl)) return { blocked: true };
   if (picture && window !== window.top) return { framed: true };
   const viewport = { width: window.innerWidth, height: window.innerHeight };
   const title = document.title.length > 200 ? `${document.title.slice(0, 200)}…` : document.title;
-  let element: Element | null = null;
-  if (scope.ref != null) {
+  const horizontal = !picture && elementScroll?.direction !== undefined;
+  type ScrollBinding = { command_id: string; element: Element | null; port: Element | null; extent: 'panel' | 'section' | 'anchor' };
+  const scrollWorld = globalThis as typeof globalThis & { recuedElementScroll?: ScrollBinding };
+  const observed = elementScroll && elementScroll.phase !== 'focus';
+  const binding = observed ? scrollWorld.recuedElementScroll : undefined;
+  if (observed && binding?.command_id !== elementScroll.command_id) return { stale: true };
+  let element = binding?.element ?? null;
+  if (!binding && scope.ref != null) {
     const marked = (globalThis as typeof globalThis & { recuedPageRefs?: { byRef: Map<string, Element> } }).recuedPageRefs;
     element = marked?.byRef.get(scope.ref) ?? null;
     if (!element?.isConnected) return { stale: true };
-  } else if (scope.selector != null) {
+  } else if (!binding && scope.selector != null) {
     try {
       element = document.querySelector(scope.selector);
     } catch {
@@ -139,10 +148,24 @@ export const measurePageArea = (scope: PageInspectScope, expectedUrl?: string | 
     }
   };
   const styleOf = (box: Element) => (box.ownerDocument.defaultView ?? window).getComputedStyle(box);
+  const clientSize = (box: Element, across = horizontal) => across ? box.clientWidth : box.clientHeight;
+  const contentSize = (box: Element, across = horizontal) => across ? box.scrollWidth : box.scrollHeight;
+  const overflow = (box: Element, across = horizontal) => across ? styleOf(box).overflowX : styleOf(box).overflowY;
   /** An element that scrolls its own content: it has more than it shows, and its overflow lets it. */
-  const scrolls = (box: Element) => box.scrollHeight > box.clientHeight + 1
-    && /^(auto|scroll|overlay)$/.test(styleOf(box).overflowY);
+  const scrolls = (box: Element) => clientSize(box) > 0 && contentSize(box) > clientSize(box) + 1
+    && /^(auto|scroll|overlay)$/.test(overflow(box));
   const pace = (shown: number) => Math.max(1, Math.floor(shown * step));
+  const root = document.scrollingElement ?? document.documentElement;
+  const hidden = (box: Element | null, across: boolean) => box !== null && /^(hidden|clip)$/.test(overflow(box, across));
+  const rootScrolls = (across = horizontal) => clientSize(root, across) > 0
+    && contentSize(root, across) > clientSize(root, across) + 1
+    && !hidden(document.documentElement, across) && !hidden(document.body, across);
+  // An inferred port should move by at least the overlap between screens.
+  // Preserve explicitly named ports and fall back to a small port if it is all the page has.
+  const substantial = (box: Element) => {
+    const shown = Math.min(clientSize(box), horizontal ? viewport.width : viewport.height);
+    return contentSize(box) - clientSize(box) >= shown - pace(shown);
+  };
   /** How many screens `height` takes, `shown` at a time. */
   const count = (height: number, shown: number) => (height <= shown + 1 ? 1 : 1 + Math.ceil((height - shown) / pace(shown)));
   /** Which screen begins at or above `offset`; the end of the content is the last screen. */
@@ -159,14 +182,115 @@ export const measurePageArea = (scope: PageInspectScope, expectedUrl?: string | 
   const answer = (area: PageArea, at: { screen: number; screens: number }): PageMeasureAnswer =>
     ({ outputs: { url: location.href, title, area, viewport, screen: at.screen, screens: at.screens, ...(scrolled ? { scrolled: true as const } : {}) } });
 
+  const whole = { x: 0, y: 0, ...viewport };
+  const horizontalPosition = (port: Element): PageMeasureAnswer => {
+    const page = port === root;
+    const shown = Math.min(port.clientWidth, viewport.width);
+    if (shown <= 0 || !(page ? rootScrolls(true) : scrolls(port))) return answer(whole, { screen: 1, screens: 1 });
+    const offset = () => page ? window.scrollX : port.scrollLeft;
+    const before = offset();
+    if (elementScroll?.phase === 'move') {
+      const target = page ? window : port;
+      target.scrollBy({ left: (elementScroll.direction === 'left' ? -1 : 1) * pace(shown), behavior: 'instant' });
+    }
+    const after = offset();
+    if (before !== after) noteScroll();
+    const range = port.scrollWidth - port.clientWidth;
+    const style = styleOf(port);
+    // Count from the physical left edge. Chrome uses negative X offsets for
+    // scrolling boxes whose overflow extends leftward from their origin.
+    const fromRight = after < 0 || style.writingMode.endsWith('-rl')
+      || (style.writingMode === 'horizontal-tb' && style.direction === 'rtl');
+    const position = Math.max(0, Math.min(range, after + (fromRight ? range : 0)));
+    return answer(whole, { screen: which(position, range + shown, shown), screens: count(range + shown, shown) });
+  };
+  if (!picture && elementScroll && element !== null) {
+    // Keep the chosen port for all phases of this command. A render can
+    // replace an item in a virtualized panel while leaving the panel live.
+    const ancestors: Element[] = [];
+    if (!binding || binding.extent === 'section' || elementScroll.phase === 'move') {
+      for (let at = element; at !== root;) {
+        const parent = at.assignedSlot ?? at.parentNode;
+        const next = parent?.nodeType === Node.DOCUMENT_FRAGMENT_NODE ? (parent as ShadowRoot).host
+          : parent?.nodeType === Node.ELEMENT_NODE ? parent as Element : null;
+        if (!next) break;
+        ancestors.push(next);
+        at = next;
+      }
+    }
+    const box = element.getBoundingClientRect();
+    if (binding) {
+      const needsAnchor = binding.extent === 'section' || (elementScroll.phase === 'move' && element.isConnected);
+      if (!binding.port?.isConnected || (needsAnchor
+        && (!element.isConnected || (binding.port !== element && !ancestors.includes(binding.port))))) return { stale: true };
+    } else if (box.width <= 0 || box.height <= 0) {
+      return { unseen: true };
+    }
+    const ports = ancestors.filter(port => port === root ? rootScrolls() : scrolls(port));
+    const explicit = element === root || scrolls(element);
+    const port = binding?.port ?? (explicit ? element : ports.find(substantial) ?? ports[0] ?? root);
+    const shown = port.clientHeight;
+    const extent = binding?.extent ?? (horizontal || explicit ? 'panel'
+      : box.height > shown + 1 ? 'section' : port === root ? 'anchor' : 'panel');
+    const position = () => port === root ? window.scrollY : port.scrollTop;
+    if (elementScroll.phase === 'focus') {
+      // Reveal the anchor within its own document, including inside clips
+      // that are already within the browser viewport. Keyboard focus stays put.
+      const nearest = (start: number, end: number, min: number, max: number): number => {
+        if ((start >= min && end <= max) || (start <= min && end >= max)) return 0;
+        return (start < min) !== (end - start > max - min) ? start - min : end - max;
+      };
+      for (const clip of ancestors) {
+        const page = clip === root;
+        const bounds = page ? { top: 0, left: 0 } : clip.getBoundingClientRect();
+        const top = bounds.top + (page ? 0 : clip.clientTop);
+        const left = bounds.left + (page ? 0 : clip.clientLeft);
+        const target = element.getBoundingClientRect();
+        const style = styleOf(clip);
+        const mayReveal = /^(auto|scroll|overlay|hidden)$/;
+        const dy = (page ? rootScrolls(false) : clip.scrollHeight > clip.clientHeight && mayReveal.test(style.overflowY))
+          ? nearest(target.top, target.bottom, top, top + clip.clientHeight) : 0;
+        const dx = (page ? rootScrolls(true)
+          : clip.scrollWidth > clip.clientWidth && mayReveal.test(style.overflowX))
+          ? nearest(target.left, target.right, left, left + clip.clientWidth) : 0;
+        if (Math.abs(dy) < 1 && Math.abs(dx) < 1) continue;
+        const view = page ? window : clip;
+        noteScroll();
+        view.scrollTo({ top: (page ? window.scrollY : clip.scrollTop) + dy,
+          left: (page ? window.scrollX : clip.scrollLeft) + dx, behavior: 'instant' });
+      }
+      scrollWorld.recuedElementScroll = { command_id: elementScroll.command_id, element, port, extent };
+    }
+    if (elementScroll.phase === 'observe') delete scrollWorld.recuedElementScroll;
+    if (horizontal) return horizontalPosition(port);
+    // Large elements keep their own screen range. A small anchor in the
+    // document itself is revealed, and a small anchor inside a panel scopes it.
+    if (extent === 'anchor' || shown <= 0) return answer(whole, { screen: 1, screens: 1 });
+    const limit = port === root && !rootScrolls() ? 0 : Math.max(0, port.scrollHeight - shown);
+    const clamp = (offset: number) => Math.max(0, Math.min(limit, offset));
+    let start = 0;
+    let end = limit;
+    if (extent === 'section') {
+      const visible = element.getBoundingClientRect();
+      const contentTop = port === root ? 0 : port.getBoundingClientRect().top + port.clientTop;
+      start = clamp(position() + visible.top - contentTop);
+      end = clamp(position() + visible.bottom - contentTop - shown);
+    }
+    const height = Math.max(0, end - start) + shown;
+    const screens = count(height, shown);
+    if (elementScroll.phase === 'move' && screen != null) {
+      to(port === root ? window : port, start + startOf(Math.min(screen, screens), height, shown));
+    }
+    return answer(whole, { screen: which(Math.max(0, position() - start), height, shown), screens });
+  }
+
   if (element === null) {
     // The page: its own scrolling, else the panel it scrolls instead (the largest the window shows,
     // at least a third of it), looked for in web components too.
-    const root = document.scrollingElement ?? document.documentElement;
-    const hidden = (box: Element | null) => box !== null && /^(hidden|clip)$/.test(styleOf(box).overflowY);
-    let scroller: Element | null = root.scrollHeight > root.clientHeight + 1 && !hidden(document.documentElement)
-      && !hidden(document.body) ? root : null;
-    if (scroller === null) {
+    const pageScrolls = rootScrolls();
+    let scroller = binding ? binding.port : pageScrolls && (picture || substantial(root)) ? root : null;
+    if (binding && scroller !== null && !scroller.isConnected) return { stale: true };
+    if (!binding && scroller === null) {
       const shadowOf = (host: Element): ShadowRoot | null => {
         try {
           const dom = (globalThis as typeof globalThis & {
@@ -177,24 +301,36 @@ export const measurePageArea = (scope: PageInspectScope, expectedUrl?: string | 
         }
       };
       let most = (viewport.width * viewport.height) / 3;
+      let visiblePanel: Element | null = null;
+      let visiblePanels = 0;
       const roots: Array<Document | ShadowRoot> = [document];
       for (let at = 0; at < roots.length && at < 1_000; at += 1) {
         for (const box of roots[at]!.querySelectorAll('*')) {
           const shadow = shadowOf(box);
           if (shadow !== null) roots.push(shadow);
-          if (box.scrollHeight <= box.clientHeight + 1 || !scrolls(box)) continue;
+          if (!scrolls(box) || (!picture && pageScrolls && !substantial(box))) continue;
           const shown = box.getBoundingClientRect();
           const area = Math.max(0, Math.min(shown.right, viewport.width) - Math.max(shown.left, 0))
             * Math.max(0, Math.min(shown.bottom, viewport.height) - Math.max(shown.top, 0));
+          if (horizontal && area > 0) {
+            visiblePanel = box;
+            visiblePanels += 1;
+          }
           if (area > most) {
             most = area;
             scroller = box;
           }
         }
       }
+      if (horizontal && scroller === null && visiblePanels === 1) scroller = visiblePanel;
+      if (scroller === null && pageScrolls) scroller = root;
     }
-    const whole = { x: 0, y: 0, ...viewport };
+    if (elementScroll?.phase === 'focus') {
+      scrollWorld.recuedElementScroll = { command_id: elementScroll.command_id, element: null, port: scroller, extent: 'panel' };
+    }
+    if (elementScroll?.phase === 'observe') delete scrollWorld.recuedElementScroll;
     if (scroller === null) return answer(whole, { screen: 1, screens: 1 });
+    if (horizontal) return horizontalPosition(scroller);
     const page = scroller === root;
     const shown = page ? root.clientHeight : Math.min(scroller.clientHeight, viewport.height);
     const height = scroller.scrollHeight;

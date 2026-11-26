@@ -30,8 +30,11 @@ export const browserControlScope = (root: OutlineElement) => {
   const modalAncestors = new Set<OutlineElement>();
   for (const node of modals) for (let at = parents.get(node); at; at = parents.get(at)) modalAncestors.add(at);
   const active = modals.filter(node => !modalAncestors.has(node));
-  const modal = active.length === 1 ? active[0] : undefined;
-  const allowed = new Set(nodes.filter(node => complete && (modals.length === 0 || modal !== undefined && inside(node, modal))));
+  const focused = active.filter(node => Object.hasOwn(node.attrs, 'data-recued-focused-modal'));
+  const modal = focused.length === 1 ? focused[0] : active.length === 1 ? active[0] : undefined;
+  const interactive = (node: OutlineElement) => !Object.hasOwn(node.attrs, 'data-recued-inert');
+  const allowed = new Set(nodes.filter(node => complete && interactive(node)
+    && (modals.length === 0 || modal !== undefined && inside(node, modal))));
   const lists = new Map<OutlineElement, OutlineElement[]>();
   let comboCount = 0;
   for (const node of nodes) {
@@ -49,9 +52,11 @@ export const browserControlScope = (root: OutlineElement) => {
     lists.set(node, [...new Set(linked)]);
     // ARIA-linked popup options may be portalled beside the dialog. Never
     // broaden to an unrelated list just because it contains matching text.
-    if (allowed.has(node)) for (const list of linked) for (const child of nodes) if (inside(child, list)) allowed.add(child);
+    if (allowed.has(node)) for (const list of linked) for (const child of nodes) {
+      if (interactive(child) && inside(child, list)) allowed.add(child);
+    }
   }
   if (!complete) allowed.clear();
   return { nodes, parents, ids, inside, allowed, lists, modal,
-    modal_open: modals.length > 0, complete: complete && active.length <= 1 };
+    modal_open: modals.length > 0, complete: complete && (modal !== undefined || active.length === 0) };
 };

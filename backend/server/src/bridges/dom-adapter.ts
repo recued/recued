@@ -60,6 +60,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { browserExtractionTargets } from './browser-extraction-targets.js';
 import { currentPreapprovalIo } from '../preapproval-io-context.js';
 import { captureProviderHandoffFence } from '../execution/provider-handoff.js';
+import { collectTableWindows, readTableWindow, tableReadAfterScroll } from './browser-table-continuation.js';
 import { currentRunAbortContext } from '../execution/run-abort-context.js';
 import { completedBrowserReads, type CompletedBrowserRead } from './browser-completed-reads.js';
 import { browserPostActionState, browserFailureObservation } from './browser-post-action.js';
@@ -72,17 +73,23 @@ import {
   BRIDGE_ROW_CHANGED_DETAIL,
   BRIDGE_CLICK_LOAD_MAX_MS,
   BRIDGE_CLICK_OUTPUT_KEYS,
+  BRIDGE_GENERATED_DOWNLOAD_KEY,
+  BRIDGE_GENERATED_DOWNLOADS_KEY,
   BRIDGE_COMMAND_MAX_TIMEOUT_MS,
   BRIDGE_SHORT_WAIT_MAX_MS,
   BRIDGE_FILL_OUTPUT_KEYS,
+  BRIDGE_PASTE_OUTPUT_KEYS,
   BRIDGE_PICK_OUTPUT_KEYS,
   BRIDGE_PRESS_OUTPUT_KEYS,
   BRIDGE_SCROLL_OUTPUT_KEYS,
   BRIDGE_SCROLL_TO,
+  isHorizontalScrollDirection,
   BRIDGE_SUBMIT_OUTPUT_KEYS,
   BRIDGE_NAVIGATE_OUTPUT_KEYS,
   BRIDGE_CLOSE_OUTPUT_KEYS,
   BRIDGE_HOVER_OUTPUT_KEYS,
+  BRIDGE_DRAG_OUTPUT_KEYS,
+  BRIDGE_SEEK_OUTPUT_KEYS,
   BROWSER_ACT_ASK_CHARS,
   BROWSER_ACT_CHECK_SECONDS,
   BROWSER_ACT_PICK_SECONDS,
@@ -99,7 +106,8 @@ import {
   browserActStepWrites,
   browserActWaitsForElement,
   browserAddressesMatch,
-  browserAddressKey,
+  browserDestinationKey,
+  browserDestinationsMatch,
   parseBrowserActSteps,
   parseBridgeKey,
   readBridgeActedOn,
@@ -116,6 +124,7 @@ import {
   BRIDGE_TABLE_OUTPUT_KEYS,
   BRIDGE_DOWNLOAD_OUTPUT_KEYS,
   BRIDGE_FILE_MAX_BYTES,
+  BRIDGE_UPLOAD_MAX_FILES,
   BRIDGE_UPLOAD_OUTPUT_KEYS,
   BRIDGE_TABS_OUTPUT_KEYS,
   BRIDGE_WAIT_DEFAULT_MS,
@@ -169,7 +178,7 @@ import type {
   DispatchRequest,
 } from './dispatcher.js';
 import { controlsSaid, findControl, PAGE_COVER_NOTE_START, PAGE_OUTLINE_LINE_CHARS, PAGE_PART_MAX_CHARS, pageCoveredByAd,
-  pageReads as processPageReads,
+  pageReads as processPageReads, scopedSelectedText,
   type ControlPosition, type OutlineControl,
   type OutlineLine, type OutlinePart, type PageChanges, type PageForm, type PageReadStore, type PageReadSnapshot } from './page-outline.js';
 import { browserFlows as processBrowserFlows, type BrowserFlowRecorder, type BrowserFlowStepKind } from './browser-flow-record.js';
@@ -193,7 +202,7 @@ import { completedBrowserFiles } from '@recued/contracts';
 import { browserEntryView, type BrowserReadRange } from './browser-entry-view.js';
 import { browserRouting, browserBridgeId, browserCallRouting, browserPageOwner, browserTabKey } from './browser-routing.js';
 import { browserFieldEvidence } from './browser-field-evidence.js';
-import { browserInteractionTargets } from './browser-interaction-targets.js';
+import { browserEditorTextTargets, browserInteractionTargets } from './browser-interaction-targets.js';
 import { browserControlEvidence } from './browser-control-evidence.js';
 import { browserPageObservation, limitPageObservation, unavailablePageObservation,
   type BrowserPageChangeAnswer } from './browser-page-observation.js';
@@ -325,9 +334,10 @@ const actionWatchSeconds = (step: BrowserActStep): { watch?: number; sendWatch?:
 };
 /** 2026-11-21 (D-402, task H) — an action watched longer than a Bridge's usual takes a command long enough for the
  *  action, the watch and the answer: the default command leaves a watch about 10 s. */
-const watchCommandTimeout = ({ watch, sendWatch }: { watch?: number; sendWatch?: number }): number | undefined => {
-  const longest = Math.max(watch ?? 0, sendWatch ?? 0) * 1000;
-  return longest > BRIDGE_SHORT_WAIT_MAX_MS ? Math.min(BRIDGE_COMMAND_MAX_TIMEOUT_MS, longest + 20_000) : undefined;
+const watchCommandTimeout = ({ watch, sendWatch }: { watch?: number; sendWatch?: number }, downloadWait = 0): number | undefined => {
+  const waiting = (Math.max(watch ?? 0, sendWatch ?? 0) + downloadWait) * 1000;
+  return waiting > BRIDGE_SHORT_WAIT_MAX_MS || downloadWait > 0
+    ? Math.min(BRIDGE_COMMAND_MAX_TIMEOUT_MS, Math.max(waiting, BRIDGE_SHORT_WAIT_MAX_MS) + 20_000) : undefined;
 };
 
 /** The ops whose one command's answer is the step's whole output. */
@@ -664,6 +674,7 @@ interface PerEntryOutcome {
    *  dispatch produced a non-throwing failure that the caller already
    *  surfaced as an `IngredientError` upstream. */
   outputs: Record<string, unknown> | undefined;
+  generated?: GeneratedDownloadResult;
 }
 
 /** Pure request builder shared by actual dispatch and D-261 preparation. */
@@ -741,7 +752,7 @@ const pagesOpening = new Map<string, Promise<unknown>>();
  *  tab that one opened, so two reads run side by side, each opening the page it names (slice AF),
  *  open one tab between them. */
 const openOnce = (resolved: ResolvedCall, open: () => Promise<unknown>, pool = ''): Promise<unknown> => {
-  const address = typeof resolved.input.address === 'string' ? browserAddressKey(resolved.input.address) : undefined;
+  const address = typeof resolved.input.address === 'string' ? browserDestinationKey(resolved.input.address) : undefined;
   if (address === undefined) return open();
   const key = `${pool}\u0000${String(resolved.input.bridge_id ?? '')}\u0000${String(resolved.input.target)}\u0000${address}`;
   const opening = pagesOpening.get(key);
@@ -753,6 +764,21 @@ const openOnce = (resolved: ResolvedCall, open: () => Promise<unknown>, pool = '
 
 /** Build the bridge-runner adapter. Returns an `Adapter` that the
  *  engine's adapter registry installs at the `dom` slot. */
+/** D-345 slice E — why the server could not fetch a file itself, so the Bridge was asked (2026-11-23, task L). */
+type ServerUnfetched = { readonly unfetched: string };
+
+/** 2026-11-23 (task L; the owner: "go ahead with L download fix too") — the Bridge's refusal of a file the server could
+ *  not fetch either says both: "The server could not download it itself (www.python.org did not finish answering in
+ *  time), so the Browser Bridge was asked: The file is 12.5 MB, …". Without it a timed-out server fetch read as the
+ *  Bridge's size limit alone. Anything else is left as it is. The error is the Bridge's own, its message prefixed:
+ *  what `browserFailure` attached to it, and its code and details, stay. */
+const withServerMiss = (error: unknown, unfetched: string | undefined): unknown => {
+  if (unfetched === undefined || !(error instanceof IngredientError)) return error;
+  error.message = `The server could not download it itself (${unfetched.replace(/\.$/, '')}), so the Browser Bridge was asked: `
+    + error.message;
+  return error;
+};
+
 export const createBridgeDomAdapter = (
   options: CreateBridgeDomAdapterOptions,
 ): Adapter => {
@@ -892,6 +918,9 @@ export const createBridgeDomAdapter = (
         //   poll of a wait read the page under one key, so the Bridge answered each poll after the first from its cache,
         //   and a page that had finished loading was still loading to the wait until it gave up.
         const idempotency_key = poll ? `${keyed}:poll:${randomUUID()}` : keyed;
+        const scope = currentPreapprovalIo();
+        const capturesDownload = !scope && resolved.slug === CORE_DOM_CLICK_SLUG && action === 'click'
+          && typeof args.page === 'string' && options.files !== undefined;
         const request: DispatchRequest = {
           ...browserCallRouting(resolved.slug, resolved.input),
           ...(action === 'list_tabs' && !resolved.input.address ? { browser_all_bridges: true } : {}),
@@ -901,18 +930,23 @@ export const createBridgeDomAdapter = (
           ingredient,
           action: sendAs ?? action,
           args,
-          expects_output_keys,
+          expects_output_keys: capturesDownload ? [...expects_output_keys, BRIDGE_GENERATED_DOWNLOAD_KEY, BRIDGE_GENERATED_DOWNLOADS_KEY] : expects_output_keys,
           idempotency_key,
           // A wait carries its own budget, longer than the wait.
           ...(timeoutCap !== undefined ? { timeout_ms: Math.min(timeout_ms ?? options.defaultTimeoutMs ?? timeoutCap, timeoutCap) } : timeout_ms !== undefined ? { timeout_ms }
             : options.defaultTimeoutMs !== undefined ? { timeout_ms: options.defaultTimeoutMs } : {}),
         };
 
-        const scope = currentPreapprovalIo();
         const reviewed = scope ? await scope.prepareDomCommand(resolved, request, entry.index - 1) : undefined;
         assertHandoff();
         const outcome = await dispatcher.dispatch(request, reviewed);
-        let outputs = keepActedOn(translateDispatchOutcome(outcome, resolved.slug, entry, typeof args.ref === 'string' ? args.ref : undefined), action, args,
+        const translated = translateDispatchOutcome(outcome, resolved.slug, entry, typeof args.ref === 'string' ? args.ref : undefined);
+        const { [BRIDGE_GENERATED_DOWNLOAD_KEY]: download, [BRIDGE_GENERATED_DOWNLOADS_KEY]: downloads, ...visible } = translated ?? {};
+        const generated = capturesDownload && visible.clicked === true && (download !== undefined || downloads !== undefined)
+          ? await keepGeneratedDownloads(download, downloads, (file, ordinal) => keepDownload(file, options.files, resolved.slug,
+            resolved.stepMeta?.run_id, ordinal === undefined ? resolved.stepMeta?.step_id : `${step_id}#download.${ordinal}`))
+          : undefined;
+        let outputs = keepActedOn(translated === undefined ? undefined : visible, action, args,
           resolved.stepMeta?.run_id, flows);
         continuations.observe(continuationScope(resolved), outputs, action === 'open_tab' ? resolved.input.address : undefined,
           ['inspect', 'reread', 'read_dom', 'read_element', 'read_table'].includes(action));
@@ -925,7 +959,7 @@ export const createBridgeDomAdapter = (
         if (action === 'download_file') {
           outputs = await keepDownload(outputs, options.files, resolved.slug, resolved.stepMeta?.run_id, resolved.stepMeta?.step_id);
         }
-        outcomes.push({ entry, action, outputs });
+        outcomes.push({ entry, action, outputs, generated });
       }
 
       return assembleStepOutput(outcomes);
@@ -967,14 +1001,18 @@ export const createBridgeDomAdapter = (
   };
   /** D-345 slice E — the owner: "go ahead with Save a file from a web page server first". A file a step
    *  saves whose address is known is fetched by the server first: no Bridge command and no tab, up to
-   *  25 MB where the Bridge hands over 2.5. `undefined` when it could not (not public, an answer that is
-   *  not a success, a page where a file was linked, most often a sign-in): the Bridge fetches it as the
-   *  page would, signed in as the owner is, as before. */
+   *  25 MB where the Bridge hands over 2.5. `{ unfetched }`, saying why, when it could not (not public, an answer
+   *  that is not a success, a page where a file was linked, most often a sign-in, a site too slow): the Bridge
+   *  fetches it as the page would, signed in as the owner is, as before. `undefined` when no address or no fetch.
+   *  ⚠ 2026-11-23 (task L) — why is kept: it was dropped, so a Bridge's "the file is 12.5 MB, and the Browser Bridge
+   *  hands over files of at most 2.5 MB" was all anyone saw of a server fetch that had timed out. */
   const savedByServer = async (base: ResolvedCall, address: string | undefined, step_id: string)
-    : Promise<(BrowserFileKept & { address: string }) | undefined> => {
+    : Promise<(BrowserFileKept & { address: string }) | ServerUnfetched | undefined> => {
     if (address === undefined || options.fetchFile === undefined || options.files === undefined) return undefined;
-    const fetched = await options.fetchFile(address).catch(() => undefined);
-    if (fetched?.kind !== 'file') return undefined;
+    const fetched = await options.fetchFile(address).catch((error: unknown) => ({ kind: 'refused' as const,
+      reason: error instanceof Error ? error.message : String(error) }));
+    if (fetched.kind === 'refused') return { unfetched: fetched.reason };
+    if (fetched.kind !== 'file') return { unfetched: `${fetched.url} answered a web page, not the file (most often a sign-in)` };
     const kept = await options.files.keep({ bytes: fetched.bytes, filename: fetched.filename, mime_type: fetched.mime_type,
       origin: 'http_download', ...(base.stepMeta?.run_id !== undefined ? { run_id: base.stepMeta.run_id } : {}), step_id });
     return { ...kept, address: fetched.url };
@@ -1152,8 +1190,9 @@ export const createBridgeDomAdapter = (
         askPage: askForBatch(resolved),
         settledOn: settledAfterRead(resolved),
         readyOn: settledAfterRead(resolved, true),
-        keepFile: (outputs, n) => keepDownload(outputs, options.files, CORE_DOM_ACT_SLUG, resolved.stepMeta?.run_id,
-          `${resolved.stepMeta?.step_id ?? CORE_DOM_ACT_SLUG}#download${String(n)}`),
+        capturesDownloads: options.files !== undefined,
+        keepFile: (outputs, n, ordinal) => keepDownload(outputs, options.files, CORE_DOM_ACT_SLUG, resolved.stepMeta?.run_id,
+          `${resolved.stepMeta?.step_id ?? CORE_DOM_ACT_SLUG}#download${String(n)}${ordinal === undefined ? '' : '.' + ordinal}`),
         pdfShown: pdfShown(resolved),
         pdfAfterClick: (address, answer, n) => pdfAfterClick({ ...resolved,
           stepMeta: { ...(resolved.stepMeta ?? {}), step_id: `${resolved.stepMeta?.step_id ?? resolved.slug}#click${n}` } as NonNullable<ResolvedCall['stepMeta']> }, address, answer),
@@ -1205,18 +1244,19 @@ export const createBridgeDomAdapter = (
     // D-335 slice X — the tabs showing one address: what Open a web page looks for before it opens one.
     if (resolved.slug === CORE_DOM_TABS_SLUG && typeof resolved.input.address === 'string' && resolved.input.address.trim() !== '') {
       const address = resolved.input.address.trim();
-      if (browserAddressKey(address) === undefined) {
+      if (browserDestinationKey(address) === undefined) {
         throw new IngredientError('DOM_SELECTOR_MISSING', "core.dom.tabs: 'address' is an http or https address", { slug: resolved.slug });
       }
       const listed = await dispatchCall(resolved) as Record<string, unknown>;
-      const tabs = Array.isArray(listed.tabs) ? listed.tabs.filter((tab: unknown) => tab !== null && typeof tab === 'object'
-        && typeof (tab as Record<string, unknown>).url === 'string'
-        && browserAddressesMatch((tab as Record<string, unknown>).url as string, address)) : [];
-      return { ...listed, tabs, truncated: listed.truncated === true };
+      const tabs = matchingBrowserTabs(listed.tabs, address);
+      return { ...listed, tabs, truncated: listed.truncated === true,
+        ...(tabs.length === 1 ? { matched_tab: tabs[0] } : {}),
+        ...(tabs.length > 1 ? { tab_selection: browserTabSelection(address, tabs, listed.truncated === true) } : {}) };
     }
 
-    // D-335 slice AA — a read naming its page by address reads the open tab showing it.
+    // Resolve an address to one tab or return the live candidates without reading a document.
     const call = await readAtAddress(resolved, dispatcher, assertHandoff);
+    if ('browser_tab_choices' in call) return call;
     // D-335 slice O — a read as an outline, and a cut line or a search answered from it.
     if (call.slug === CORE_DOM_INSPECT_SLUG) {
       // The owner's 3b — and a tab showing a PDF has it kept, to read with document.read.
@@ -1231,28 +1271,30 @@ export const createBridgeDomAdapter = (
       dispatcher.listBrowserBridges?.().filter(bridge => bridge.online).map(bridge => bridge.bridge_id).sort().join('|') ?? '');
     // D-345 slice E — a file whose address is known (given, or its link's in the kept read) is fetched by
     // the server first; the Bridge fetches what it could not.
+    let unfetched: string | undefined;
     if (call.slug === CORE_DOM_DOWNLOAD_SLUG) {
       const page = typeof call.input.page === 'string' && call.input.page !== '' ? call.input.page : undefined;
       const address = typeof call.input.address === 'string' && call.input.address.trim() !== '' ? call.input.address.trim()
         : hrefOf(page, typeof call.input.ref === 'string' ? call.input.ref : undefined);
       const saved = await savedByServer(call, address, call.stepMeta?.step_id ?? CORE_DOM_DOWNLOAD_SLUG);
-      if (saved !== undefined) {
+      if (saved !== undefined && !('unfetched' in saved)) {
         return { ...(page !== undefined ? { page } : {}), address: saved.address, file_ref: saved.file_ref, record_id: saved.file_ref,
           filename: saved.filename, mime_type: saved.mime_type, size_bytes: saved.size_bytes, sha256: saved.sha256 };
       }
+      unfetched = saved?.unfetched;
     }
     const address = call.slug === CORE_DOM_CLICK_SLUG && !call.input.key
       ? hrefOf(typeof call.input.page === 'string' ? call.input.page : undefined,
         typeof call.input.ref === 'string' ? call.input.ref : undefined) : undefined;
-    const answer = await dispatchCall(call);
+    let answer: unknown;
+    try { answer = await dispatchCall(call); } catch (error) { throw withServerMiss(error, unfetched); }
     const pdf = await pdfAfterClick(call, address, answer);
     return pdf ? { ...(answer as Record<string, unknown>), pdf } : answer;
   };
-  /** D-335 slice AA — a read naming its page by address, as a read of the open tab showing it: the
-   *  first listed, as Open a web page answers one, matched as a batch step's `url` is. A read opens
-   *  no tab, so with none showing it, it says so and names the recipe that opens one. */
+  /** Resolve a read by address against open documents. An ambiguous address yields document
+   *  choices without inspecting their contents. Opening a tab is a separate recipe step. */
   const readAtAddress = async (resolved: ResolvedCall, dispatcher: BridgeDispatcher, assertHandoff: () => void)
-    : Promise<ResolvedCall> => {
+    : Promise<ResolvedCall | ReturnType<typeof browserTabSelection>> => {
     const address = pageAddressOf(resolved.input);
     if (address === undefined || !READS_BY_ADDRESS.has(resolved.slug)) return resolved;
     // Which tab shows it is known only when the read runs, so a run reviewed before it starts, which
@@ -1265,12 +1307,13 @@ export const createBridgeDomAdapter = (
     }
     const listed = await dispatchThrough(tabs, dispatcher, assertHandoff)({ slug: CORE_DOM_TABS_SLUG, risk_tier: 'read', output: {},
       input: { target: resolved.input.target, address, bridge_id: resolved.input.bridge_id }, ...(resolved.stepMeta ? { stepMeta: resolved.stepMeta } : {}) }) as Record<string, unknown>;
-    const tab = (Array.isArray(listed.tabs) ? listed.tabs : []).filter(isListedTab)
-      .find((listedTab) => browserAddressesMatch(listedTab.url, address));
+    const matches = matchingBrowserTabs(listed.tabs, address);
+    if (matches.length > 1) return browserTabSelection(address, matches, listed.truncated === true);
+    const tab = matches[0];
     if (tab === undefined) {
       throw new IngredientError('DOM_PAGE_NOT_MATCHING', `No open tab shows ${address}${listed.truncated === true ? ' among the 50 listed' : ''}, `
-        + 'and a read opens none: open it with Open a web page, which asks first unless it is allowed on that site, then read it by '
-        + 'its address or the handle that answers', { slug: resolved.slug, address });
+        + 'and a read opens none: open it with Open a web page, then read it by its address or the handle that answers',
+      { slug: resolved.slug, address });
     }
     return { ...resolved, input: { ...resolved.input, page: tab.page } };
   };
@@ -2216,6 +2259,7 @@ const keepRegion = (store: PageReadStore, answer: unknown, asked: string | undef
   const page = typeof outputs.page === 'string' && outputs.page !== '' ? outputs.page : asked;
   if (!page || typeof outputs.html !== 'string') return answer;
   const truncated = outputs.truncated === true;
+  const selection = !truncated && outputs.loading !== true ? scopedSelectedText(outputs.html) : undefined;
   const controls = outputs.loading !== true ? browserControlEvidence(outputs.html, { whole: false, truncated }) : undefined;
   const fields = outputs.loading !== true ? browserFieldEvidence(outputs.html, { whole: false, truncated }) : undefined;
   const read = { url: typeof outputs.url === 'string' ? outputs.url : '', title: typeof outputs.title === 'string' ? outputs.title : '',
@@ -2225,6 +2269,7 @@ const keepRegion = (store: PageReadStore, answer: unknown, asked: string | undef
     `core.dom.inspect: this element has ${result.part.total} lines, so from ${from} is past its end`, { slug: CORE_DOM_INSPECT_SLUG });
   capture?.(result.snapshot);
   return withBrowserReadState({ page, url: read.url, title: read.title,
+    ...(selection !== undefined ? { selected_text: selection } : {}),
     ...(typeof outputs.selector_matches === 'number' ? { selector_matches: outputs.selector_matches, selected_index: outputs.selected_index } : {}),
     ...(typeof outputs.loading === 'boolean' ? { loading: outputs.loading } : {}),
     ...(typeof outputs.settled === 'boolean' ? { settled: outputs.settled } : {}),
@@ -2242,7 +2287,13 @@ const withFieldEvidence = (answer: unknown, whole: boolean): unknown => {
   if (outputs.loading === true) return { ...outputs, interaction_targets: interactions };
   const fields = browserFieldEvidence(outputs.html, { whole, truncated: outputs.truncated === true });
   const controls = browserControlEvidence(outputs.html, { whole, truncated: outputs.truncated === true });
-  return { ...outputs, interaction_targets: interactions, ...(fields ? { field_evidence: fields } : {}), ...(controls ? { control_evidence: controls } : {}) };
+  const selection = !whole && outputs.truncated !== true ? scopedSelectedText(outputs.html) : undefined;
+  const editable = !whole && outputs.truncated !== true && interactions.items.some(item => item.contenteditable !== undefined
+    && item.actions.includes('type')) ? browserEditorTextTargets(outputs.html) : undefined;
+  return { ...outputs, interaction_targets: interactions, ...(fields ? { field_evidence: fields } : {}), ...(controls ? { control_evidence: controls } : {}),
+    ...(selection !== undefined ? { selected_text: selection } : {}),
+    ...(editable ? { editor_editing: { targets: editable,
+      note: 'Use do:type with the selector of the text that should change and pass only its replacement text as value. Type inserts value verbatim as plain text.' } } : {}) };
 };
 
 const keep = (store: PageReadStore, answer: unknown, asked: string | undefined, whole: boolean, form: PageForm,
@@ -2317,7 +2368,7 @@ const sequenceNotReviewable = (): IngredientError => new IngredientError('ROLE_R
  *  selector goes on, on the new page.
  *
  *  Slice X (2026-11-06) — one batch across tabs. A step may name its tab: `page`, a handle, or
- *  `url`, the tab showing that address (`browserAddressesMatch`), else a new tab opened for it,
+ *  `url`, the tab showing that destination, else a new tab opened for it,
  *  which only a batch whose admission covers it may open (`mayOpen`, `browser-batch-admission.ts`).
  *  A step naming neither runs on the tab of the step before. Reading (`readPage`, answered as
  *  Inspect a web page answers it), scrolling, waiting for an address, going to an address, back,
@@ -2476,9 +2527,29 @@ const placeOf = (url: string | undefined): string => {
     return url;
   }
 };
-const isListedTab = (value: unknown): value is { page: string; url: string; title: string } =>
+type ListedBrowserTab = { page: string; url: string; title: string };
+const isListedTab = (value: unknown): value is ListedBrowserTab =>
   value !== null && typeof value === 'object' && typeof (value as Record<string, unknown>).page === 'string'
   && typeof (value as Record<string, unknown>).url === 'string' && typeof (value as Record<string, unknown>).title === 'string';
+const matchingBrowserTabs = (listed: unknown, address: string): ListedBrowserTab[] => {
+  const matches = (Array.isArray(listed) ? listed : []).filter(isListedTab)
+    .filter(tab => browserDestinationsMatch(tab.url, address));
+  return [...new Map(matches.map(tab => [tab.page, tab])).values()];
+};
+const TAB_CHOICES_MAX = 6;
+const browserTabChoiceReason = (matches: readonly { page: string }[]): string => {
+  const handles = matches.slice(0, TAB_CHOICES_MAX).map(tab => tab.page).join(', ');
+  return `Several tabs match this URL. Inspect and use the intended tab's exact page handle. Matching handles: ${handles}`;
+};
+const browserTabSelection = (url: string, matches: readonly ListedBrowserTab[], truncated: boolean) => ({
+  browser_tab_choices: {
+    url,
+    tabs: matches.slice(0, TAB_CHOICES_MAX).map(({ page, title }) => ({ page, title: title.slice(0, 160) })),
+    omitted_tabs: matches.length - Math.min(matches.length, TAB_CHOICES_MAX),
+    truncated,
+  },
+  note: 'Several open tabs match this address. Inspect candidates by their exact page handles to identify the requested content. Act using the matching tab’s handle and the refs from its own inspection.',
+});
 /** How many characters a read's answer holds, as the model reads it. */
 const readSize = (answer: Record<string, unknown>): number =>
   Object.values(answer).reduce<number>((n, value) => n + (typeof value === 'string' ? value.length
@@ -2514,7 +2585,7 @@ const askContext = (title: unknown, url: unknown, question: string): string =>
 type BatchTrialAsk = (prompt: Omit<BrowserTrialPrompt, 'site' | 'expires_at'>) => Promise<void>;
 
 const runBrowserActSteps = async ({ resolved, dispatcher, manifest, assertHandoff, flows, defaultTimeoutMs, readPage,
-  changesOn, mayOpen, findByText, controlOf, positionOf, secretFor, trialAsk, readPart, askPage, settledOn, readyOn, keepFile, readFile, pdfShown,
+  changesOn, mayOpen, findByText, controlOf, positionOf, secretFor, trialAsk, readPart, askPage, settledOn, readyOn, capturesDownloads, keepFile, readFile, pdfShown,
   savedByServer, hrefOf, pdfAfterClick, fillTargetCorrection, fillTargetBlocked, observedUrl, dataStore, dataScope, retainTable, observePage,
   uncertainPage }: {
   resolved: ResolvedCall;
@@ -2562,7 +2633,8 @@ const runBrowserActSteps = async ({ resolved, dispatcher, manifest, assertHandof
    * readiness and an expired bound return undefined, never success. */
   readyOn: (page: string, seconds: number, pause: (ms: number) => Promise<void>) => Promise<number | undefined>;
   /** Slice AP — a `download_file` answer, kept among the owner's files. */
-  keepFile: (outputs: Record<string, unknown>, n: number) => Promise<BrowserFileKept>;
+  capturesDownloads: boolean;
+  keepFile: (outputs: Record<string, unknown>, n: number, ordinal?: number) => Promise<BrowserFileKept>;
   /** Slice AQ — one of the owner's files, by its ref, for an `upload` step. */
   readFile: (file_ref: string) => Promise<{ bytes: Buffer; filename: string; mime_type: string }>;
   /** The owner's 3b — the PDF a tab the steps end on shows, kept among the owner's files (`undefined`
@@ -2571,7 +2643,7 @@ const runBrowserActSteps = async ({ resolved, dispatcher, manifest, assertHandof
   pdfAfterClick: (address: string | undefined, answer: unknown, n: number) => Promise<Record<string, unknown> | undefined>;
   /** D-345 slice E — a file a `download` step saves, fetched by the server first when its address is
    *  known (`undefined` when it could not, and the Bridge fetches it). */
-  savedByServer?: (address: string, n: number) => Promise<(BrowserFileKept & { address: string }) | undefined>;
+  savedByServer?: (address: string, n: number) => Promise<(BrowserFileKept & { address: string }) | ServerUnfetched | undefined>;
   /** D-345 slice E — the address a link's ref leads to, in the kept read of a page. */
   hrefOf?: (page: string, ref: string) => string | undefined;
 }): Promise<Record<string, unknown>> => {
@@ -2639,10 +2711,10 @@ const runBrowserActSteps = async ({ resolved, dispatcher, manifest, assertHandof
       for (const [index, step] of steps.entries()) {
         const address = (step as Extract<BrowserActStep, { do: 'download' }>).address!;
         const served = await savedByServer(address, index + 1).catch(error => failedDownload(index, error));
-        if (served === undefined) {
+        if (served === undefined || 'unfetched' in served) {
           return failedDownload(index, new IngredientError('DOM_SELECTOR_MISSING', `core.dom.act: step ${String(index + 1)}: the server could not fetch `
-            + `${address} itself (not public, or it needs the user signed in): pass the page handle of a tab on its site, for `
-            + 'the Browser Bridge to fetch it as the page would', { slug }));
+            + `${address} itself (${served !== undefined ? served.unfetched.replace(/\.$/, '') : 'not public, or it needs the user signed in'}): `
+            + 'pass the page handle of a tab on its site, for the Browser Bridge to fetch it as the page would', { slug }));
         }
         files.push({ step: index + 1, file_ref: served.file_ref, filename: served.filename, mime_type: served.mime_type,
           size_bytes: served.size_bytes });
@@ -2664,6 +2736,7 @@ const runBrowserActSteps = async ({ resolved, dispatcher, manifest, assertHandof
   const step_id = resolved.stepMeta?.step_id ?? slug;
   const done: string[] = [];
   const doneSteps: number[] = [];
+  const continuedTables = new Map<number, Record<string, unknown>>();
   const completedReads: CompletedBrowserRead[] = [];
   const completedData: BrowserCompletedData[] = [];
   const completedFiles: unknown[] = [];
@@ -2714,7 +2787,8 @@ const runBrowserActSteps = async ({ resolved, dispatcher, manifest, assertHandof
   };
   const retainedOnly = (content: Record<string, unknown>): Record<string, unknown> => {
     const kept = Object.fromEntries(
-      ['data_ref', 'data_fields', 'data_columns', 'data_format', 'data_scope', 'entries_complete', 'data_source_complete', 'data_unavailable', 'complete', 'truncated', 'loading', 'read_state']
+      ['data_ref', 'data_fields', 'data_columns', 'sort', 'data_format', 'data_scope', 'entries_complete', 'data_source_complete',
+        'data_unavailable', 'complete', 'truncated', 'loading', 'read_state']
         .filter(key => content[key] !== undefined).map(key => [key, content[key]]));
     Object.assign(kept, sectionIndex(content));
     for (const key of ['entry_data', 'line_data']) {
@@ -2752,8 +2826,14 @@ const runBrowserActSteps = async ({ resolved, dispatcher, manifest, assertHandof
     // Slice Z — a secret rides in the command alone: its key and the flow kept name its kind instead.
     // Slice AQ — and a file's bytes: its key is made from the file's ref (`file`).
     const kept = secret !== undefined ? { ...args, value: undefined, secret }
-      : action === 'upload_file' ? { ...args, data: undefined } : args;
+      : action === 'upload_file' ? { ...args, data: undefined }
+        : action === 'upload_files' ? { ...args, files: undefined } : args;
     const commandStep = scope === undefined ? step_id : `${step_id}#${scope}`;
+    const capturesDownload = capturesDownloads && action === 'click' && on !== undefined;
+    const expectsOutputKeys = (action === 'upload_file' || action === 'upload_files') && args.delivery === 'drop'
+      ? ['dropped', 'page', 'url', 'title']
+      : action === 'fill' && args.delivery === 'paste' ? [...BRIDGE_PASTE_OUTPUT_KEYS] : expectsKeysForAction(action);
+    if (capturesDownload) expectsOutputKeys.push(BRIDGE_GENERATED_DOWNLOAD_KEY, BRIDGE_GENERATED_DOWNLOADS_KEY);
     const request: DispatchRequest = {
       browser_routing: true,
       ...(batchBridge ? { bridge_id: batchBridge } : {}),
@@ -2762,7 +2842,8 @@ const runBrowserActSteps = async ({ resolved, dispatcher, manifest, assertHandof
       ingredient,
       action,
       args,
-      expects_output_keys: expectsKeysForAction(action),
+      expects_output_keys: args.table_walk === undefined ? expectsOutputKeys
+        : [...new Set([...expectsOutputKeys, ...BRIDGE_TABLE_OUTPUT_KEYS, 'table_window'])],
       ...(['click', 'press', 'submit'].includes(action) && readinessFor(steps[n - 1]) !== undefined
         ? { ready_check: readinessFor(steps[n - 1]) } : {}),
       idempotency_key: buildIdempotencyKey({ recipe_run_id, step_id: commandStep, slug, entry,
@@ -2793,7 +2874,7 @@ const runBrowserActSteps = async ({ resolved, dispatcher, manifest, assertHandof
         on.lastAction = { step: n, before_page: on.page, ...(beforeUrl ? { before_url: beforeUrl } : {}),
           ...(isBrowserActionTarget(targetReceipt) ? { target: targetReceipt } : {}),
           ...(typeof args.ref === 'string' ? { ref: args.ref } : {}), status: 'uncertain',
-          boundary: ['click', 'press', 'submit', 'navigate', 'go_back', 'reload_page'].includes(action) };
+          boundary: ['click', 'drag', 'press', 'seek_media', 'submit', 'navigate', 'go_back', 'reload_page'].includes(action) };
         const authored = steps[n - 1];
         if (authored && ('success_when' in authored && authored.success_when !== undefined
           || 'fail_when' in authored && authored.fail_when !== undefined)) on.lastCheck = { step: n, status: 'unknown' };
@@ -2811,14 +2892,27 @@ const runBrowserActSteps = async ({ resolved, dispatcher, manifest, assertHandof
     }
     if (!READ_ACTIONS.has(action)) effect!.acknowledged += 1;
     if (on?.lastAction?.step === n && !READ_ACTIONS.has(action)) on.lastAction.status = 'acknowledged';
+    const { [BRIDGE_GENERATED_DOWNLOAD_KEY]: download, [BRIDGE_GENERATED_DOWNLOADS_KEY]: downloads, ...visible } = translated ?? {};
     // D-402 slice B1 — and where the step sat in its batch, so the compiler pairs the two.
-    const outputs = keepActedOn(translated, action, kept,
+    const outputs = keepActedOn(visible, action, kept,
       resolved.stepMeta?.run_id, flows, n) ?? {};
     observePage(outputs, action);
     // Even an empty initial tab list selected a browser. Keep that choice for
     // a following open, rather than reselecting after a connection changes.
     batchBridge ??= typeof outputs.bridge_id === 'string' ? outputs.bridge_id : undefined;
     if (on !== undefined) {
+      if (capturesDownload && outputs.clicked === true
+        && (download !== undefined || downloads !== undefined || args.download_wait_ms !== undefined)) {
+        const generated = download === undefined && downloads === undefined
+          ? { files: [], problem: 'The click was confirmed but the Browser Bridge returned no download receipt.' }
+          : await keepGeneratedDownloads(download, downloads, (file, ordinal) => keepFile(file, n, ordinal));
+        for (const { file_ref, filename, mime_type, size_bytes } of generated.files) {
+          const receipt = { step: n, file_ref, filename, mime_type, size_bytes };
+          on.files.push(receipt);
+          completedFiles.push(receipt);
+        }
+        if (generated.problem) outputs.download_problem = generated.problem;
+      }
       const pdf = pdfAddress === undefined ? undefined : await pdfAfterClick(pdfAddress, outputs, n);
       if (pdf) {
         (on.pdfs ??= []).push(pdf);
@@ -2962,16 +3056,24 @@ const runBrowserActSteps = async ({ resolved, dispatcher, manifest, assertHandof
     if (step.page !== undefined) return adopt(step.page);
     if (step.url !== undefined) {
       const address = step.url;
-      const ours = tabs.find((tab) => tab.closed === undefined && tab.url !== undefined && browserAddressesMatch(tab.url, address));
-      if (ours !== undefined) return ours;
+      const ours = tabs.filter(tab => tab.closed === undefined && tab.url !== undefined && browserDestinationsMatch(tab.url, address));
+      if (ours.length === 1) return ours[0]!;
+      if (ours.length > 1) return stop(n, browserTabChoiceReason(ours), 'DOM_PAGE_NOT_MATCHING');
       listed ??= await listTabs(n, 5).catch((error: unknown) => failed(n, error));
-      const open = listed.find((tab) => browserAddressesMatch(tab.url, address) && reached(tab.page)?.closed === undefined);
+      // A tab reached in this batch has a more recent address than the cached list.
+      const unread = listed.filter(tab => {
+        const known = reached(tab.page);
+        return known?.closed === undefined && known?.url === undefined;
+      });
+      const matches = matchingBrowserTabs(unread, address);
+      if (matches.length > 1) return stop(n, browserTabChoiceReason(matches), 'DOM_PAGE_NOT_MATCHING');
+      const open = matches[0];
       if (open !== undefined) return adopt(open.page, open.url, open.title);
       if (!mayOpen(address)) {
         stop(n, `no open tab shows ${address}, and this batch ran without an ask, which opens no tab: open the page with `
           + 'Open a web page, or run the batch again', 'DOM_PAGE_NOT_MATCHING');
       }
-      await askTrial(n, current, { action: 'open', url: address });
+      // 2026-11-23 (the owner: "ditch that ask for try it") — opening a page is a read, so a trial asks nothing before it.
       const out = await send(n, 6, 'open_tab', { url: address }, address, BRIDGE_COMMAND_MAX_TIMEOUT_MS)
         .catch((error: unknown) => failed(n, error));
       if (typeof out.page !== 'string') {
@@ -3108,9 +3210,12 @@ const runBrowserActSteps = async ({ resolved, dispatcher, manifest, assertHandof
     within?: RowWithin })
     : Promise<{ ref?: string; selector?: string; navigation_guard?: BrowserLinkTransition }> => {
     let navigation_guard: BrowserLinkTransition | undefined;
-    const recovery: BrowserLookupRecovery | undefined = steps[n - 1]?.do === 'click' && on.url ? { before_url: on.url,
+    const current = steps[n - 1];
+    const recovery: BrowserLookupRecovery | undefined = current?.do === 'click' && current.count === undefined
+      && current.download_wait === undefined && on.url
+      ? { before_url: on.url,
       recovered: (guard: BrowserLinkTransition) => { navigation_guard = guard; } }
-      : steps[n - 1]?.do === 'type' ? { kind: 'field', ...(on.url ? { before_url: on.url } : {}) } : undefined;
+      : current?.do === 'type' ? { kind: 'field', ...(on.url ? { before_url: on.url } : {}) } : undefined;
     // D-347 follow-up (2026-11-08) — a ref from before its tab loaded a new page names the element shown
     //   and called as it was there, found on this one: "Next" on the next page. So one call can page
     //   through by the ref it read; in the head to head, all six G runs read pages 2 and 3 in two calls.
@@ -3204,6 +3309,49 @@ const runBrowserActSteps = async ({ resolved, dispatcher, manifest, assertHandof
     throw new IngredientError('ROLE_RESTRICTION', `Update the Browser Bridge: step ${String(cardStep + 1)} names its element by the card `
       + 'it sits in, which the connected Browser Bridge cannot check at the step (0.0.14 or later can). Nothing was done.',
     { slug, executed: false });
+  }
+  const horizontalStep = steps.findIndex(step => step.do === 'scroll' && isHorizontalScrollDirection(step.to));
+  if (horizontalStep !== -1 && dispatcher.runs?.({ ingredient, action: 'scroll', args: { to: 'right' },
+    ...(batchBridge ? { bridge_id: batchBridge } : {}) }) === false) {
+    throw new IngredientError('ROLE_RESTRICTION', `Update the Browser Bridge to scroll horizontally at step ${horizontalStep + 1}.`,
+      { slug, executed: false });
+  }
+  const downloadStep = steps.findIndex(step => step.do === 'click' && step.download_wait !== undefined);
+  if (downloadStep !== -1) {
+    if (!capturesDownloads) {
+      throw new IngredientError('ROLE_RESTRICTION', 'Recued file storage is required to capture generated downloads.',
+        { slug, executed: false });
+    }
+    if (dispatcher.runs?.({ ingredient, action: 'click', args: { download_wait_ms: 1 },
+      ...(batchBridge ? { bridge_id: batchBridge } : {}) }) === false) {
+      throw new IngredientError('ROLE_RESTRICTION', `Update the Browser Bridge to wait for a generated download at step ${downloadStep + 1}.`,
+        { slug, executed: false });
+    }
+  }
+  const doubleClickStep = steps.findIndex(step => step.do === 'click' && step.count === 2);
+  if (doubleClickStep !== -1 && dispatcher.runs?.({ ingredient, action: 'click', args: { click_count: 2 },
+    ...(batchBridge ? { bridge_id: batchBridge } : {}) }) === false) {
+    throw new IngredientError('ROLE_RESTRICTION', `Update the Browser Bridge to double-click at step ${doubleClickStep + 1}. Nothing was done.`,
+      { slug, executed: false });
+  }
+  const dropStep = steps.findIndex(step => step.do === 'upload' && step.delivery === 'drop'
+    && dispatcher.runs?.({ ingredient, action: step.files === undefined ? 'upload_file' : 'upload_files',
+      args: { delivery: 'drop' }, ...(batchBridge ? { bridge_id: batchBridge } : {}) }) === false);
+  if (dropStep !== -1) {
+    throw new IngredientError('ROLE_RESTRICTION', `Update the Browser Bridge to drop files at step ${dropStep + 1}. Nothing was done.`,
+      { slug, executed: false });
+  }
+  const pasteStep = steps.findIndex(step => step.do === 'type' && step.delivery === 'paste');
+  if (pasteStep !== -1 && dispatcher.runs?.({ ingredient, action: 'fill', args: { delivery: 'paste' },
+    ...(batchBridge ? { bridge_id: batchBridge } : {}) }) === false) {
+    throw new IngredientError('ROLE_RESTRICTION', `Update the Browser Bridge to paste text at step ${pasteStep + 1}. Nothing was done.`,
+      { slug, executed: false });
+  }
+  const seekStep = steps.findIndex(step => step.do === 'seek');
+  if (seekStep !== -1 && dispatcher.runs?.({ ingredient, action: 'seek_media', args: {},
+    ...(batchBridge ? { bridge_id: batchBridge } : {}) }) === false) {
+    throw new IngredientError('ROLE_RESTRICTION', `Update the Browser Bridge to seek media at step ${seekStep + 1}. Nothing was done.`,
+      { slug, executed: false });
   }
   try {
   for (let index = 0; index < steps.length; index += 1) {
@@ -3333,7 +3481,10 @@ const runBrowserActSteps = async ({ resolved, dispatcher, manifest, assertHandof
     listed = undefined;
 
     if (step.do === 'table') {
-      const out = await send(n, 0, 'read_table', { page: on.page,
+      const collected = continuedTables.get(index);
+      continuedTables.delete(index);
+      const continued = collected?.page === on.page && collected.url === on.url ? collected : undefined;
+      const out = continued ?? await send(n, 0, 'read_table', { page: on.page,
         ...(step.ref ? { ref: step.ref } : step.selector ? { selector: step.selector } : {}) }, 'the table', undefined, on)
         .catch((error: unknown) => failed(n, error));
       let captured: Record<string, unknown>;
@@ -3341,7 +3492,9 @@ const runBrowserActSteps = async ({ resolved, dispatcher, manifest, assertHandof
       latestData = typeof captured.data_ref === 'string' ? captured.data_ref : undefined;
       if (typeof captured.page === 'string') on.page = captured.page;
       if (typeof captured.url === 'string') on.url = captured.url;
-      const content = dataFollows(index, captured) ? retainedOnly(captured) : captured;
+      // The source rows are useful evidence when a later projection changes
+      // their shape. Keep a continued table inline within the existing cap.
+      const content = !continued && dataFollows(index, captured) ? retainedOnly(captured) : captured;
       const size = readSize(content);
       const remaining = Math.max(0, BATCH_READS_MAX_CHARS - readChars);
       if (size > remaining && typeof captured.data_ref !== 'string') stop(n, 'table exceeds this batch output bound and was not retained; narrow the table or read it separately');
@@ -3355,10 +3508,9 @@ const runBrowserActSteps = async ({ resolved, dispatcher, manifest, assertHandof
     }
 
     if (step.do === 'collect') {
-      // D-402 slice C — a collect that turns pages clicks its "Next": a trial asks once before it starts.
-      if (step.max_pages > 1 && step.next !== undefined) {
-        await askTrial(n, on, { action: 'collect', element: { role: 'control', label: 'text' in step.next ? step.next.text : step.next.selector } });
-      }
+      // A collect that turns pages moves its tab by the page's own Next link, and reads: nothing asks before it, a trial
+      //   of a draft included (2026-11-23, the owner: "make Collects that turn pages read too", then "ditch that ask for
+      //   try it"). D-402 slice C asked once here in a trial.
       const positional = browserCollectNeedsStructure(step);
       const collection = await collectBrowserPages({ spec: step, retainForData: dataFollows(index),
         maxChars: dataFollows(index) ? BROWSER_DATA_LIMITS.bytes : BATCH_READS_MAX_CHARS - readChars,
@@ -3492,15 +3644,52 @@ const runBrowserActSteps = async ({ resolved, dispatcher, manifest, assertHandof
     if (step.do === 'scroll') {
       refusesRef(n, on, step.ref);
       const element = await elementOf(n, on, step);
+      const continuation = tableReadAfterScroll(steps, index, on.page, on.url);
+      if (continuation) {
+        const { ref, selector } = element;
+        const scrollScope = ref ? { ref } : selector ? { selector } : {};
+        const page = on.page;
+        const scope = { page, ...continuation.scope };
+        const probe = (enclosing: number) => send(n, 1, 'read_table',
+          { ...scope, table_walk: { scroll_scope: scrollScope, enclosing } }, 'table window', undefined, on);
+        const first = await probe(0).catch((error: unknown) => {
+          // The ordinary scroll can bring a table into the page for the first time.
+          if (error instanceof IngredientError && error.code === 'DOM_SELECTOR_NOT_FOUND') return undefined;
+          return failed(n, error);
+        });
+        const initial = first && readTableWindow(first);
+        if (first && initial && initial.page === page && initial.table_window.first === 1
+          && initial.rows.length < initial.table_window.total) {
+          let attempts = 0;
+          on.seen = 'changed';
+          const walk = await collectTableWindows({
+            initial,
+            advance: async (current, enclosing) => readTableWindow(await send(n, 2, 'scroll', {
+              ...scope, table_walk: { scroll_scope: scrollScope, enclosing,
+                advance: { table_id: current.table_id, scroll_id: current.scroll_id, position: current.position } },
+            }, 'table continuation', undefined, on, undefined, `table-window-${++attempts}`)),
+            ...(!ref && !selector ? { nextScroller: async (enclosing: number) => readTableWindow(await probe(enclosing)) } : {}),
+          }).catch((error: unknown) => failed(n, error));
+          const { table_window: _internal, ...snapshot } = first;
+          continuedTables.set(continuation.index, { ...snapshot, rows: walk.rows, truncated: !walk.complete,
+            table_coverage: { rows: walk.rows.length, total: initial.table_window.total, moves: walk.moves,
+              complete: walk.complete, reason: walk.reason } });
+          did(n, on, placed(), `read ${walk.rows.length} of ${initial.table_window.total} table rows across ${walk.moves + 1} windows`);
+          continue;
+        }
+      }
       on.seen = 'changed';
       const out = await send(n, 0, 'scroll', { page: on.page, ...element,
         ...(step.screen !== undefined ? { screen: step.screen } : { to: step.to ?? 'next' }) },
       element.ref ?? element.selector ?? 'the page', undefined, on).catch((error: unknown) => failed(n, error));
       const screens = typeof out.screen === 'number' && typeof out.screens === 'number'
         ? ` (screen ${String(out.screen)} of ${String(out.screens)})` : '';
+      const movement = step.screen !== undefined ? `to screen ${step.screen}` : ({
+        top: 'to the top', bottom: 'to the bottom', previous: 'up a screen', next: 'down a screen',
+        left: 'left a screen', right: 'right a screen',
+      })[step.to ?? 'next'];
       did(n, on, placed(), `scrolled ${element.ref === undefined && element.selector === undefined ? 'the page' : named(step)} `
-        + `${step.screen !== undefined ? `to screen ${step.screen}` : step.to === 'top' ? 'to the top'
-          : step.to === 'bottom' ? 'to the bottom' : step.to === 'previous' ? 'up a screen' : 'down a screen'}${screens}`);
+        + `${movement}${screens}`);
       continue;
     }
 
@@ -3514,7 +3703,7 @@ const runBrowserActSteps = async ({ resolved, dispatcher, manifest, assertHandof
       const linked = found?.ref ?? step.ref;
       const address = step.address ?? (linked !== undefined ? hrefOf?.(on.page, linked) : undefined);
       const served = address !== undefined ? await savedByServer?.(address, n).catch((error: unknown) => failed(n, error)) : undefined;
-      if (served !== undefined) {
+      if (served !== undefined && !('unfetched' in served)) {
         on.files.push({ step: n, file_ref: served.file_ref, filename: served.filename, mime_type: served.mime_type,
           size_bytes: served.size_bytes });
         completedFiles.push(on.files.at(-1)!);
@@ -3522,11 +3711,12 @@ const runBrowserActSteps = async ({ resolved, dispatcher, manifest, assertHandof
           + `your files as ${served.filename}`);
         continue;
       }
+      const unfetched = served !== undefined && 'unfetched' in served ? served.unfetched : undefined;
       const element = step.address !== undefined ? {} : found ?? await elementOf(n, on, step);
       const out = await send(n, 0, 'download_file', { page: on.page, ...element,
         ...(step.address !== undefined ? { address: step.address } : {}), max_bytes: BRIDGE_FILE_MAX_BYTES },
       step.address ?? element.ref ?? element.selector ?? 'the link', BRIDGE_COMMAND_MAX_TIMEOUT_MS, on)
-        .catch((error: unknown) => failed(n, error));
+        .catch((error: unknown) => failed(n, withServerMiss(error, unfetched)));
       const kept = await keepFile(out, n).catch((error: unknown) => failed(n, error));
       on.files.push({ step: n, file_ref: kept.file_ref, filename: kept.filename, mime_type: kept.mime_type,
         size_bytes: kept.size_bytes });
@@ -3537,22 +3727,82 @@ const runBrowserActSteps = async ({ resolved, dispatcher, manifest, assertHandof
     }
 
     if (step.do === 'upload') {
-      // Slice AQ — one of the owner's files into the page's file field, as choosing it there would; always
-      // asked about, the ask naming the file (`execute-handler.ts`).
       refusesRef(n, on, step.ref);
       const element = await elementOf(n, on, step);
-      const file = await readFile(step.file).catch((error: unknown) => failed(n, error));
-      if (file.bytes.length > BRIDGE_FILE_MAX_BYTES) {
-        stop(n, `the file is ${(file.bytes.length / 1_000_000).toFixed(1)} MB, and the Browser Bridge hands a page files of at `
+      const selection = step.files ?? [step.file!];
+      const files: Awaited<ReturnType<typeof readFile>>[] = [];
+      let total = 0;
+      for (const ref of selection) {
+        const file = await readFile(ref).catch((error: unknown) => failed(n, error));
+        files.push(file);
+        total += file.bytes.length;
+        if (total > BRIDGE_FILE_MAX_BYTES) break;
+      }
+      if (total > BRIDGE_FILE_MAX_BYTES) {
+        stop(n, `the ${files.length === 1 ? 'file is' : 'files total'} ${(total / 1_000_000).toFixed(1)} MB, and the Browser Bridge hands a page files of at `
           + `most ${(BRIDGE_FILE_MAX_BYTES / 1_000_000).toFixed(1)} MB`);
       }
-      await askTrial(n, on, { action: 'upload', file: file.filename }, trialAsk !== undefined ? await describedOn(n, on, element) : undefined);
+      const names = files.map(file => file.filename);
+      const delivery = step.delivery === 'drop' ? { delivery: 'drop' as const } : {};
+      await askTrial(n, on, { action: 'upload', ...delivery, ...(step.files === undefined ? { file: names[0] } : { files: names }) },
+        trialAsk !== undefined ? await describedOn(n, on, element) : undefined);
       on.seen = 'changed';
-      const out = await send(n, 0, 'upload_file', { page: on.page, ...element, file: step.file, filename: file.filename,
-        mime_type: file.mime_type, data: file.bytes.toString('base64') }, element.ref ?? element.selector ?? 'the file field',
-      undefined, on).catch((error: unknown) => failed(n, error));
+      const payload = files.map(file => ({ filename: file.filename, mime_type: file.mime_type, data: file.bytes.toString('base64') }));
+      const out = await send(n, 0, step.files === undefined ? 'upload_file' : 'upload_files', { page: on.page, ...element, ...delivery,
+        ...(step.files === undefined ? { file: step.file, ...payload[0]! } : { file_refs: selection, files: payload }) },
+      element.ref ?? element.selector ?? 'the file field', undefined, on).catch((error: unknown) => failed(n, error));
       on.wrote = true;
-      did(n, on, placed(), `put your file ${typeof out.attached === 'string' ? out.attached : file.filename} into ${named(step)}`);
+      const delivered = step.delivery === 'drop' ? out.dropped : out.attached;
+      if (step.files !== undefined && (!Array.isArray(delivered) || delivered.length !== names.length)
+        || step.delivery === 'drop' && step.files === undefined && typeof delivered !== 'string') {
+        stop(n, 'the browser did not confirm the entire file selection', 'ACTION_DELIVERY_UNCERTAIN');
+      }
+      const attached = typeof delivered === 'string' ? [delivered] : names;
+      const list = `your ${attached.length === 1 ? 'file' : 'files'} ${attached.join(', ')}`;
+      did(n, on, placed(), step.delivery === 'drop' ? `dropped ${list} onto ${named(step)}` : `put ${list} into ${named(step)}`);
+      continue;
+    }
+
+    if (step.do === 'drag') {
+      if (on.movedAt !== undefined && (step.ref !== undefined || step.drop.ref !== undefined)) {
+        stop(n, 'a drag needs fresh refs from the current document', 'DOM_SELECTOR_NOT_FOUND');
+      }
+      const element = await elementOf(n, on, step);
+      if (trialAsk !== undefined) {
+        const source = await describedOn(n, on, element);
+        const drop = await send(n, 5, 'describe', { page: on.page, ...step.drop }, named(step.drop))
+          .catch((error: unknown) => failed(n, error));
+        await askTrial(n, on, { action: 'drag', destination: typeof drop.label === 'string' && drop.label.trim() !== ''
+          ? drop.label : named(step.drop) }, source);
+      }
+      const before = on.page;
+      on.seen = 'changed';
+      const out = await send(n, 0, 'drag', { page: on.page, ...element, drop: step.drop }, named(step), undefined, on)
+        .catch((error: unknown) => failed(n, error));
+      if (out.dropped !== true) stop(n, 'the browser did not confirm that the drop was delivered', 'ACTION_DELIVERY_UNCERTAIN');
+      on.wrote = true;
+      if (out.moved === true || on.page !== before) on.movedAt = n;
+      if (out.moved === true && typeof out.page !== 'string') on.unanswered = true;
+      did(n, on, placed(), `dropped ${named(step)} onto ${named(step.drop)}`);
+      await readAfter(n, on, step.then_read, step.then_read_form);
+      continue;
+    }
+
+    if (step.do === 'seek') {
+      refusesRef(n, on, step.ref);
+      const element = await elementOf(n, on, step);
+      if (trialAsk !== undefined) {
+        await askTrial(n, on, { action: 'seek', at_seconds: step.at_seconds }, await describedOn(n, on, element));
+      }
+      on.seen = 'changed';
+      const out = await send(n, 0, 'seek_media', { page: on.page, ...element, at_seconds: step.at_seconds },
+        named(step), undefined, on).catch((error: unknown) => failed(n, error));
+      if (typeof out.seeked_to !== 'number' || !Number.isFinite(out.seeked_to) || typeof out.paused !== 'boolean') {
+        stop(n, 'the browser did not confirm the media position', 'ACTION_DELIVERY_UNCERTAIN');
+      }
+      on.wrote = true;
+      did(n, on, placed(), `sought ${named(step)} to ${out.seeked_to}s (${out.paused ? 'paused' : 'playing'})`);
+      await readAfter(n, on, step.then_read, step.then_read_form);
       continue;
     }
 
@@ -3569,7 +3819,7 @@ const runBrowserActSteps = async ({ resolved, dispatcher, manifest, assertHandof
 
     // Slice AE — a `go` on a tab already showing its address (a first `go` naming no tab is on the tab
     // showing it, else a new one) loads nothing more.
-    if (step.do === 'go' && on.url !== undefined && browserAddressesMatch(on.url, step.address)) {
+    if (step.do === 'go' && on.url !== undefined && browserDestinationsMatch(on.url, step.address)) {
       did(n, on, placed(), `went to ${step.address}`);
       await readAfter(n, on, step.then_read, step.then_read_form);
       continue;
@@ -3577,7 +3827,9 @@ const runBrowserActSteps = async ({ resolved, dispatcher, manifest, assertHandof
     if (step.do === 'go' || step.do === 'back' || step.do === 'reload') {
       // Slice X (Bridge 0.0.8) — the tab's own navigation, answered as the page it then shows.
       const action: BridgeAction = step.do === 'go' ? 'navigate' : step.do === 'back' ? 'go_back' : 'reload_page';
-      await askTrial(n, on, { action: step.do, ...(step.do === 'go' ? { url: step.address } : {}) });
+      // 2026-11-23 (the owner: "make the go read no ask default too") — going to an address is a read, so a trial asks
+      //   before back and a reload only.
+      if (step.do !== 'go') await askTrial(n, on, { action: step.do });
       await send(n, 0, action, { page: on.page, ...(step.do === 'go' ? { url: step.address } : {}) },
         step.do === 'go' ? step.address : `the tab (${step.do})`, BRIDGE_COMMAND_MAX_TIMEOUT_MS, on)
         .catch((error: unknown) => failed(n, error));
@@ -3602,7 +3854,8 @@ const runBrowserActSteps = async ({ resolved, dispatcher, manifest, assertHandof
     refusesRef(n, on, step.ref);
     let element = await elementOf(n, on, step);
     const what = named(step);
-    if (step.do === 'type' && element.ref !== undefined && on.seen !== 'changed') {
+    const pastes = step.do === 'type' && step.delivery === 'paste';
+    if (step.do === 'type' && !pastes && element.ref !== undefined && on.seen !== 'changed') {
       const correction = fillTargetCorrection?.(on.page, element.ref);
       if (correction) stop(n, fillCorrectionSaid(correction), 'DOM_WRITE_FAILED', { rescout: true, control_correction: correction });
     }
@@ -3611,6 +3864,8 @@ const runBrowserActSteps = async ({ resolved, dispatcher, manifest, assertHandof
     // clicks it and checks the field took it, as one action; a send the step asks for comes after.
     const picks = step.do === 'type' && step.pick !== undefined;
     const action: BridgeAction = picks ? 'pick' : sends ? 'submit' : step.do === 'click' ? 'click' : step.do === 'press' ? 'press' : 'fill';
+    const downloadWait = step.do === 'click' ? step.download_wait : undefined;
+    const doubleClick = step.do === 'click' && step.count === 2;
     const success = step.success_when;
     const fail = action === 'fill' || action === 'pick' ? undefined : failOnPage(step.fail_when);
     // How long a click or a sent form watches for the page to move on, when its checks need it;
@@ -3629,6 +3884,9 @@ const runBrowserActSteps = async ({ resolved, dispatcher, manifest, assertHandof
       : step.do === 'click' ? 'click' : 'submit',
       ...(step.do === 'type' ? (secretKind !== undefined ? { secret: secretKind } : { text: step.value })
         : step.do === 'press' ? { text: step.key } : {}),
+      ...(pastes ? { delivery: 'paste' as const } : {}),
+      ...(downloadWait !== undefined ? { download_wait: downloadWait } : {}),
+      ...(doubleClick ? { click_count: 2 as const } : {}),
       ...(step.do === 'type' && sends ? { submits: true as const } : {}) }, seen);
     if (secretKind !== undefined && seen !== undefined) {
       secret = await secretFor({ page: on.page, ...(element.ref !== undefined ? { ref: element.ref } : {}), kind: secretKind,
@@ -3649,22 +3907,27 @@ const runBrowserActSteps = async ({ resolved, dispatcher, manifest, assertHandof
       ...target,
       ...(rowTexts !== undefined ? { within: [...rowTexts], ...(rowCard !== undefined ? { within_card: rowCard } : {}) } : {}),
       ...(step.do === 'type' ? { value: secret !== undefined ? secret.value : step.value } : {}),
+      ...(pastes ? { delivery: 'paste' } : {}),
       ...(step.do === 'press' ? { key: step.key } : {}),
+      ...(doubleClick ? { click_count: 2 } : {}),
+      ...(downloadWait !== undefined ? { download_wait_ms: downloadWait * 1000 } : {}),
       ...(picks ? { pick: step.pick, pick_ms: BROWSER_ACT_PICK_SECONDS * 1000 }
         : { ...(watch !== undefined ? { watch_ms: watch * 1000 } : {}),
           ...(sendWatch !== undefined ? { send_watch_ms: sendWatch * 1000 } : {}),
           ...(fail !== undefined ? { fail } : {}) }),
-    }, target.ref ?? target.selector!, picks ? PICK_COMMAND_TIMEOUT_MS : watchCommandTimeout(watches), on, secretKind);
+    }, target.ref ?? target.selector!, picks ? PICK_COMMAND_TIMEOUT_MS : watchCommandTimeout(watches, downloadWait), on, secretKind);
     let followed: string | undefined;
     let out = await sendTo(element).catch(async (error: unknown) => {
       // 2026-11-22 (the owner: "do 2 & 4") — a click on a link of a page its tab has since left. On the long-turn
       // suite's ZD every failed turn did this: it clicked a link that led to a closed branch, then named the link
       // the closed page sent it back for, on the page it had left, by the ref and handle of that page's read. The
       // Bridge refused (the page had gone), and the turn repeated it until its rounds ran out. Nothing was clicked,
-      // so the link is followed by its address in the same tab, as a `go` step would, with the same ask in a trial:
+      // so the link is followed by its address in the same tab, as a `go` step would (a read since 2026-11-23, so a trial
+      // asks nothing more than the click's own ask):
       // the link's address from the read the model was shown of that page, on the same site. Only a link; only a
       // tab the browser shows exactly once; never in a run reviewed before it starts.
-      const address = action === 'click' && element.ref !== undefined ? goneLink(on, element.ref, error) : undefined;
+      const address = action === 'click' && !doubleClick && downloadWait === undefined && element.ref !== undefined
+        ? goneLink(on, element.ref, error) : undefined;
       if (address !== undefined) {
         const now = (await listTabs(n, 8).catch(() => [] as Array<{ page: string; url: string; title: string }>))
           .filter((tab) => tabIdOf(tab.page) === on.tab && tab.page !== on.page);
@@ -3672,7 +3935,6 @@ const runBrowserActSteps = async ({ resolved, dispatcher, manifest, assertHandof
           const effect = effects.get(n);
           if (effect !== undefined) effect.attempted -= 1;
           adopt(now[0]!.page, now[0]!.url, now[0]!.title);
-          await askTrial(n, on, { action: 'go', url: address });
           const went = await send(n, 9, 'navigate', { page: on.page, url: address }, address, BRIDGE_COMMAND_MAX_TIMEOUT_MS, on)
             .catch((again: unknown) => failed(n, again));
           followed = address;
@@ -3707,16 +3969,20 @@ const runBrowserActSteps = async ({ resolved, dispatcher, manifest, assertHandof
       out = { ...out, ...after };
     }
     const sent = (sends && !pickMoved) || out.sent === true;
-    did(n, on, placed(), step.do === 'type' && secretKind !== undefined
+    if (pastes && out.pasted !== true) stop(n, 'the browser did not confirm delivery of the text paste', 'ACTION_DELIVERY_UNCERTAIN');
+    did(n, on, placed(), pastes ? `delivered a text paste to ${what}` : step.do === 'type' && secretKind !== undefined
       ? `typed ${secretSaid} into ${what}${sends ? ' and sent its form' : ''}`
       : step.do === 'type'
       ? `typed into ${what}${picks ? (sends && !pickMoved ? `, ${picked} and sent its form` : ` and ${picked}`
         + (sends ? ', which loaded a new page, so its form was not sent' : '')) : sends ? ' and sent its form' : ''}`
       : step.do === 'click' && followed !== undefined
         ? `followed ${what} to ${followed}, since the page it was read on had left the tab`
-      : step.do === 'click' ? `clicked ${what}${out.sent === true ? ', which sent its form' : ''}`
+      : step.do === 'click' ? `${doubleClick ? 'double-clicked' : 'clicked'} ${what}${out.sent === true ? ', which sent its form' : ''}`
         : step.do === 'press' ? `pressed ${step.key} in ${what}${out.sent === true ? ', which sent its form' : ''}`
           : `sent the form ${what} is in`);
+    if (action === 'click' && typeof out.download_problem === 'string') {
+      stop(n, trimmed(out.download_problem), 'INGREDIENT_ADAPTER_ALL_FAILED');
+    }
     if (on.page !== before) on.movedAt = n;
     const moved = out.moved === true || on.page !== before;
     if (out.moved === true && typeof out.page !== 'string') {
@@ -3794,6 +4060,7 @@ const runBrowserActSteps = async ({ resolved, dispatcher, manifest, assertHandof
     tab.pdfs?.at(-1) ?? (tab.closed === undefined && !tab.unanswered && tab.url !== undefined && isPdfAddress(tab.url) && pdfShown !== undefined
       ? pdfShown(tab.page, tab.url).catch(() => undefined) : undefined);
   if (!byTab) {
+    if (last.files.length > 0) answer.files = last.files;
     const pdf = await pdfOn(last);
     return pdf === undefined ? answer : { ...answer, pdf,
       ...(last.pdfs && last.pdfs.length > 1 ? { pdfs: last.pdfs.slice(0, -1).map(pdf => ({ pdf })) } : {}) };
@@ -3848,7 +4115,7 @@ const runBrowserActSteps = async ({ resolved, dispatcher, manifest, assertHandof
     const step = steps[failure.details.batch_progress.failed_step - 1];
     /** The refused fill's target in a fresh, whole read of the same document, when there is one. */
     const refusedTarget = !failure.details.control_correction && error.code === 'DOM_WRITE_FAILED'
-      && action?.status === 'refused' && step?.do === 'type' && action.ref !== undefined
+      && action?.status === 'refused' && step?.do === 'type' && step.delivery !== 'paste' && action.ref !== undefined
       && action.before_url !== undefined && current.freshRead?.url === action.before_url
       && post_action.view_status === 'fresh' && post_action.transition === 'same_document'
       && post_action.view?.read_state.complete === true && post_action.view.read_state.loading === false
@@ -4119,7 +4386,8 @@ export const heldBatchTabs = (
   steps: readonly BrowserActStep[],
   asked: string | undefined,
   listed: ReadonlyArray<{ page: string; url: string; title: string }> | undefined,
-): Array<{ page: string; url?: string; title?: string } | { opens: string }> | undefined => {
+): Array<{ page: string; url?: string; title?: string } | { opens: string }>
+  | { url: string; matches: ListedBrowserTab[] } | undefined => {
   const tabs: Array<{ page: string; url?: string; title?: string } | { opens: string }> = [];
   let on: { page: string; url?: string; title?: string } | { opens: string } | undefined = asked === undefined ? undefined
     : listed?.find(tab => tab.page === asked) ?? { page: asked };
@@ -4130,7 +4398,9 @@ export const heldBatchTabs = (
     } else if (step.url !== undefined) {
       if (listed === undefined) return undefined;
       const address = step.url;
-      on = listed.find((tab) => browserAddressesMatch(tab.url, address)) ?? { opens: address };
+      const matches = matchingBrowserTabs(listed, address);
+      if (matches.length > 1) return { url: address, matches };
+      on = matches[0] ?? { opens: address };
     }
     if (on === undefined) return undefined;
     tabs.push(on);
@@ -4139,10 +4409,10 @@ export const heldBatchTabs = (
 };
 
 /** D-335 slice X — whether a batch (`core.dom.act`) may run without an ask because it only reads,
- *  scrolls, waits and points, on tabs already open: it changes nothing, as Inspect a web page and
- *  Scroll a web page change nothing, and they ask nothing. A batch with a tab to open is not one:
- *  opening a page is asked for. False when its steps cannot run, or the tabs its addresses name
- *  could not be listed. */
+ *  scrolls, waits and points: it changes nothing, as Inspect a web page and Scroll a web page change
+ *  nothing, and they ask nothing. Since 2026-11-23 also when it opens a tab to read (the owner: "make all
+ *  reads & open as normal read permission, which does not need ask"): opening a page is a read, so the
+ *  tabs are no longer listed to tell. False when its steps cannot run. */
 /** D-335 slice AQ — whether a `core.dom.act` call puts one of the owner's files into a page: always
  *  asked about (`execute-handler.ts`). Steps that do not parse are no batch to admit. */
 export const browserBatchUploads = (input: unknown): boolean => browserActCallUploads(input);
@@ -4158,13 +4428,7 @@ export const browserBatchReadsOnly = async (options: {
   if (input === null || typeof input !== 'object' || Array.isArray(input)) return false;
   const call = input as Record<string, unknown>;
   const parsed = parseBrowserActSteps(call.steps, { page: call.page });
-  if (!parsed.ok || typeof call.target !== 'string' || !browserActReadsOnly(parsed.steps)) return false;
-  if (parsed.steps.every(step => step.do === 'data')) return true;
-  const asked = typeof call.page === 'string' && call.page.trim() !== '' ? call.page.trim() : undefined;
-  const listed = parsed.steps.some((step) => step.url !== undefined)
-    ? await listHeldBrowserTabs({ ...options, target: call.target, step_id: 'browser-batch', bridge_id: browserRouting(call).bridge_id ?? browserPageOwner(call.page)?.bridge_id }) : undefined;
-  const tabs = heldBatchTabs(parsed.steps, asked, listed);
-  return tabs !== undefined && tabs.every((tab) => !('opens' in tab));
+  return parsed.ok && typeof call.target === 'string' && browserActReadsOnly(parsed.steps);
 };
 
 /** D-335 slice J — what a held sequence acts on: each element it names, read live as a held click
@@ -4208,6 +4472,9 @@ const describeHeldBrowserSteps = async (options: {
     return { site: siteOf(target), unread: asked === undefined && !byTab ? 'the batch names no page'
       : 'the Browser Bridge could not list the open tabs' };
   }
+  if (!Array.isArray(tabs)) {
+    return { site: siteOf(tabs.url), unread: browserTabChoiceReason(tabs.matches), tab_selection_required: true };
+  }
   const tabKey = (tab: { page: string } | { opens: string }) => ('opens' in tab ? `opens:${tab.opens}` : tabIdOf(tab.page));
   const onOf = (tab: { page: string; url?: string; title?: string } | { opens: string }): HeldBrowserTab | undefined =>
     !byTab ? undefined : 'opens' in tab ? { opens: tab.opens }
@@ -4247,10 +4514,17 @@ const describeHeldBrowserSteps = async (options: {
   // one wait, not one a step.
   // Slice Y — a page its steps name elements on by their text is read once for all of them.
   const reading = new Map<string, Promise<string | undefined>>();
-  const reads = await Promise.all(planned.map((plan, index) => ('read' in plan
-    ? describeHeldBrowserTarget({ ...options, slug: CORE_DOM_CLICK_SLUG, reading,
-      input: { target, page: plan.page, bridge_id: call.bridge_id, ...plan.read }, step_id: `${options.step_id}:${index + 1}` })
-    : plan)));
+  const describe = (plan: { page: string }, element: Record<string, string | readonly string[]>, id: string) =>
+    describeHeldBrowserTarget({ ...options, slug: CORE_DOM_CLICK_SLUG, reading,
+      input: { target, page: plan.page, bridge_id: call.bridge_id, ...element }, step_id: `${options.step_id}:${id}` });
+  const [reads, drops] = await Promise.all([
+    Promise.all(planned.map((plan, index) => 'read' in plan ? describe(plan, plan.read, String(index + 1)) : plan)),
+    Promise.all(planned.map((plan, index) => {
+      const step = parsed.steps[index];
+      return 'read' in plan && step?.do === 'drag' ? describe(plan,
+        step.drop.ref !== undefined ? { ref: step.drop.ref } : { selector: step.drop.selector }, `${index + 1}:drop`) : undefined;
+    })),
+  ]);
   const steps: HeldBrowserStep[] = [];
   let page: Exclude<HeldBrowserTarget, { unread: string }> | undefined;
   // A collection names rows, rather than a control to describe. Resolve its already-open tab's
@@ -4276,13 +4550,23 @@ const describeHeldBrowserSteps = async (options: {
       continue;
     }
     page ??= read;
-    steps.push({ role: read.role, label: read.label, protected: read.protected, ...(on !== undefined ? { on } : {}) });
+    const drop = drops[index];
+    if (drop && 'unread' in drop && drop.gone === true) return { site: drop.site, unread: `Step ${index + 1} drop target: ${drop.unread}`, gone: true };
+    steps.push({ role: read.role, label: read.label, protected: read.protected, ...(on !== undefined ? { on } : {}),
+      ...(drop && 'role' in drop ? { drop: { role: drop.role, label: drop.label } } : {}) });
   }
   // Slice AQ — the file each upload step puts into a page, as the owner's files name it, for the ask.
   for (const [index, step] of parsed.steps.entries()) {
     if (step.do !== 'upload') continue;
-    const about = options.files?.about(step.file);
-    if (about !== undefined) steps[index] = { ...steps[index]!, file: { filename: about.filename, size_bytes: about.size_bytes } };
+    const about = (ref: string) => {
+      const info = options.files?.about(ref);
+      return info === undefined ? null : { filename: info.filename, size_bytes: info.size_bytes };
+    };
+    if (step.files !== undefined) steps[index] = { ...steps[index]!, files: step.files.map(about) };
+    else {
+      const file = about(step.file);
+      if (file !== null) steps[index] = { ...steps[index]!, file };
+    }
   }
   // Slice X — a pass is offered for one site: not for a batch that acts on more or opens a tab.
   const sites = new Set<string>();
@@ -4317,6 +4601,9 @@ export const heldBrowserTargetRefusal = (
     const parsed = parseBrowserActSteps(call?.steps, { page: call?.page });
     if (!parsed.ok) {
       return browserActInputError(parsed, slug, true);
+    }
+    if (target && 'unread' in target && target.tab_selection_required === true) {
+      return new IngredientError('DOM_PAGE_NOT_MATCHING', target.unread, { slug, executed: false, refused_before_asking: true });
     }
   }
   return target !== undefined && 'unread' in target && target.gone === true
@@ -4466,11 +4753,16 @@ const expectsKeysForAction = (action: BridgeAction): string[] => {
       return [...BRIDGE_CLOSE_OUTPUT_KEYS];
     case 'hover':
       return [...BRIDGE_HOVER_OUTPUT_KEYS];
+    case 'drag':
+      return [...BRIDGE_DRAG_OUTPUT_KEYS];
+    case 'seek_media':
+      return [...BRIDGE_SEEK_OUTPUT_KEYS];
     // Slice AP — the file, which the server keeps.
     case 'download_file':
       return [...BRIDGE_DOWNLOAD_OUTPUT_KEYS];
     // Slice AQ — the file the field took, and the page it is on.
     case 'upload_file':
+    case 'upload_files':
       return [...BRIDGE_UPLOAD_OUTPUT_KEYS];
     default:
       return [];
@@ -4691,7 +4983,7 @@ const keepActedOn = (outputs: Record<string, unknown> | undefined, action: Bridg
   if (outputs === undefined || !Object.prototype.hasOwnProperty.call(outputs, BRIDGE_ACTED_ON_KEY)) return outputs;
   const { [BRIDGE_ACTED_ON_KEY]: raw, ...rest } = outputs;
   const acted = readBridgeActedOn(raw);
-  const kind: BrowserFlowStepKind | undefined = action === 'fill' ? 'type' : action === 'pick' || action === 'submit'
+  const kind: BrowserFlowStepKind | undefined = action === 'fill' ? 'type' : action === 'seek_media' ? 'seek' : action === 'pick' || action === 'submit'
     || action === 'click' || action === 'press' ? action : undefined;
   if (acted !== undefined && kind !== undefined && run_id !== undefined) {
     const typed = typeof args.value === 'string' ? args.value : undefined;
@@ -4710,6 +5002,9 @@ const keepActedOn = (outputs: Record<string, unknown> | undefined, action: Bridg
           ...(acted.protected_kind === 'card' ? { card: true as const } : {}) }
           : { value: typed }) : {}),
       ...(typeof args.pick === 'string' ? { pick: args.pick } : {}),
+      ...(kind === 'type' && args.delivery === 'paste' ? { delivery: 'paste' as const } : {}),
+      ...(kind === 'click' && args.click_count === 2 ? { count: 2 as const } : {}),
+      ...(kind === 'seek' && typeof args.at_seconds === 'number' ? { at_seconds: args.at_seconds } : {}),
       ...(typeof args.key === 'string' ? { key: args.key } : {}) }, position);
   }
   return rest;
@@ -4909,6 +5204,52 @@ const keepDownload = async (
     record_id: kept.file_ref };
 };
 
+type GeneratedDownloadResult = { files: BrowserFileKept[]; problem?: string };
+
+/** Discard the private transport receipt after keeping its bytes. An export failure leaves the click confirmed. */
+const keepGeneratedDownloads = async (
+  download: unknown,
+  downloads: unknown,
+  keep: (outputs: Record<string, unknown>, ordinal?: number) => Promise<BrowserFileKept>,
+): Promise<GeneratedDownloadResult> => {
+  const unreadable: GeneratedDownloadResult = { files: [], problem: 'Browser Bridge could not read the generated download.' };
+  const tooLarge: GeneratedDownloadResult = { files: [],
+    problem: `The generated downloads exceed the shared Browser Bridge limit of ${BRIDGE_FILE_MAX_BYTES / 1_000_000} MB.` };
+  if (downloads !== undefined && (download !== undefined || !Array.isArray(downloads)
+    || downloads.length < 2 || downloads.length > BRIDGE_UPLOAD_MAX_FILES)) return unreadable;
+  const receipts: unknown[] = Array.isArray(downloads) ? downloads : [download];
+  const payloads: Record<string, unknown>[] = [];
+  let totalBytes = 0;
+  for (const receipt of receipts) {
+    if (!receipt || typeof receipt !== 'object' || Array.isArray(receipt)) return unreadable;
+    const { failure, filename, mime_type, size, data } = receipt as Record<string, unknown>;
+    if (failure === 'too_large') return { files: [],
+      problem: `The generated download exceeds the Browser Bridge limit of ${BRIDGE_FILE_MAX_BYTES / 1_000_000} MB.` };
+    if (failure === 'total_too_large') return tooLarge;
+    if (failure === 'multiple') return { files: [], problem: 'The connected Browser Bridge could not capture multiple files from this confirmed click.' };
+    if (failure === 'too_many') return { files: [], problem: `The confirmed click generated more than ${BRIDGE_UPLOAD_MAX_FILES} files.` };
+    if (failure === 'timed_out') return { files: [], problem: 'The click was confirmed, but the page did not produce a supported download within the requested wait.' };
+    if (failure === 'interrupted') return { files: [], problem: 'The click was confirmed, but the download wait was interrupted by activity on the page.' };
+    if (failure !== undefined || typeof size !== 'number' || !Number.isSafeInteger(size) || size < 0
+      || typeof filename !== 'string' || typeof mime_type !== 'string' || typeof data !== 'string'
+      || data.length !== Math.ceil(size / 3) * 4) return unreadable;
+    totalBytes += size;
+    if (totalBytes > BRIDGE_FILE_MAX_BYTES) return tooLarge;
+    payloads.push({ filename, mime_type, size, data });
+  }
+  const files: BrowserFileKept[] = [];
+  for (const [index, payload] of payloads.entries()) {
+    try {
+      const { file_ref, filename, mime_type, size_bytes, sha256 } = await keep(payload, payloads.length === 1 ? undefined : index + 1);
+      files.push({ file_ref, filename, mime_type, size_bytes, sha256 });
+    } catch {
+      return { files, problem: files.length ? `The click was confirmed and ${files.length} of ${payloads.length} files were kept. Recued could not keep the remaining files.`
+        : 'Recued could not keep the generated download among your files.' };
+    }
+  }
+  return { files };
+};
+
 /** Aggregate per-entry outcomes into the `executeDOM`-shaped step output:
  *
  *    - reads only           → `Record<string, string | null>`
@@ -4998,10 +5339,16 @@ const assembleStepOutput = (
     // 2026-11-04 — one click by page handle answers the page its tab then shows, as opening a
     // page does: a new handle when the click loaded a page.
     const landed = outcomes.length === 1 ? outcomes[0]!.outputs : undefined;
+    const generated = outcomes.length === 1 ? outcomes[0]!.generated : undefined;
+    const file = generated?.files.length === 1 && !generated.problem ? generated.files[0] : undefined;
+    const artifact = {
+      ...(file ? { ...file, record_id: file.file_ref } : generated?.files.length ? { files: generated.files } : {}),
+      ...(generated?.problem ? { download_problem: generated.problem } : {}),
+    };
     return landed !== undefined && typeof landed.page === 'string' && typeof landed.url === 'string'
       && typeof landed.title === 'string'
-      ? { clicked: clickCount, page: landed.page, url: landed.url, title: landed.title, ...challenged }
-      : { clicked: clickCount, ...challenged };
+      ? { clicked: clickCount, page: landed.page, url: landed.url, title: landed.title, ...challenged, ...artifact }
+      : { clicked: clickCount, ...challenged, ...artifact };
   }
 
   return {

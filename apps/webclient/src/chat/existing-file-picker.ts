@@ -24,15 +24,19 @@ const picker = <T>(doc: Document, title: string, signal?: AbortSignal) => {
   dialog.setAttribute('aria-label', title);
   dialog.setAttribute('data-chat-file-picker', '');
   const style = doc.createElement('style');
-  style.textContent = `dialog[data-chat-file-picker] { width:min(520px,90vw); max-height:80vh; box-sizing:border-box;
+  style.textContent = `dialog[data-chat-file-picker] { width:min(520px,90vw); max-height:80vh; max-height:80dvh; box-sizing:border-box; overflow:hidden;
     padding:20px; border:1px solid var(--border,#666); border-radius:12px;
     background:var(--surface,#fff); color:var(--fg,#222); font:14px/1.45 system-ui,sans-serif; }
+    dialog[data-chat-file-picker][open] { display:flex; flex-direction:column; }
     dialog[data-chat-file-picker]::backdrop { background:#0006; }
     [data-chat-file-picker] [hidden] { display:none !important; }
+    [data-chat-file-picker] .file-picker-body { min-height:0; overflow:auto; overscroll-behavior:contain; overflow-wrap:anywhere; }
+    [data-chat-file-picker] .file-picker-actions { display:flex; flex:none; flex-wrap:wrap; justify-content:flex-end; gap:8px; padding-top:16px; }
+    [data-chat-file-picker] .file-picker-actions button { margin:0; min-width:0; }
     [data-chat-file-picker] select { width:100%; padding:8px; font:inherit; background:var(--surface,#fff); color:var(--fg,#222); border:1px solid var(--border,#888); border-radius:6px; }
-    [data-chat-file-picker] h2 { margin:0 0 16px; font-size:1.2rem; }
+    [data-chat-file-picker] h2 { flex:none; margin:0 0 16px; font-size:1.2rem; }
     [data-chat-file-picker] input[type=search] { box-sizing:border-box; width:100%; margin:8px 0; padding:8px; }
-    [data-chat-file-picker] .file-options { display:flex; flex-direction:column; gap:12px; max-height:40vh; overflow:auto; margin:16px 0; }
+    [data-chat-file-picker] .file-options { display:flex; flex-direction:column; gap:12px; margin:16px 0; }
     [data-chat-file-picker] label { display:flex; gap:8px; align-items:center; overflow-wrap:anywhere; }
     [data-chat-file-picker] button { padding:8px 12px; margin:4px; font:inherit; border-radius:6px;
       border:1px solid var(--border,#888); background:var(--surface,#fff); color:var(--fg,#222); cursor:pointer; }
@@ -40,8 +44,10 @@ const picker = <T>(doc: Document, title: string, signal?: AbortSignal) => {
     [data-chat-file-picker] input[type=search] { font:inherit; background:var(--surface,#fff); color:var(--fg,#222); border:1px solid var(--border,#888); border-radius:6px; }
     [data-chat-file-picker] [role=status] { margin:12px 0; }`;
   const heading = doc.createElement('h2'); heading.textContent = title;
+  const body = doc.createElement('div'); body.className = 'file-picker-body';
+  const actions = doc.createElement('div'); actions.className = 'file-picker-actions';
   const cancel = doc.createElement('button'); cancel.type = 'button'; cancel.textContent = 'Cancel';
-  dialog.append(style, heading);
+  dialog.append(style, heading, body, actions);
   let closed = false; let resolve!: (value: T | null) => void;
   const result = new Promise<T | null>(done => { resolve = done; });
   const close = (value: T | null = null): void => {
@@ -62,9 +68,9 @@ const picker = <T>(doc: Document, title: string, signal?: AbortSignal) => {
   const show = (): void => {
     if (signal?.aborted) { close(); return; }
     signal?.addEventListener('abort', abort, { once: true });
-    dialog.append(cancel); doc.body.append(dialog); dialog.showModal();
+    actions.append(cancel); doc.body.append(dialog); dialog.showModal();
   };
-  return { dialog, cancel, result, close, show, signal: lifetime.signal, alive: () => !closed };
+  return { body, actions, cancel, result, close, show, signal: lifetime.signal, alive: () => !closed };
 };
 
 export const openExistingFilePicker = (
@@ -229,7 +235,8 @@ export const openExistingFilePicker = (
   retry.addEventListener('click', () => { void load(failedMore); });
   attach.addEventListener('click', () => { void importSelected(); });
   attachSaved.addEventListener('click', () => { if (!importing) ui.close(readyFiles()); });
-  ui.dialog.append(source, sourceStatus, sourceRetry, query, archivedLabel, note, status, options, more, retry, chosen, attach, attachSaved); ui.show();
+  ui.body.append(source, sourceStatus, sourceRetry, query, archivedLabel, note, status, options, more, retry, chosen);
+  ui.actions.append(attach, attachSaved); ui.show();
   if (ui.alive()) { query.focus(); void load(); void loadSources(); }
   void ui.result.then(() => { clearTimeout(searchTimer); });
   return ui.result;
@@ -357,7 +364,8 @@ export const openFileChatPicker = (
   use.addEventListener('click', () => { void importFile(); });
   inspect.addEventListener('click', () => { if (file && callers.preview && !importing && !loading) void openFilePreview(doc,
     { record_id: recordId, filename: file.filename, selection_revision: file.selection_revision }, callers.preview, ui.signal); });
-  ui.dialog.append(note, status, inspect, query, noMatches, options, chosen, use, retry); ui.show();
+  ui.body.append(note, status, inspect, query, noMatches, options, chosen, retry);
+  ui.actions.append(use); ui.show();
   if (ui.alive()) { query.focus(); void load(); }
   return ui.result;
 };

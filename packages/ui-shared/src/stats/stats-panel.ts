@@ -281,20 +281,26 @@ export const renderStatsPanel = (props: StatsPanelProps): string => {
       <h2>Your stats</h2>
       <p class="stats-asof">Measured over the current UTC day · computed ${e(ago(data.snapshot.computed_at, now))}</p>
 
-      ${cards === '' ? `
-      <p class="stats-note">No metric in this snapshot is one this build still knows how
-      to display.</p>` : table('Today', cards)}
+      <div class="stats-readings">
+        ${cards === '' ? `
+        <p class="stats-note">No metric in this snapshot is one this build still knows how
+        to display.</p>` : table('Today', cards)}
+      </div>
 
       ${streaks === '' ? '' : `
-      <h3>Streaks</h3>
-      <p class="stats-note">Counted in whole days, and only days Recued actually ran —
-      a day off ends the run.</p>
-      ${table('Now', streaks)}`}
+      <section class="stats-streaks">
+        <h3>Streaks</h3>
+        <p class="stats-note">Counted in whole days, and only days Recued actually ran —
+        a day off ends the run.</p>
+        ${table('Now', streaks)}
+      </section>`}
 
       ${records === '' ? '' : `
-      <h3>Records</h3>
-      <p class="stats-note">These only ever go up — a quiet day never takes one away.</p>
-      ${table('Best', records)}`}
+      <section class="stats-records">
+        <h3>Records</h3>
+        <p class="stats-note">These only ever go up — a quiet day never takes one away.</p>
+        ${table('Best', records)}
+      </section>`}
 
       ${renderPublications(data)}
 
@@ -316,17 +322,19 @@ export const renderStatsPanel = (props: StatsPanelProps): string => {
         ...(props.submitOutcome !== undefined ? { outcome: props.submitOutcome } : {}),
       })}
 
-      <h3>Milestones</h3>
-      <div class="stats-table-wrap">
-        <table class="stats-table stats-milestones">
-          <thead><tr>
-            <th scope="col">Milestone</th>
-            <th scope="col">Status</th>
-            <th scope="col">What it takes</th>
-          </tr></thead>
-          <tbody>${milestones}</tbody>
-        </table>
-      </div>
+      <section class="stats-milestones-section">
+        <h3>Milestones</h3>
+        <div class="stats-table-wrap">
+          <table class="stats-table stats-milestones">
+            <thead><tr>
+              <th scope="col">Milestone</th>
+              <th scope="col">Status</th>
+              <th scope="col">What it takes</th>
+            </tr></thead>
+            <tbody>${milestones}</tbody>
+          </table>
+        </div>
+      </section>
 
       <details class="stats-coverage">
         <summary>Coverage and diagnostics</summary>

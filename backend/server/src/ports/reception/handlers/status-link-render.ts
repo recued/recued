@@ -23,6 +23,7 @@ import {
   RECEPTION_PAGE_STATIC_PATH_PREFIX,
   type StatusLinkProjectionKind,
 } from '@recued/contracts';
+import { RECEPTION_PAGE_STYLE_SRC } from '../static-assets.js';
 import { htmlEscape } from './reception-page-render.js';
 
 // ────────────────────────────────────────────────────────────────
@@ -78,7 +79,7 @@ const renderHead = (title: string, refreshSeconds: number | undefined): string =
 ${refreshTag}
 <title>${htmlEscape(title)}</title>
 <link rel="icon" href="${RECEPTION_PAGE_STATIC_PATH_PREFIX}favicon.ico">
-<link rel="stylesheet" href="${RECEPTION_PAGE_STATIC_PATH_PREFIX}style.css">
+<link rel="stylesheet" href="${RECEPTION_PAGE_STYLE_SRC}">
 </head>`;
 };
 
@@ -109,26 +110,40 @@ const renderTitle = (value: unknown): string => {
   return v.length > 0 ? `<h2 class="rcp-status-title">${htmlEscape(v)}</h2>` : '';
 };
 
-const renderStringRow = (label: string, value: unknown): string => {
+const renderRow = (label: string, valueHtml: string): string =>
+  `<div class="rcp-status-row"><dt class="rcp-status-label">${htmlEscape(label)}</dt><dd class="rcp-status-value">${valueHtml}</dd></div>`;
+
+const renderFacts = (...rows: string[]): string => {
+  const facts = rows.filter(Boolean).join('\n');
+  return facts ? `<dl class="rcp-status-facts">\n${facts}\n</dl>` : '';
+};
+
+const renderDetail = (label: string, valueHtml: string): string =>
+  `<dl class="rcp-status-detail">${renderRow(label, valueHtml)}</dl>`;
+
+const renderTextFact = (label: string, value: unknown): string => {
   const v = fieldString(value);
-  if (v.length === 0) return '';
-  return `<div class="rcp-status-row"><span class="rcp-status-label">${htmlEscape(label)}</span><span class="rcp-status-value">${htmlEscape(v)}</span></div>`;
+  return v.length > 0 ? renderRow(label, htmlEscape(v)) : '';
 };
 
-const renderNumberRow = (label: string, value: unknown): string => {
+const renderNumberFact = (label: string, value: unknown): string => {
   const v = fieldNumber(value);
-  if (v === null) return '';
-  return `<div class="rcp-status-row"><span class="rcp-status-label">${htmlEscape(label)}</span><span class="rcp-status-value">${htmlEscape(String(v))}</span></div>`;
+  return v === null ? '' : renderRow(label, htmlEscape(String(v)));
 };
 
-const renderAttendeesList = (value: unknown): string => {
+const renderTextDetail = (label: string, value: unknown): string => {
+  const v = fieldString(value);
+  return v.length > 0 ? renderDetail(label, htmlEscape(v)) : '';
+};
+
+const renderStringList = (label: string, value: unknown): string => {
   if (!Array.isArray(value) || value.length === 0) return '';
   const items = value
     .filter((v): v is string => typeof v === 'string')
     .map((v) => `<li class="rcp-status-item">${htmlEscape(v)}</li>`)
     .join('\n');
   if (items.length === 0) return '';
-  return `<div class="rcp-status-row"><span class="rcp-status-label">Attendees</span><ul class="rcp-status-list">${items}</ul></div>`;
+  return renderDetail(label, `<ul class="rcp-status-list">${items}</ul>`);
 };
 
 const renderLegsList = (value: unknown): string => {
@@ -149,7 +164,7 @@ const renderLegsList = (value: unknown): string => {
     )
     .join('\n');
   if (items.length === 0) return '';
-  return `<div class="rcp-status-row"><span class="rcp-status-label">Legs</span><ul class="rcp-status-list">${items}</ul></div>`;
+  return renderDetail('Legs', `<ul class="rcp-status-list">${items}</ul>`);
 };
 
 const renderDateRange = (value: unknown): string => {
@@ -160,17 +175,7 @@ const renderDateRange = (value: unknown): string => {
   if (start === null || end === null) return '';
   const startIso = new Date(start).toISOString().slice(0, 10);
   const endIso = new Date(end).toISOString().slice(0, 10);
-  return `<div class="rcp-status-row"><span class="rcp-status-label">Dates</span><span class="rcp-status-value">${htmlEscape(startIso)} → ${htmlEscape(endIso)}</span></div>`;
-};
-
-const renderItemsList = (value: unknown): string => {
-  if (!Array.isArray(value) || value.length === 0) return '';
-  const items = value
-    .filter((v): v is string => typeof v === 'string')
-    .map((v) => `<li class="rcp-status-item">${htmlEscape(v)}</li>`)
-    .join('\n');
-  if (items.length === 0) return '';
-  return `<div class="rcp-status-row"><span class="rcp-status-label">Items</span><ul class="rcp-status-list">${items}</ul></div>`;
+  return renderTextFact('Dates', `${startIso} → ${endIso}`);
 };
 
 const renderTagsList = (value: unknown): string => {
@@ -180,7 +185,7 @@ const renderTagsList = (value: unknown): string => {
     .map((v) => `<span class="rcp-tag">${htmlEscape(v)}</span>`)
     .join(' ');
   if (items.length === 0) return '';
-  return `<div class="rcp-status-row"><span class="rcp-status-label">Tags</span><span class="rcp-status-tags">${items}</span></div>`;
+  return renderDetail('Tags', `<span class="rcp-status-tags">${items}</span>`);
 };
 
 // ────────────────────────────────────────────────────────────────
@@ -190,11 +195,13 @@ const renderTagsList = (value: unknown): string => {
 const renderEventPlanBody = (fields: Readonly<Record<string, unknown>>): string => {
   return [
     renderTitle(fields.title),
-    renderStringRow('Date', fields.date),
-    renderStringRow('Where', fields.location_label),
-    renderStringRow('Timezone', fields.tz_label),
-    renderStringRow('Agenda', fields.agenda_summary),
-    renderAttendeesList(fields.visible_attendees),
+    renderFacts(
+      renderTextFact('Date', fields.date),
+      renderTextFact('Where', fields.location_label),
+      renderTextFact('Timezone', fields.tz_label),
+    ),
+    renderTextDetail('Agenda', fields.agenda_summary),
+    renderStringList('Attendees', fields.visible_attendees),
   ]
     .filter((s) => s.length > 0)
     .join('\n');
@@ -203,7 +210,7 @@ const renderEventPlanBody = (fields: Readonly<Record<string, unknown>>): string 
 const renderItineraryBody = (fields: Readonly<Record<string, unknown>>): string => {
   return [
     renderTitle(fields.title),
-    renderDateRange(fields.date_range),
+    renderFacts(renderDateRange(fields.date_range)),
     renderLegsList(fields.visible_legs),
   ]
     .filter((s) => s.length > 0)
@@ -213,10 +220,12 @@ const renderItineraryBody = (fields: Readonly<Record<string, unknown>>): string 
 const renderProjectBody = (fields: Readonly<Record<string, unknown>>): string => {
   return [
     renderTitle(fields.title),
-    renderStringRow('Status', fields.state),
-    renderNumberRow('Open commitments', fields.open_commitment_count),
-    renderStringRow('Last activity', fields.last_activity_at_relative),
-    renderStringRow('Milestones', fields.milestone_summary),
+    renderFacts(
+      renderTextFact('Status', fields.state),
+      renderNumberFact('Open commitments', fields.open_commitment_count),
+      renderTextFact('Last activity', fields.last_activity_at_relative),
+    ),
+    renderTextDetail('Milestones', fields.milestone_summary),
   ]
     .filter((s) => s.length > 0)
     .join('\n');
@@ -225,10 +234,12 @@ const renderProjectBody = (fields: Readonly<Record<string, unknown>>): string =>
 const renderPackingListBody = (fields: Readonly<Record<string, unknown>>): string => {
   return [
     renderTitle(fields.title),
-    renderStringRow('Due', fields.due_date_relative),
-    renderNumberRow('Packed', fields.packed_count),
-    renderNumberRow('Total', fields.total_count),
-    renderItemsList(fields.items),
+    renderFacts(
+      renderTextFact('Due', fields.due_date_relative),
+      renderNumberFact('Packed', fields.packed_count),
+      renderNumberFact('Total', fields.total_count),
+    ),
+    renderStringList('Items', fields.items),
   ]
     .filter((s) => s.length > 0)
     .join('\n');
@@ -239,9 +250,11 @@ const renderCommitmentSummaryBody = (
 ): string => {
   return [
     renderTitle(fields.title),
-    renderStringRow('State', fields.state),
-    renderStringRow('Due', fields.due_at_relative),
-    renderStringRow('With', fields.counterparty_first_name_initial),
+    renderFacts(
+      renderTextFact('State', fields.state),
+      renderTextFact('Due', fields.due_at_relative),
+      renderTextFact('With', fields.counterparty_first_name_initial),
+    ),
   ]
     .filter((s) => s.length > 0)
     .join('\n');
@@ -250,8 +263,8 @@ const renderCommitmentSummaryBody = (
 const renderCustomBody = (fields: Readonly<Record<string, unknown>>): string => {
   return [
     renderTitle(fields.title),
-    renderStringRow('Summary', fields.summary),
-    renderStringRow('Updated', fields.updated_at_relative),
+    renderTextDetail('Summary', fields.summary),
+    renderFacts(renderTextFact('Updated', fields.updated_at_relative)),
     renderTagsList(fields.tags),
   ]
     .filter((s) => s.length > 0)
@@ -311,7 +324,7 @@ export const renderStatusLinkHtml = (input: StatusLinkRenderInput): string => {
       : '';
   return `${renderHead(`Status — ${input.display_name}`, input.refresh_interval_seconds)}
 <body>
-<div class="rcp-shell">
+<main class="rcp-shell rcp-status-shell">
 <div class="rcp-card">
 <div class="rcp-header">
 <div>
@@ -325,7 +338,7 @@ ${body}
 </div>
 ${renderFooter(input.trust_footer ?? null)}
 </div>
-</div>
+</main>
 </body>
 </html>
 `;

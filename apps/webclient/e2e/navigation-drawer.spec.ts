@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 import {
-  CONNECTION_BANNER, DRAWER_LINK, DRAWER_OPEN, DRAWER_TOGGLE,
+  CONNECTION_BANNER, CREATE_OVERLAY, DRAWER_LINK, DRAWER_OPEN, DRAWER_TOGGLE, HARNESS_URL,
   SETTINGS_NAV_ITEM, SHELL_CONTENT, SHELL_HOST, SHELL_TOPBAR, installFullAppHooks,
 } from './helpers/full-app.js';
 
@@ -126,6 +126,78 @@ test('the open navigation drawer contains keyboard focus and inerts the page', a
   await expect(page.locator(`[${SHELL_HOST}][${DRAWER_OPEN}]`)).toHaveCount(0);
   await expect(page.locator(`[${SHELL_TOPBAR}]`)).not.toHaveAttribute('inert', '');
   await expect(page.locator(`[${DRAWER_TOGGLE}]`)).toBeFocused();
+});
+
+test('pinned desktop navigation stays beside the workspace across page switches and reloads', async ({ page }) => {
+  await page.setViewportSize({ width: 1536, height: 900 });
+  await page.goto(`${HARNESS_URL}?data=contacts-paged#today`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  const nav = page.getByRole('navigation', { name: 'Primary navigation' });
+  const toggle = page.locator(`[${DRAWER_TOGGLE}]`);
+  const content = page.locator(`[${SHELL_CONTENT}]`);
+  await expect(nav).toBeHidden();
+  await toggle.click();
+  await nav.getByRole('button', { name: 'Pin navigation', exact: true }).press('Enter');
+  const unpin = nav.getByRole('button', { name: 'Unpin navigation', exact: true });
+  await expect(unpin).toBeFocused();
+  await expect(page.locator(`[${SHELL_TOPBAR}]`)).not.toHaveAttribute('inert', '');
+  expect(await content.evaluate(node => node.closest('[inert]') === null)).toBe(true);
+  expect(await content.evaluate(node => node.clientWidth)).toBeGreaterThanOrEqual(1280);
+  const navBounds = (await nav.boundingBox())!;
+  expect(navBounds.x + navBounds.width).toBeLessThanOrEqual((await content.boundingBox())!.x);
+
+  // The sidebar belongs to normal keyboard traversal, so Tab can leave it.
+  await nav.getByRole('link', { name: 'Account', exact: true }).focus();
+  await page.keyboard.press('Tab');
+  expect(await nav.evaluate(node => node.contains(document.activeElement))).toBe(false);
+  for (const [label, hash] of [['Tasks', '#data/task'], ['Contacts', '#data/contact'], ['Chats', '#chat']] as const) {
+    const link = nav.getByRole('link', { name: label, exact: true });
+    await link.click();
+    await expect.poll(() => new URL(page.url()).hash).toBe(hash);
+    await expect(link).toHaveAttribute('aria-current', 'page');
+    await expect(unpin).toBeVisible();
+  }
+  await page.reload();
+  await expect(unpin).toBeVisible();
+  await page.getByRole('button', { name: 'Hide navigation', exact: true }).click();
+  await expect(nav).toBeHidden();
+  await toggle.click();
+  await expect(unpin).toBeVisible();
+  await unpin.press('Enter');
+  await expect(toggle).toBeFocused();
+  await page.reload();
+  await expect(nav).toBeHidden();
+  await toggle.click();
+  await expect(nav.getByRole('button', { name: 'Pin navigation', exact: true })).toBeVisible();
+});
+
+test('resizing a pinned sidebar restores the drawer and keeps a visible focus target for Create', async ({ page }) => {
+  await page.setViewportSize({ width: 1536, height: 900 });
+  const nav = page.getByRole('navigation', { name: 'Primary navigation' });
+  const toggle = page.locator(`[${DRAWER_TOGGLE}]`);
+  await toggle.click();
+  await nav.getByRole('button', { name: 'Pin navigation', exact: true }).click();
+  const unpin = nav.getByRole('button', { name: 'Unpin navigation', exact: true });
+  await unpin.focus();
+  await page.setViewportSize({ width: 1535, height: 900 });
+  await expect(toggle).toBeFocused();
+  await expect(nav).toBeHidden();
+  await toggle.click();
+  await expect(nav.getByRole('button', { name: 'Pin navigation', exact: true })).toBeHidden();
+  await expect(page.locator(`[${SHELL_TOPBAR}]`)).toHaveAttribute('inert', '');
+  await page.keyboard.press('Escape');
+
+  await page.setViewportSize({ width: 1536, height: 900 });
+  await expect(unpin).toBeVisible();
+  await nav.getByRole('button', { name: 'Create', exact: true }).click();
+  const create = page.locator(`[${CREATE_OVERLAY}]`);
+  await expect(create).toBeVisible();
+  await expect(unpin).toBeVisible();
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.keyboard.press('Escape');
+  await expect(create).toBeHidden();
+  await expect(toggle).toBeFocused();
+  await expect(nav).toBeHidden();
 });
 
 test('a drawer seat renders the height it declares, not that plus its padding', async ({ page }) => {

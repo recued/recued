@@ -1,3 +1,4 @@
+import { DELIVERY_REPORT_MAX_BYTES, isDeliveryReportHeader, parseDeliveryReport, type MailDeliveryReport } from './delivery-report.js';
 /** Phase D (D-106) — Microsoft Graph REST provider (Commit 15).
  *
  *  Implements `MailProvider` against the Graph REST API directly —
@@ -65,9 +66,10 @@ import {
   type MailSentRepliesResult,
   type MailSentReplyMatch,
 } from '@recued/contracts';
-import { discardResponseBody, IngredientError, readBoundedResponseText } from '@recued/ingredients';
+import { discardResponseBody, IngredientError, readBoundedResponseText, ResponseBodyTooLargeError } from '@recued/ingredients';
 import { looksLikeIcs } from '@recued/transforms';
 import { simpleParser } from 'mailparser';
+import { classifyReplyAutomation } from './reply-automation.js';
 import {
   assertProviderPageUrl,
   ProviderPaginationGuard,
@@ -380,6 +382,7 @@ export const canonicalizeGraph = (
   msg: GraphMessagePayload,
   attachments: InboundMailAttachmentPart[] = [],
   direction: MailMessageDirection = graphMessageDirectionForFolder(msg.parentFolderId ?? ''),
+  deliveryReport?: MailDeliveryReport,
 ): CanonicalMessage => {
   const from = msg.from?.emailAddress?.address ?? '';
   const to = addressList(msg.toRecipients);
@@ -395,12 +398,18 @@ export const canonicalizeGraph = (
     : undefined;
   return {
     source_id: msg.id,
+    ...(deliveryReport ? { delivery_report: deliveryReport } : isDeliveryReportHeader((msg.internetMessageHeaders ?? []).flatMap(header =>
+      typeof header.name === 'string' && typeof header.value === 'string' ? [[header.name, header.value] as const] : []))
+      ? { delivery_report_unverified: true } : {}),
     rfc_message_id: msg.internetMessageId ?? undefined,
     ...(isMailReconciliationId(reconciliationId)
       ? { reconciliation_id: reconciliationId }
       : {}),
     from,
     from_name: msg.from?.emailAddress?.name?.trim() ?? '',
+    reply_automation: classifyReplyAutomation(Array.isArray(msg.internetMessageHeaders)
+      && msg.internetMessageHeaders.every(header => typeof header.name === 'string' && typeof header.value === 'string')
+      ? msg.internetMessageHeaders.map(header => [header.name!, header.value!] as const) : undefined),
     headers: mailHeaderMap(
       (msg.internetMessageHeaders ?? []).flatMap((header): [string, string][] =>
         typeof header.name === 'string' && typeof header.value === 'string'
@@ -579,18 +588,25 @@ const graphErrorCode = (text: string): string | undefined => {
  *  in practice, and the one part read from it, an invite, is UTF-8 by RFC 5545. */
 const graphGetBytes = async (
   url: string,
-  opts: { accessToken: string | undefined; fetcher: HttpFetcher },
+  opts: { accessToken: string | undefined; fetcher: HttpFetcher; maxBytes?: number; signal?: AbortSignal },
 ): Promise<{ ok: true; data: Buffer } | { ok: false; status: number; text: string }> => {
   const safeUrl = assertProviderPageUrl(url, GRAPH_API_BASE, 'graph mail');
   const res = await opts.fetcher(safeUrl, {
     method: 'GET',
     headers: { ...oauthAuthorizationHeaders(opts.accessToken) },
+    ...(opts.signal ? { signal: opts.signal } : {}),
   });
   if (!res.ok) {
     const text = await res.text().catch(() => '');
     return { ok: false, status: res.status, text };
   }
-  return { ok: true, data: Buffer.from(await res.text(), 'utf8') };
+  // HttpFetcher already bounds network buffering. Apply the smaller report
+  // parser ceiling to its replayable text before MIME parsing.
+  const declared = Number(res.headers?.get('content-length'));
+  if (opts.maxBytes !== undefined && declared > opts.maxBytes) throw new ResponseBodyTooLargeError(opts.maxBytes, undefined, declared);
+  const text = await res.text();
+  if (opts.maxBytes !== undefined && Buffer.byteLength(text) > opts.maxBytes) throw new ResponseBodyTooLargeError(opts.maxBytes, Buffer.byteLength(text));
+  return { ok: true, data: Buffer.from(text, 'utf8') };
 };
 
 /** D-315 slice 7 — a meeting email. Exchange turns an emailed invite, a guest's
@@ -721,15 +737,27 @@ export const createGraphProvider = (
 
   /** `getWithRetry` for bytes. Throws on failure: its one caller is an
    *  attachment's fetch, whose failure ingest logs per part. */
-  const getBytesWithRetry = async (url: string): Promise<Buffer> => {
-    const first = await graphGetBytes(url, { accessToken: await ensureToken(false), fetcher });
+  const getBytesWithRetry = async (url: string, maxBytes?: number, signal?: AbortSignal): Promise<Buffer> => {
+    const first = await graphGetBytes(url, { accessToken: await ensureToken(false), fetcher, maxBytes, signal });
     if (first.ok) return first.data;
     const second = first.status === 401 && !opts.managedFetcher
-      ? await graphGetBytes(url, { accessToken: await ensureToken(true), fetcher })
+      ? await graphGetBytes(url, { accessToken: await ensureToken(true), fetcher, maxBytes, signal })
       : first;
     if (second.ok) return second.data;
     noteReadFailure(second.status, `graph ${url} → ${second.status}`, second.text);
     throw new Error(`graph ${url} → ${second.status}`);
+  };
+
+  // Graph's JSON body omits the DSN machine part and returned headers. Read
+  // bounded MIME only for explicit multipart/report messages. Read failures
+  // keep the sync incomplete so a due watch cannot prepare a draft over a gap.
+  const deliveryReportOf = async (msg: GraphMessagePayload, signal?: AbortSignal): Promise<MailDeliveryReport | undefined> => {
+    if (!isDeliveryReportHeader((msg.internetMessageHeaders ?? []).flatMap(header =>
+      typeof header.name === 'string' && typeof header.value === 'string' ? [[header.name, header.value] as const] : []))) return undefined;
+    throwIfStopped(signal);
+    const mime = await getBytesWithRetry(`${GRAPH_API_BASE}/me/messages/${encodeURIComponent(msg.id)}/$value`, DELIVERY_REPORT_MAX_BYTES, signal);
+    throwIfStopped(signal);
+    return parseDeliveryReport(mime);
   };
 
   /** D-315 slice 7 — a meeting email's invite, read from its raw MIME only
@@ -861,7 +889,7 @@ export const createGraphProvider = (
       if (failureStatus !== undefined) throw new Error(`graph message ${id} read failed (${failureStatus})`);
       return null;
     }
-    return canonicalizeGraph(msg, await fetchGraphAttachmentParts(msg), await directionOfFolder(msg.parentFolderId ?? ''));
+    return canonicalizeGraph(msg, await fetchGraphAttachmentParts(msg), await directionOfFolder(msg.parentFolderId ?? ''), await deliveryReportOf(msg));
   };
 
   const fetchGraphAttachmentParts = async (
@@ -944,6 +972,7 @@ export const createGraphProvider = (
               msg,
               await fetchGraphAttachmentParts(msg, signal),
               graphMessageDirectionForFolder(folder),
+              await deliveryReportOf(msg, signal),
             );
             const cont = await scanOpts.onMessage(canonical);
             lastSuccessfulSyncAt = nowOf();
@@ -981,6 +1010,7 @@ export const createGraphProvider = (
           msg,
           await fetchGraphAttachmentParts(msg, signal),
           graphMessageDirectionForFolder(folder),
+          await deliveryReportOf(msg, signal),
         );
         await cb({
           kind: 'updated',

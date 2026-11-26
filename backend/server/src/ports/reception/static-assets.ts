@@ -231,6 +231,15 @@ body {
   color: var(--muted);
   font-size: 12px;
 }
+.rcp-landing-action-list {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 8px;
+}
+.rcp-landing-action-list > .rcp-cta { width: 100%; margin: 0; text-align: center; }
+.rcp-landing-shell :is(.rcp-name, .rcp-tagline, .rcp-cta, .rcp-link, .link-button-link, .link-button-description) {
+  overflow-wrap: anywhere;
+}
 
 .rcp-error-summary {
   margin: 16px 0; padding: 16px; border: 1px solid var(--danger);
@@ -431,6 +440,57 @@ body {
   background: var(--surface-sunk);
 }
 .rcp-duration-form > label { grid-column: 1 / -1; }
+.rcp-booking-layout,
+.rcp-booking-time {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 18px;
+  min-width: 0;
+}
+.rcp-booking-time { gap: 24px; }
+.rcp-booking-time > .rcp-duration-form,
+.rcp-booking-layout > .rcp-booking-details { margin: 0; }
+.rcp-booking-time select,
+.rcp-reschedule-form select,
+.rcp-booking-details > .rcp-field { min-width: 0; }
+.rcp-booking-availability { display: grid; gap: 8px; }
+.rcp-booking-availability > .rcp-empty { margin: 0; }
+.rcp-booking-timezone { margin: 0; font-size: 13px; color: var(--muted); overflow-wrap: anywhere; }
+.rcp-booking-refresh { justify-self: start; text-decoration: none; }
+.rcp-booking-details-title { display: none; margin: 0; font-size: 16px; line-height: 1.35; }
+.rcp-reschedule-current {
+  display: grid;
+  gap: 6px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface-sunk);
+  overflow-wrap: anywhere;
+}
+.rcp-reschedule-current > :is(h2, p) { margin: 0; }
+.rcp-reschedule-current > h2 { font-size: 16px; line-height: 1.35; }
+.rcp-reschedule-form { margin: 0; gap: 12px; }
+.rcp-reschedule-form > .rcp-error-summary { margin: 0; padding: 10px 12px; }
+.rcp-reschedule-form > a.rcp-button { text-decoration: none; }
+.rcp-signoff-shell .rcp-header { margin-bottom: 0; }
+.rcp-signoff-contact,
+.rcp-signoff-actions {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 18px;
+}
+.rcp-signoff-contact > .rcp-field { min-width: 0; }
+.rcp-signoff-layout .rcp-button { overflow-wrap: anywhere; }
+.rcp-intake-field-pair,
+.rcp-intake-actions {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 18px;
+}
+.rcp-intake-form .rcp-field,
+.rcp-intake-form .rcp-field > :is(input, select, textarea) { min-width: 0; }
+.rcp-intake-form .rcp-field > label,
+.rcp-intake-actions > .rcp-button { overflow-wrap: anywhere; }
 .rcp-button {
   appearance: none;
   display: inline-flex;
@@ -476,7 +536,7 @@ body {
   color: var(--fg);
   font-size: 13px;
 }
-/* The AI notice sits INSIDE the form, directly above the submit button, and
+/* The intake AI notice sits inside the form next to the submit action and
    uses --fg rather than --muted on purpose: it has to be legible at the moment
    the visitor decides to send, which is what "clear and distinguishable" asks
    for. Muting it into footer-grey would be a way of technically showing it. */
@@ -499,12 +559,24 @@ body {
   border: 1px solid var(--border);
   border-radius: 12px;
   background: var(--surface-sunk);
+  overflow-wrap: anywhere;
 }
+.rcp-receipt-heading { margin: 0 0 12px; font-size: 16px; line-height: 1.35; }
+.rcp-receipt-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 16px;
+}
+.rcp-receipt-summary { display: grid; gap: 6px; }
 .rcp-receipt-ref {
-  margin: 0 0 4px 0;
+  margin: 0;
   font-size: 14px;
 }
 .rcp-receipt-ref code {
+  display: block;
+  width: fit-content;
+  max-width: 100%;
+  margin-top: 4px;
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 6px;
@@ -512,14 +584,16 @@ body {
   font-size: 13px;
 }
 .rcp-receipt-meta {
-  margin: 0 0 10px 0;
+  margin: 0;
   color: var(--muted);
   font-size: 13px;
 }
+.rcp-receipt-lookup { display: grid; gap: 4px; margin-top: 4px; }
+.rcp-receipt-lookup > .rcp-button { justify-self: start; text-decoration: none; }
 .rcp-receipt-fields {
   margin: 0;
   display: grid;
-  grid-template-columns: max-content 1fr;
+  grid-template-columns: minmax(0, 2fr) minmax(0, 3fr);
   gap: 4px 12px;
   font-size: 14px;
 }
@@ -529,13 +603,82 @@ body {
 }
 .rcp-receipt-fields dd {
   margin: 0;
-  word-break: break-word;
+  white-space: pre-wrap;
 }
-.rcp-status-body {
+.rcp-receipt > .rcp-trust-footer { margin: 14px 0 0; }
+.rcp-lookup-status {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 18px;
+}
+.rcp-lookup-state { margin: 8px 0 0; }
+.rcp-lookup-details {
   display: grid;
   gap: 10px;
-  margin-top: 20px;
+  margin: 0;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface-sunk);
 }
+.rcp-lookup-details dd { margin: 2px 0 0; font-size: 14px; overflow-wrap: anywhere; }
+.rcp-lookup-details code { font-size: 13px; }
+.rcp-lookup-output { margin-top: 18px; overflow-wrap: anywhere; }
+.rcp-lookup-output .table-wrap { overflow-x: auto; }
+.rcp-lookup-output pre { white-space: pre-wrap; }
+.rcp-claim-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 20px;
+  margin-top: 20px;
+  overflow-wrap: anywhere;
+}
+.rcp-claim-access,
+.rcp-claim-setup { display: grid; gap: 8px; }
+.rcp-claim-heading { margin: 0; font-size: 16px; line-height: 1.35; }
+.rcp-claim-warning { margin: 12px 0 0; color: var(--accent-strong); font-size: 14px; font-weight: 600; }
+.rcp-claim-access > .rcp-claim-warning { margin: 0; }
+.rcp-claim-value {
+  display: block;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-sunk);
+  font-size: 13px;
+}
+.rcp-claim-endpoints { display: grid; gap: 10px; margin: 4px 0 0; }
+.rcp-claim-endpoints dd { margin: 4px 0 0; }
+.rcp-claim-example {
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+.rcp-claim-example > summary {
+  min-height: 44px;
+  padding: 10px 12px;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 600;
+}
+.rcp-claim-example > summary:hover { background: var(--accent-weak); }
+.rcp-claim-example > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.rcp-claim-example > :is(pre, p) {
+  margin: 0;
+  padding: 10px 12px;
+  border-top: 1px solid var(--border);
+  background: var(--surface-sunk);
+  font-size: 13px;
+}
+.rcp-claim-example > pre { white-space: pre-wrap; }
+.rcp-status-body,
+.rcp-status-facts {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 10px;
+}
+.rcp-status-body { margin-top: 20px; }
+.rcp-status-facts,
+.rcp-status-detail { margin: 0; }
 .rcp-status-title {
   margin: 0 0 2px;
   font-size: 17px;
@@ -543,8 +686,9 @@ body {
 }
 .rcp-status-row {
   display: grid;
-  grid-template-columns: minmax(110px, 0.35fr) minmax(0, 1fr);
-  gap: 14px;
+  grid-template-columns: minmax(0, 1fr);
+  align-content: start;
+  gap: 4px;
   padding: 11px 12px;
   border: 1px solid var(--border);
   border-radius: 10px;
@@ -557,8 +701,9 @@ body {
   text-transform: uppercase;
   letter-spacing: 0.05em;
 }
-.rcp-status-value { min-width: 0; word-break: break-word; }
-.rcp-status-list { margin: 0; padding-left: 18px; }
+.rcp-status-value { min-width: 0; margin: 0; overflow-wrap: anywhere; }
+.rcp-status-shell :is(.rcp-name, .rcp-tagline, .rcp-status-title) { overflow-wrap: anywhere; }
+.rcp-status-list { margin: 0; padding-inline-start: 18px; }
 .rcp-status-item + .rcp-status-item { margin-top: 5px; }
 .rcp-status-leg,
 .rcp-status-leg-meta { display: block; }
@@ -572,6 +717,22 @@ body {
   font-size: 12px;
   font-weight: 650;
 }
+.rcp-drop-fields,
+.rcp-drop-details,
+.rcp-drop-actions {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 18px;
+}
+.rcp-drop-file {
+  grid-template-columns: minmax(0, 1fr);
+  align-content: start;
+  overflow-wrap: anywhere;
+}
+.rcp-drop-file input,
+.rcp-drop-details > .rcp-field { min-width: 0; }
+.rcp-drop-actions { gap: 10px; }
+.rcp-drop-actions > .rcp-button { overflow-wrap: anywhere; }
 .rcp-upload-progress {
   margin-top: 16px;
   padding: 14px;
@@ -598,7 +759,119 @@ body {
   font-size: 14px;
 }
 .rcp-upload-progress[data-state="error"] .rcp-upload-status { color: var(--danger); }
-.rcp-form[data-uploading] { opacity: 0.6; }
+.rcp-drop-actions > .rcp-upload-progress { margin: 0; padding: 10px 12px; overflow-wrap: anywhere; }
+.rcp-drop-actions .rcp-upload-status { margin-top: 6px; }
+.rcp-drop-actions .rcp-upload-progress[data-state="error"] .rcp-upload-status { margin-top: 0; }
+.rcp-drop-form[data-uploading] .rcp-drop-fields,
+.rcp-drop-form[data-uploading] .rcp-drop-actions > .rcp-button { opacity: 0.6; }
+@media (min-width: 1280px) and (hover: hover) and (pointer: fine) {
+  .rcp-booking-shell,
+  .rcp-claim-shell:has(.rcp-claim-setup),
+  .rcp-drop-shell,
+  .rcp-intake-shell:has(.rcp-intake-field-pair),
+  .rcp-landing-shell:has(.rcp-landing-actions, .rcp-landing-links > :nth-child(2)),
+  .rcp-lookup-shell:has(.rcp-lookup-status),
+  .rcp-shell:has(.rcp-receipt-answers),
+  .rcp-signoff-shell,
+  .rcp-status-shell:has(.rcp-status-facts > :nth-child(2), .rcp-status-detail) { width: min(100%, 1080px); padding-block: clamp(24px, 5vh, 48px); }
+  .rcp-claim-layout:has(.rcp-claim-setup) { grid-template-columns: minmax(0, 5fr) minmax(0, 6fr); align-items: start; gap: 24px; }
+  .rcp-lookup-status { grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); align-items: start; gap: 24px; }
+  .rcp-receipt-body:has(.rcp-receipt-answers) {
+    grid-template-columns: minmax(0, 2fr) minmax(0, 3fr);
+    align-items: start;
+    gap: 24px;
+  }
+  .rcp-receipt-answers { border-inline-start: 1px solid var(--border); padding-inline-start: 20px; }
+  .rcp-status-facts:has(> :nth-child(2)) {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    column-gap: 14px;
+  }
+  .rcp-status-facts > .rcp-status-row {
+    grid-template-columns: 9rem minmax(0, 1fr);
+    align-items: baseline;
+    gap: 12px;
+  }
+  .rcp-status-facts > .rcp-status-row:first-child:nth-last-child(odd) { grid-column: 1 / -1; }
+  .rcp-landing-main:has(.rcp-landing-actions) {
+    display: grid;
+    grid-template-columns: minmax(0, 5fr) minmax(0, 4fr);
+    align-items: start;
+    gap: 24px;
+  }
+  .rcp-landing-profile .rcp-header { margin-bottom: 14px; }
+  .rcp-landing-methods { margin-top: 16px; padding-top: 14px; }
+  .rcp-landing-actions {
+    margin: 0;
+    padding: 16px;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    background: var(--surface-sunk);
+  }
+  .rcp-landing-links {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 24px;
+    margin-top: 24px;
+    padding-top: 22px;
+    border-top: 1px solid var(--border);
+  }
+  .rcp-landing-links:has(> :nth-child(2)) { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .rcp-landing-links > .rcp-section { margin: 0; padding: 0; border: 0; }
+  .rcp-booking-shell .rcp-booking-layout {
+    grid-template-columns: minmax(0, 2fr) minmax(0, 3fr);
+    align-items: start;
+    gap: 24px;
+  }
+  .rcp-booking-shell .rcp-booking-time {
+    align-self: stretch;
+    align-content: start;
+    padding-inline-end: 24px;
+    border-inline-end: 1px solid var(--border);
+  }
+  .rcp-booking-time select,
+  .rcp-reschedule-form select { height: 44px; }
+  .rcp-booking-details { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+  .rcp-booking-details-title { display: block; }
+  .rcp-booking-details > :is(.rcp-booking-details-title, .rcp-booking-notes, .rcp-button-primary) { grid-column: 1 / -1; }
+  .rcp-drop-shell .rcp-drop-fields { grid-template-columns: minmax(0, 2fr) minmax(0, 3fr); gap: 24px; }
+  .rcp-drop-shell .rcp-drop-file { padding-inline-end: 24px; border-inline-end: 1px solid var(--border); }
+  .rcp-drop-file #rcp-blob { padding-block: 5px; }
+  .rcp-drop-details { gap: 14px; }
+  .rcp-drop-details:has(#rcp-visitor-name):has(#rcp-visitor-email) { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .rcp-drop-description { grid-column: 1 / -1; }
+  .rcp-drop-actions {
+    grid-template-columns: minmax(0, 1fr) minmax(160px, 25%);
+    align-items: start;
+    border-top: 1px solid var(--border);
+    padding-top: 14px;
+  }
+  .rcp-drop-actions > .rcp-button { grid-area: 1 / 2; }
+  .rcp-drop-actions > .rcp-upload-progress { grid-area: 1 / 1; }
+  .rcp-signoff-layout {
+    display: grid;
+    grid-template-columns: minmax(0, 6fr) minmax(0, 5fr);
+    align-items: start;
+    gap: 24px;
+    margin-top: 24px;
+  }
+  .rcp-signoff-terms .rcp-context { margin-bottom: 10px; font-size: 14px; }
+  .rcp-signoff-layout > .rcp-form { min-width: 0; margin: 0; gap: 14px; }
+  .rcp-signoff-contact,
+  .rcp-signoff-actions,
+  .rcp-signoff-layout .rcp-fieldset {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+  }
+  .rcp-signoff-layout .rcp-option + .rcp-option { margin-top: 0; }
+  .rcp-intake-form { gap: 14px; }
+  .rcp-intake-field-pair { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+  .rcp-intake-field-pair > .rcp-field { grid-template-rows: 1fr auto; }
+  .rcp-intake-form .rcp-field > :is(select, input[type="date"], input[type="datetime-local"]) { height: 44px; }
+  .rcp-intake-actions { border-top: 1px solid var(--border); padding-top: 14px; gap: 16px; }
+  .rcp-intake-actions:has(.rcp-ai-notice) { grid-template-columns: minmax(0, 1fr) minmax(160px, 25%); align-items: center; }
+  .rcp-intake-actions > .rcp-ai-notice { margin: 0; }
+}
 @media (max-width: 600px) {
   .rcp-shell { padding: 16px 12px 24px; }
   .rcp-card { padding: 22px 18px; border-radius: 16px; }
@@ -610,8 +883,7 @@ body {
   .rcp-duration-form { grid-template-columns: 1fr; }
   .rcp-duration-form > label { grid-column: auto; }
   .rcp-duration-form .rcp-button { width: 100%; }
-  .rcp-status-row { grid-template-columns: 1fr; gap: 4px; }
-  .rcp-receipt-fields { grid-template-columns: 1fr; gap: 2px; }
+  .rcp-receipt-fields { grid-template-columns: minmax(0, 1fr); gap: 2px; }
   .rcp-receipt-fields dd + dt { margin-top: 6px; }
 }
 @media (prefers-color-scheme: dark) {

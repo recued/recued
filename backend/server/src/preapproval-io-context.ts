@@ -10,6 +10,13 @@ import type { LLMProviderInvocation, PinnedSlot } from '@recued/llm';
 import type { DispatchRequest, ReviewedBridgeDispatch } from './bridges/dispatcher.js';
 
 export interface PreapprovalIoContext {
+  scheduledMailFollowUp?(input: Record<string, unknown>): {
+    plan: import('./preapproval-model.js').PreparedFutureExecution; future_execution_ref: string;
+  } | undefined;
+  prepareMailCondition?(instance: string, input: Record<string, unknown>): Promise<{
+    assertAllowed(): void;
+    stoppedMessage(): string | undefined;
+  } | undefined>;
   beforeCalendarProvider?(review: import('@recued/contracts').ResourceReview, external: boolean): Promise<void>;
   afterCalendarProvider?(): void;
   prepareDomCommand(call: ResolvedCall, request: DispatchRequest, index: number): Promise<ReviewedBridgeDispatch>;

@@ -22,11 +22,37 @@
  *  ingredient calls, canonical op tools) never projects, so an agreement's key
  *  cannot reach it at all. That is the fail-closed direction, and the price of
  *  "the agreement is the only gate": a tool the agreement has no switch for is a
- *  tool its key does not get. */
+ *  tool its key does not get.
+ *
+ *  ⚠ One exception, by the owner's ruling (2026-11-23): the tools an AI app starts
+ *  and ends a job with (`recued_startJob`, `recued_endJob`, D-402 slice A2) come with
+ *  any browser tool the agreement grants ({@link BROWSER_JOB_TOOLS}). Live, Codex on an
+ *  agreement's key was told "not available for this contract" for both, so no app on
+ *  a key could make its browser work into a recipe. */
 
 import { TIER1_TOOL_NAME_SET, type Tier1ToolName } from './chat.js';
 import { parseGrantEntry, PRIMITIVE_GRANT_PREFIX } from './grant-entry.js';
-import { isGrantableKernelOp, isRegisteredKernelOp } from './kernel-op-registry.js';
+import { getKernelOp, isGrantableKernelOp, isRegisteredKernelOp } from './kernel-op-registry.js';
+
+/** The Browser Toolkit's recipes (`community/packs/browser-toolkit.json`; a test holds the two equal), by slug. */
+export const BROWSER_TOOLKIT_RECIPE_SLUGS: ReadonlySet<string> = new Set([
+  'list-browser-bridges', 'list-browser-tabs', 'open-web-page', 'inspect-web-page', 'read-web-text', 'read-web-element',
+  'wait-for-web-element', 'read-web-table', 'save-web-file', 'screenshot-web-page', 'ask-web-page', 'scroll-web-page',
+  'type-into-web-page', 'click-web-element', 'press-on-web-page', 'act-on-web-page',
+]);
+
+/** 2026-11-23 (the owner: "recued_startJob/recued_endJob should be just another tool in contracts required to be enabled
+ *  if any browser tool is enabled") — the tools an AI app starts and ends a job with, so its browser calls can be made
+ *  into a recipe (D-402 slice A2). They have no switch of their own: an agreement that grants any browser tool gives
+ *  its key these too, and one that grants none does not. */
+export const BROWSER_JOB_TOOLS = ['recued_startJob', 'recued_endJob'] as const;
+
+/** Whether a key's tool is a browser tool: a Browser Toolkit recipe (`recued-core/<slug>`) or a browser op (`core.dom.*`). */
+export const isBrowserKeyTool = (name: string): boolean => {
+  if (getKernelOp(name)?.domain === 'dom') return true;
+  const slash = name.indexOf('/');
+  return slash > 0 && name.slice(0, slash) === 'recued-core' && BROWSER_TOOLKIT_RECIPE_SLUGS.has(name.slice(slash + 1));
+};
 
 /** The checklist name one agreement grant row stands for, or undefined when the
  *  row is read by the agreement's own checks instead (see the module note). */
@@ -59,6 +85,8 @@ export const keyChecklistFromAgreementGrants = (
     const name = keyToolNameForGrantEntry(row.entry_key);
     if (name !== undefined) checklist[name] = true;
   }
+  // The job tools come with any browser tool (`BROWSER_JOB_TOOLS`), and go with the last of them.
+  if (Object.keys(checklist).some(isBrowserKeyTool)) for (const tool of BROWSER_JOB_TOOLS) checklist[tool] = true;
   return checklist;
 };
 

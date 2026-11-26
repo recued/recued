@@ -42,18 +42,25 @@ const runUpload = async (binding: Binding, shown: boolean[]) => {
     isConnected = true; tagName = 'LABEL'; localName = 'label'; parentElement = null; innerText = 'Upload B';
     constructor(readonly control: Input) {}
     getAttribute(name: string) { return name === 'aria-label' ? 'Upload B' : null; }
+    get ownerDocument(): object { return doc; }
+    hasAttribute() { return false; }
+    matches() { return false; }
+    closest() { return null; }
     getRootNode(): object { return doc; }
   }
   const wrapper = { isConnected: true, tagName: 'DIV', localName: 'div', parentElement: null, innerText: 'Attachments',
+    get ownerDocument(): object { return doc; },
     getAttribute: (name: string) => name === 'aria-label' ? 'Attachments' : null, getRootNode: () => doc,
     querySelector: () => candidates[0] ?? null, querySelectorAll: () => candidates,
+    hasAttribute: () => false, matches: () => false,
     checkVisibility: () => true, closest: () => null };
   const target = binding === 'wrapper' ? wrapper : binding === 'label' ? new Label(second) : binding === 'ref' ? second : first;
-  const doc = { title: 'Uploads', documentElement: { hasAttribute: () => false }, querySelector: () => candidates[0] ?? null,
+  const doc = Object.assign(new EventTarget(), { title: 'Uploads', documentElement: { hasAttribute: () => false }, querySelector: () => candidates[0] ?? null,
     querySelectorAll: (selector: string) => selector === '.upload' ? candidates
-      : selector === 'input[type="file"]' ? [first, second] : [], getElementById: () => null };
+      : selector === 'input[type="file"]' ? [first, second] : [], getElementById: () => null });
   class Transfer { files: NativeFile[] = []; items = { add: (file: NativeFile) => { this.files.push(file); } }; }
   vi.stubGlobal('document', doc); vi.stubGlobal('location', { href: url });
+  vi.stubGlobal('recuedInertOf', undefined); vi.stubGlobal('recuedValidation', undefined);
   vi.stubGlobal('HTMLInputElement', Input); vi.stubGlobal('HTMLLabelElement', Label);
   vi.stubGlobal('DataTransfer', Transfer); vi.stubGlobal('File', NativeFile);
   vi.stubGlobal('recuedPageRefs', { next: 3, byRef: new Map([['e2', target]]), byElement: new WeakMap([[target, 'e2']]) });

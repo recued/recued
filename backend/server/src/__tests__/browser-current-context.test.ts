@@ -2,7 +2,8 @@ import { expect, it, vi } from 'vitest';
 import { executeRecipe, type ExecutionContext } from '@recued/engine';
 import { isBrowserInteractionTargets, BROWSER_INTERACTION_TARGETS_CHARS, BROWSER_COLLECT_MAX_PAGES, BROWSER_COLLECT_MAX_ITEMS,
   BROWSER_COLLECT_MAX_SECONDS, parseBrowserActSteps, type ChatPriorToolCall, type RecipeDefinition } from '@recued/contracts';
-import { browserInteractionTargets } from '../bridges/browser-interaction-targets.js';
+import { browserEditorTextTargets, browserInteractionTargets } from '../bridges/browser-interaction-targets.js';
+import { browserFieldEvidence } from '../bridges/browser-field-evidence.js';
 import { browserPostActionState } from '../bridges/browser-post-action.js';
 import { createBridgeDomAdapter } from '../bridges/dom-adapter.js';
 import { createPageReadStore } from '../bridges/page-outline.js';
@@ -27,6 +28,45 @@ const call = (result: unknown, args: Record<string, unknown> = { page }, tool = 
   tool_name: `recued-core/${tool}`, tier: 2, args, status: 'ok', result, started_at: 1, completed_at: 2 });
 const packet = (calls: ChatPriorToolCall[], dedup = true) => composeChatMainTurnPromptParts({ available_tools: [{ recipe_slug: 'recued-core/act-on-web-page' }],
   content: { chat_tail: [], user_message: 'Use my browser.' }, prior_tool_calls: calls, deduplicate_browser_reads: dedup });
+
+it('projects exact, unambiguous tooltip labels in request order from the current observation', () => {
+  const row = (label: string, title: string) => '<li>' + label + ' <abbr title="' + title + '">AC</abbr></li>';
+  const entries = row('West dock', 'Anchor clearance') + row('East dock', 'Access check');
+  const prompt = (html: string, request: string) => {
+    const observation = { ...read(html), field_evidence: browserFieldEvidence(html, { whole: true, truncated: false }) };
+    return JSON.parse(composeChatMainTurnPromptParts({
+      available_tools: [{ recipe_slug: 'recued-core/inspect-web-page' }],
+      content: { chat_tail: [], user_message: request },
+      prior_tool_calls: [call(inspection(observation))],
+    }).body);
+  };
+  const question = 'Read the definitions for East dock, then West dock.';
+  const sent = prompt('<ul>' + entries + '</ul>', question);
+  expect(sent.browser_context.pages[0].titles_in_request_order).toEqual([
+    { label: 'East dock', title_attribute: 'Access check' },
+    { label: 'West dock', title_attribute: 'Anchor clearance' },
+  ]);
+  const original = sent.prior_tool_calls[0].result.output.render[0].data.field_evidence;
+  expect(original.items[0].fields.title_attribute.value).toBe('Anchor clearance');
+  const ambiguous = prompt('<ul>' + entries + row('East dock', 'Alternate check') + '</ul>', question);
+  expect(ambiguous.browser_context.pages[0]).not.toHaveProperty('titles_in_request_order');
+  const partialLabel = prompt('<ul>' + entries + '</ul>', 'Read the definitions for East dockside and West dock.');
+  expect(partialLabel.browser_context.pages[0]).not.toHaveProperty('titles_in_request_order');
+});
+
+it('grounds partial rich-text edits in editable children and leaves ambiguous or read-only text out', () => {
+  const html = '<div ref="e1" id="note" contenteditable="true"><b>Notice</b><p>First paragraph</p>'
+    + '<p>Another paragraph with <time>3:30</time> and a <span contenteditable="false"><em>locked note</em></span></p></div>';
+  expect(browserEditorTextTargets(html)).toEqual([{ text: 'Notice', selector: '#note b' }, { text: '3:30', selector: '#note time' }]);
+});
+
+it('exposes the observed selector of a labelled board lane when the capture includes drag sources', () => {
+  const html = '<section id="queue" aria-labelledby="heading"><h2 id="heading">Queue</h2>'
+    + '<ul><li ref="e1" draggable="true">Card</li></ul></section><section id="ready" aria-label="Ready"></section>';
+  const targets = browserInteractionTargets(html, { whole: true, truncated: false });
+  expect(isBrowserInteractionTargets(targets)).toBe(true);
+  expect(targets.drag_destinations).toEqual([{ label: 'Queue', selector: '#queue' }, { label: 'Ready', selector: '#ready' }]);
+});
 
 it('separates links from actual fields without copying field values, and keeps fields before a large menu', () => {
   const menu = '<nav>' + Array.from({ length: 25 }, (_, i) => `<a ref="e${i + 100}">Menu ${i}</a>`).join('') + '</nav>';

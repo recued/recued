@@ -26,6 +26,9 @@ const showAssetFilters = async (route: Locator) => {
   const filters = route.locator('[data-yours-disclosure="Filters"]');
   if (!await filters.evaluate(node => (node as HTMLDetailsElement).open)) await filters.locator('summary').click();
 };
+const assetPreview = (route: Locator) => route.getByRole('region', { name: 'Asset preview', exact: true });
+const assetRowButton = (route: Locator, id: string) => route.locator(`[data-yours-asset="${id}"]`).getByRole('button');
+const openPreviewAsset = (route: Locator) => assetPreview(route).getByRole('link', { name: 'Open asset', exact: true });
 
 const assetSection = async (route: Locator, name: 'Overview' | 'Rules' | 'Files' | 'Activity') => {
   await route.getByRole('navigation', { name: 'Asset sections', exact: true }).getByRole('link', { name, exact: true }).click();
@@ -97,6 +100,7 @@ test('D-336 slice D — a thing no note names shows no Relationships section', a
 });
 
 test('Asset cards show task counts and authoritative due dates with estimates kept explicit', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(`${HARNESS_URL}?yours=summaries#yours/assets`);
   const route = page.locator('[data-recued-yours]'); const renewal = route.locator('[data-yours-asset="card-renewal"]');
   await expect(renewal.getByRole('heading', { name: 'Home cover', exact: true })).toBeVisible();
@@ -110,6 +114,7 @@ test('Asset cards show task counts and authoritative due dates with estimates ke
 });
 
 test('Asset cards name missing facts without treating a missing deadline as a clear status', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(`${HARNESS_URL}?yours=summaries#yours/assets`);
   const card = page.locator('[data-yours-asset="card-missing"]');
   await expect(card).toContainText('1 open task'); await expect(card).toContainText('No due date known.');
@@ -122,6 +127,7 @@ test('Asset cards name missing facts without treating a missing deadline as a cl
 });
 
 test('Asset cards distinguish unconfigured inactive and unavailable sources', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(`${HARNESS_URL}?yours=summaries#yours/assets`);
   await expect(page.locator('[data-yours-asset="card-empty"]')).toContainText('No active rules.');
   await expect(page.locator('[data-yours-asset="card-retired"]')).toContainText('Rules inactive for this asset.');
@@ -130,25 +136,32 @@ test('Asset cards distinguish unconfigured inactive and unavailable sources', as
   await expect(stale).toContainText('Due today: Review monitor · 2026-10-17');
 });
 
-test('Asset cards refresh from server summaries without editing the asset', async ({ page }) => {
+test('The desktop asset preview refreshes from the server summary without editing the asset', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 720 });
   await page.goto(`${HARNESS_URL}?yours=summaries#yours/assets`);
-  const card = page.locator('[data-yours-asset="card-renewal"]'); await expect(card).toContainText('2 open tasks');
+  const route = page.locator('[data-recued-yours]'); const preview = assetPreview(route);
+  await assetRowButton(route, 'card-renewal').click();
+  await expect(preview).toContainText('2 open tasks');
   await page.evaluate(() => {
     const row = window.__assetSummaries.find(row => row.asset_id === 'card-renewal')!;
     row.open_tasks = 0; row.next_due = { on: '2027-10-16', title: 'Renew cover', rule_id: 'renew', state: 'upcoming', estimated: false };
   });
-  await page.locator('[data-recued-yours]').getByRole('button', { name: 'Refresh', exact: true }).click();
-  await expect(card).toContainText('No open tasks'); await expect(card).toContainText('Next due: Renew cover · 2027-10-16');
-  await expect(card).not.toContainText('Overdue:');
+  await route.getByRole('button', { name: 'Refresh', exact: true }).click();
+  await expect(preview).toContainText('No open tasks'); await expect(preview).toContainText('Next due: Renew cover · 2027-10-16');
+  await expect(preview).not.toContainText('Overdue:');
   expect(await page.evaluate(() => window.__assetFactWrites)).toEqual([]);
 });
 
-test('Asset cards from an older server report unavailable summaries without inventing zero counts', async ({ page }) => {
+test('The desktop asset preview reports unavailable summaries from an older server', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 720 });
   await page.goto(`${HARNESS_URL}?yours=summaries&yours_without_asset_summaries#yours/assets`);
-  const summary = page.locator('[data-yours-asset-summary="card-renewal"]');
+  const route = page.locator('[data-recued-yours]');
+  await assetRowButton(route, 'card-renewal').click();
+  const summary = assetPreview(route).locator('[data-yours-asset-summary="card-renewal"]');
   await expect(summary).toHaveText('Summary unavailable. Open the asset for details.');
   await expect(summary).not.toContainText('No open tasks');
-  const stale = page.locator('[data-yours-asset="card-stale"]');
+  await assetRowButton(route, 'card-stale').click();
+  const stale = assetPreview(route);
   await expect(stale).toContainText('Source unavailable; these facts may be out of date.');
   await expect(stale).toContainText('Summary unavailable. Open the asset for details.');
 });
@@ -157,6 +170,7 @@ test('Asset cards fit a narrow phone without clipping missing facts or due dates
   await page.setViewportSize({ width: 320, height: 740 });
   await page.goto(`${HARNESS_URL}?yours=summaries#yours/assets`);
   const route = page.locator('[data-recued-yours]'); await expect(route.locator('[data-yours-asset-summary]')).toHaveCount(6);
+  await expect(route.locator('[data-yours-asset-workspace]')).toHaveCount(0);
   expect(await route.evaluate(node => node.scrollWidth <= node.clientWidth)).toBe(true);
   await page.screenshot({ path: testInfo.outputPath('asset-cards-mobile.png'), fullPage: true });
   await route.locator('[data-yours-asset="card-missing"]').screenshot({ path: testInfo.outputPath('missing-fact-shortcuts-mobile.png') });
@@ -165,6 +179,7 @@ test('Asset cards fit a narrow phone without clipping missing facts or due dates
 test.describe('Asset card dates follow the owner snapshot', () => {
   test.use({ timezoneId: 'Pacific/Honolulu' });
   test('Asset cards preserve calendar days and due status across device time zones', async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
     await page.clock.setFixedTime(new Date('2040-01-01T23:30Z'));
     await page.goto(`${HARNESS_URL}?yours=summaries#yours/assets`);
     await expect(page.locator('[data-yours-asset="card-stale"]')).toContainText('Due today: Review monitor · 2026-10-17');
@@ -172,24 +187,83 @@ test.describe('Asset card dates follow the owner snapshot', () => {
   });
 });
 
-const missingFactCards = async (page: Page, flags = '') => {
+test('Desktop Assets keeps the selected preview through Refresh and restores the exact filtered row on Back', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 620 });
+  const search = 'Workshop / meter #';
+  const address = `#yours/assets/filter/missing_facts/sphere/professional/search/${encodeURIComponent(search)}/page/2`;
+  const url = `${HARNESS_URL}?yours=summaries&yours_asset_filter_pages&yours_asset_spheres${address}`;
+  await page.goto(url);
+  const route = page.locator('[data-recued-yours]');
+  const roster = route.getByRole('group', { name: 'Asset list' });
+  const preview = assetPreview(route);
+  await expect(roster.getByRole('button')).toHaveCount(5);
+  const earlier = assetRowButton(route, 'filter-missing-01');
+  const chosen = assetRowButton(route, 'filter-missing-00');
+  await earlier.scrollIntoViewIfNeeded();
+  await earlier.press('Enter');
+  await expect(preview.getByRole('heading', { name: 'Workshop / meter #01' })).toBeVisible();
+  await page.evaluate(() => {
+    window.__assetSummaries.find(row => row.asset_id === 'filter-missing-00')!.open_tasks = 6;
+    window.__app.holdRpcResponses?.('yours.read');
+  });
+  await route.getByRole('button', { name: 'Refresh', exact: true }).click();
+  await expect(route.getByRole('button', { name: 'Refreshing…', exact: true })).toBeDisabled();
+  await earlier.press('ArrowDown');
+  await expect(chosen).toBeFocused();
+  await expect(preview.getByRole('heading', { name: 'Workshop / meter #00' })).toBeVisible();
+  expect(await page.evaluate(() => window.__app.releaseRpcResponses?.('yours.read'))).toBe(1);
+  await expect(preview).toContainText('6 open tasks');
+  await expect(chosen).toBeFocused();
+  await expect(chosen).toHaveAttribute('aria-current', 'true');
+
+  const readScroll = () => roster.evaluate(list => ({
+    list: list.scrollTop,
+    page: list.closest('[data-recued-webclient-content]')?.scrollTop,
+  }));
+  await openPreviewAsset(route).scrollIntoViewIfNeeded();
+  const scroll = await readScroll();
+  expect(scroll.list).toBeGreaterThan(0);
+  await openPreviewAsset(route).press('Enter');
+  await expect(page).toHaveURL(/#yours\/asset\/filter-missing-00$/u);
+  await expect.poll(() => page.evaluate(() => window.__app.releaseRpcResponses?.('yours.read'))).toBe(1);
+  await expect(route.getByRole('button', { name: 'Edit asset', exact: true })).toBeVisible();
+  await page.goBack();
+  await expect(page).toHaveURL(url);
+  await expect.poll(() => page.evaluate(() => window.__app.releaseRpcResponses?.('yours.read'))).toBe(1);
+  await expect(route.getByLabel('Find assets', { exact: true })).toHaveValue(search);
+  await expect(route.getByLabel('Show assets', { exact: true })).toHaveValue('missing_facts');
+  await expect(route.getByLabel('Asset sphere', { exact: true })).toHaveValue('professional');
+  await expect(chosen).toBeFocused();
+  await expect(chosen).toHaveAttribute('aria-current', 'true');
+  await expect(preview.getByRole('heading', { name: 'Workshop / meter #00' })).toBeVisible();
+  await expect.poll(readScroll).toEqual(scroll);
+  await preview.getByRole('button', { name: 'Close preview', exact: true }).press('Escape');
+  await expect(chosen).toBeFocused();
+  await expect(preview.getByText('Select an asset to see what needs attention.')).toBeVisible();
+});
+
+const missingFactPreview = async (page: Page, flags = '') => {
+  await page.setViewportSize({ width: 1280, height: 720 });
   await page.clock.setFixedTime(new Date('2026-10-17T12:00Z'));
   await page.goto(`${HARNESS_URL}?yours=summaries${flags}#yours/assets`);
   const route = page.locator('[data-recued-yours]');
-  await expect(route.locator('[data-yours-asset="card-missing"]')).toContainText('Missing facts (4):');
+  await assetRowButton(route, 'card-missing').click();
+  await expect(assetPreview(route)).toContainText('Missing facts (4):');
   return route;
 };
 
 test('Asset filters select missing facts and overdue dates from the owner snapshot', async ({ page }) => {
-  const route = await missingFactCards(page); const filter = route.getByLabel('Show assets', { exact: true });
+  const route = await missingFactPreview(page); const filter = route.getByLabel('Show assets', { exact: true });
   await showAssetFilters(route); await filter.selectOption('missing_facts');
   await expect(route.locator('[data-yours-asset-count]')).toHaveText('1 matching asset');
   await expect(route.locator('[data-yours-asset]')).toHaveCount(1);
-  await expect(route.locator('[data-yours-asset="card-missing"]')).toContainText('Missing facts (4)');
+  await assetRowButton(route, 'card-missing').click();
+  await expect(assetPreview(route)).toContainText('Missing facts (4)');
   await showAssetFilters(route); await filter.selectOption('overdue');
   await expect(route.locator('[data-yours-asset-count]')).toHaveText('1 matching asset');
   await expect(route.locator('[data-yours-asset]')).toHaveCount(1);
-  await expect(route.locator('[data-yours-asset="card-renewal"]')).toContainText('Overdue: Renew cover');
+  await assetRowButton(route, 'card-renewal').click();
+  await expect(assetPreview(route)).toContainText('Overdue: Renew cover');
   await showAssetFilters(route); await filter.selectOption(''); await expect(route.locator('[data-yours-asset-count]')).toHaveText('6 assets');
   await expect(route.locator('[data-yours-asset]')).toHaveCount(6);
   expect(await page.evaluate(() => window.__assetFactWrites)).toEqual([]);
@@ -197,10 +271,11 @@ test('Asset filters select missing facts and overdue dates from the owner snapsh
 
 for (const [filter, term] of [['missing_facts', 'Workshop / meter #'], ['overdue', 'overdue cover']] as const) {
   test(`Asset filters keep ${filter} and encoded search across pagination refresh and browser back`, async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 720 });
     await page.goto(`${HARNESS_URL}?yours=summaries&yours_asset_filter_pages#yours/assets`);
     const route = page.locator('[data-recued-yours]');
     await expect(route.locator('[data-yours-asset]')).toHaveCount(50);
-    await expect(route.locator('[data-yours-asset] h3').first()).toHaveText('clear cover 54');
+    await expect(route.getByRole('group', { name: 'Asset list' }).getByRole('button').first()).toHaveAccessibleName('clear cover 54');
     await showAssetFilters(route); await route.getByLabel('Show assets', { exact: true }).selectOption(filter);
     await expect(route.locator('[data-yours-asset-count]')).toHaveText('56 matching assets');
     await route.getByLabel('Find assets', { exact: true }).fill(term);
@@ -219,7 +294,8 @@ for (const [filter, term] of [['missing_facts', 'Workshop / meter #'], ['overdue
     await expect(route.getByRole('link', { name: 'Next', exact: true })).toHaveCount(0);
     await route.getByRole('button', { name: 'Refresh', exact: true }).click();
     await expect(route.locator('[data-yours-asset]')).toHaveCount(5);
-    await route.getByRole('link', { name: 'Open asset', exact: true }).first().click();
+    await route.getByRole('group', { name: 'Asset list' }).getByRole('button').first().click();
+    await openPreviewAsset(route).click();
     await expect(route.getByRole('button', { name: 'Edit asset', exact: true })).toBeVisible();
     await page.goBack(); await expect(route.locator('[data-yours-asset]')).toHaveCount(5);
     await expect(route.getByLabel('Show assets', { exact: true })).toHaveValue(filter);
@@ -238,10 +314,11 @@ for (const [filter, term] of [['missing_facts', 'Workshop / meter #'], ['overdue
 
 for (const [sphere, term] of [['personal', 'overdue cover'], ['professional', 'Workshop / meter #'], ['unsorted', 'clear cover']] as const) {
   test(`Asset sphere filters find all ${sphere} matches across pages and preserve the choice through navigation`, async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 720 });
     await page.goto(`${HARNESS_URL}?yours=summaries&yours_asset_filter_pages&yours_asset_spheres#yours/assets`);
     const route = page.locator('[data-recued-yours]');
     await expect(route.locator('[data-yours-asset-count]')).toHaveText('171 assets');
-    await expect(route.locator('[data-yours-asset] h3').first()).toHaveText('clear cover 54');
+    await expect(route.getByRole('group', { name: 'Asset list' }).getByRole('button').first()).toHaveAccessibleName('clear cover 54');
     await route.getByLabel('Find assets', { exact: true }).fill(term);
     await showAssetFilters(route); await route.getByLabel('Asset sphere', { exact: true }).selectOption(sphere);
     await expect(route.locator('[data-yours-asset-count]')).toHaveText('55 matching assets');
@@ -255,7 +332,8 @@ for (const [sphere, term] of [['personal', 'overdue cover'], ['professional', 'W
     expect(new Set([...firstIds, ...lastIds]).size).toBe(55);
     await expect(route.getByRole('link', { name: 'Next', exact: true })).toHaveCount(0);
     await route.getByRole('button', { name: 'Refresh', exact: true }).click();
-    await route.getByRole('link', { name: 'Open asset', exact: true }).first().click();
+    await route.getByRole('group', { name: 'Asset list' }).getByRole('button').first().click();
+    await openPreviewAsset(route).click();
     await expect(route.getByRole('button', { name: 'Edit asset', exact: true })).toBeVisible();
     await page.goBack(); await expect(route.locator('[data-yours-asset]')).toHaveCount(5);
     await expect(route.getByLabel('Asset sphere', { exact: true })).toHaveValue(sphere);
@@ -296,6 +374,7 @@ test('Asset sphere filters compose with attention and search and reset the page 
 });
 
 test('Asset sphere filters refresh membership after a placement change and replace an empty last page', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 720 });
   const term = 'Workshop / meter #';
   await page.goto(`${HARNESS_URL}?yours=summaries&yours_asset_filter_pages&yours_asset_filter_last_page&yours_asset_spheres#settings`);
   await page.waitForFunction(() => window.__app?.ready === true);
@@ -303,7 +382,8 @@ test('Asset sphere filters refresh membership after a placement change and repla
   const route = page.locator('[data-recued-yours]');
   await expect(route.locator('[data-yours-asset-count]')).toHaveText('51 matching assets');
   await expect(route.locator('[data-yours-asset]')).toHaveCount(1);
-  const chip = route.locator('[data-yours-asset] [data-yours-sphere]'); await chip.locator('summary').click();
+  await assetRowButton(route, 'filter-missing-00').click();
+  const chip = assetPreview(route).locator('[data-yours-sphere]'); await chip.locator('summary').click();
   await chip.getByLabel('This record’s sphere', { exact: true }).selectOption('personal');
   await chip.getByRole('button', { name: 'Change', exact: true }).click();
   await expect(route.locator('[data-yours-asset-count]')).toHaveText('50 matching assets');
@@ -335,8 +415,10 @@ for (const filter of ['', 'missing_facts'] as const) {
 }
 
 test('Asset filters keep a failed missing fact draft and remove a resolved last match after retry', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 720 });
   await page.goto(`${HARNESS_URL}?yours=summaries&yours_asset_filter_pages&yours_fail_once#yours/assets/filter/missing_facts/search/${encodeURIComponent('Workshop / meter #00')}`);
   const route = page.locator('[data-recued-yours]'); await expect(route.locator('[data-yours-asset-count]')).toHaveText('1 matching asset');
+  await assetRowButton(route, 'filter-missing-00').click();
   await route.getByRole('button', { name: 'Record inspected on for Workshop / meter #00', exact: true }).click();
   const form = route.locator('[data-yours-editor]'); const date = form.getByLabel('Inspected on', { exact: true }); await date.fill('2026-10-17');
   await form.getByRole('button', { name: 'Save date', exact: true }).click();
@@ -346,16 +428,18 @@ test('Asset filters keep a failed missing fact draft and remove a resolved last 
   await expect(route.getByLabel('Find assets', { exact: true })).toHaveValue('Workshop / meter #00');
   await expect(route.locator('[data-yours-asset-count]')).toHaveText('0 matching assets');
   await expect(route.locator('[data-yours-asset]')).toHaveCount(0);
-  await expect(route.locator('[data-yours-heading]')).toBeFocused();
+  await expect(route.getByLabel('Find assets', { exact: true })).toBeFocused();
 });
 
 test('Asset filters return to the preceding page when saving its last missing fact empties the last page', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 720 });
   const term = 'Workshop / meter #';
   await page.goto(`${HARNESS_URL}?yours=summaries&yours_asset_filter_pages&yours_asset_filter_last_page&yours_asset_spheres#settings`);
   await page.waitForFunction(() => window.__app?.ready === true);
   await page.evaluate(hash => { location.hash = hash; }, `#yours/assets/filter/missing_facts/sphere/professional/search/${encodeURIComponent(term)}/page/2`);
   const route = page.locator('[data-recued-yours]'); await expect(route.locator('[data-yours-asset-count]')).toHaveText('51 matching assets');
   await expect(route.locator('[data-yours-asset]')).toHaveCount(1);
+  await assetRowButton(route, 'filter-missing-00').click();
   await route.getByRole('button', { name: 'Record inspected on for Workshop / meter #00', exact: true }).click();
   const form = route.locator('[data-yours-editor]'); await form.getByLabel('Inspected on', { exact: true }).fill('2026-10-17');
   await form.getByRole('button', { name: 'Save date', exact: true }).click();
@@ -394,7 +478,7 @@ test('Asset filters clear an earlier read error only after a successful retry', 
 
 for (const method of ['yours.read', 'contact.list'] as const) {
   test(`Asset filters preserve a search draft when a pending ${method} finishes`, async ({ page }) => {
-    const route = await missingFactCards(page);
+    const route = await missingFactPreview(page);
     await showAssetFilters(route); await route.getByLabel('Show assets', { exact: true }).selectOption('missing_facts');
     await expect(route.locator('[data-yours-asset-count]')).toHaveText('1 matching asset');
     await page.evaluate(rpc => window.__app.holdRpcResponses?.(rpc), method);
@@ -437,10 +521,11 @@ test('Asset filters never present an older server unfiltered page as filtered re
 test.describe('Missing fact shortcuts preserve date-only input', () => {
   test.use({ timezoneId: 'Pacific/Honolulu' });
   test('Missing fact shortcuts save only the chosen date and return to the filtered page', async ({ page }) => {
-    const route = await missingFactCards(page);
+    const route = await missingFactPreview(page);
     await route.getByLabel('Find assets', { exact: true }).fill('Boiler');
     await route.getByRole('button', { name: 'Search', exact: true }).click();
     await expect(route.locator('[data-yours-asset]')).toHaveCount(1);
+    await assetRowButton(route, 'card-missing').click();
     await route.getByRole('button', { name: 'Record last serviced on for Boiler', exact: true }).click();
     const form = route.locator('[data-yours-editor]'); const date = form.getByLabel('Last serviced on', { exact: true });
     await expect(form.getByRole('heading', { name: 'Record a date for Boiler', exact: true })).toBeVisible();
@@ -454,14 +539,14 @@ test.describe('Missing fact shortcuts preserve date-only input', () => {
     ]);
     await expect(route.getByLabel('Find assets', { exact: true })).toHaveValue('Boiler');
     await expect(route.locator('[data-yours-asset]')).toHaveCount(1);
-    await expect(route.locator('[data-yours-asset="card-missing"]')).toContainText('Missing facts (3):');
+    await expect(assetPreview(route)).toContainText('Missing facts (3):');
     await expect(route.getByRole('link', { name: 'Open asset', exact: true })).toBeFocused();
     await expect(page).toHaveURL(/#yours\/assets\/search\/Boiler$/u);
   });
 });
 
 test('Missing fact shortcuts preselect the reading and leave the actual value blank', async ({ page }) => {
-  const route = await missingFactCards(page);
+  const route = await missingFactPreview(page);
   await route.getByRole('button', { name: 'Record current battery reading for Boiler', exact: true }).click();
   const form = route.locator('[data-yours-editor]');
   await expect(form).toContainText('For Boiler');
@@ -475,12 +560,12 @@ test('Missing fact shortcuts preselect the reading and leave the actual value bl
   expect(await page.evaluate(() => window.__assetFactWrites)).toEqual([
     { action: 'asset.update', id: 'card-missing', patch: { readings: { battery: { value: 0, unit: '%', as_of: Date.parse('2026-10-17T12:00Z'), evidence: [] } } } },
   ]);
-  const card = route.locator('[data-yours-asset="card-missing"]'); await expect(card).toContainText('Missing facts (3):');
+  const card = assetPreview(route); await expect(card).toContainText('Missing facts (3):');
   await expect(card.getByRole('button', { name: /battery reading/u })).toHaveCount(0);
 });
 
 test('Missing fact shortcuts require an explicit condition and preserve unknown versus clear', async ({ page }) => {
-  const route = await missingFactCards(page);
+  const route = await missingFactPreview(page);
   await route.getByRole('button', { name: 'Record confirmed leak condition for Boiler', exact: true }).click();
   const form = route.locator('[data-yours-editor]');
   await expect(form).toContainText('For Boiler'); await expect(form.getByLabel('Condition', { exact: true })).toHaveValue('leak');
@@ -491,11 +576,11 @@ test('Missing fact shortcuts require an explicit condition and preserve unknown 
   expect(await page.evaluate(() => window.__assetFactWrites)).toEqual([
     { action: 'asset.update', id: 'card-missing', patch: { observations: { leak: { active: false, certainty: 'confirmed', as_of: Date.parse('2026-10-17T12:00Z'), evidence: [], source: 'owner' } } } },
   ]);
-  await expect(route.locator('[data-yours-asset="card-missing"]')).toContainText('Missing facts (3):');
+  await expect(assetPreview(route)).toContainText('Missing facts (3):');
 });
 
 test('Missing fact shortcuts expose additional fields and return keyboard focus after cancelling a draft', async ({ page }) => {
-  const route = await missingFactCards(page); const card = route.locator('[data-yours-asset="card-missing"]');
+  const route = await missingFactPreview(page); const card = assetPreview(route);
   const more = card.locator('[data-yours-more-facts]'); await more.locator('summary').click();
   const shortcut = card.getByRole('button', { name: 'Record inspected on for Boiler', exact: true }); await shortcut.click();
   const form = route.locator('[data-yours-editor]'); const date = form.getByLabel('Inspected on', { exact: true });
@@ -509,35 +594,37 @@ test('Missing fact shortcuts expose additional fields and return keyboard focus 
 });
 
 test('Missing fact shortcuts keep the date draft and retry the same field after a failed save', async ({ page }) => {
-  const route = await missingFactCards(page, '&yours_fail_once');
+  const route = await missingFactPreview(page, '&yours_fail_once');
   await route.getByRole('button', { name: 'Record last serviced on for Boiler', exact: true }).click();
   const form = route.locator('[data-yours-editor]'); const date = form.getByLabel('Last serviced on', { exact: true }); await date.fill('2026-10-01');
   const save = form.getByRole('button', { name: 'Save date', exact: true }); await save.focus(); await page.keyboard.press('Enter');
   await expect(route.getByRole('alert')).toContainText('unavailable'); await expect(save).toBeFocused(); await expect(date).toHaveValue('2026-10-01');
   await page.keyboard.press('Enter'); await expect(form).toHaveCount(0);
   const writes = await page.evaluate(() => window.__assetFactWrites); expect(writes).toHaveLength(2); expect(writes[1]).toEqual(writes[0]);
-  await expect(route.locator('[data-yours-asset="card-missing"]').getByRole('link', { name: 'Open asset', exact: true })).toBeFocused();
+  await expect(openPreviewAsset(route)).toBeFocused();
 });
 
 test('Missing fact shortcuts leave unavailable inactive and removed fields read-only', async ({ page }) => {
-  const route = await missingFactCards(page);
+  const route = await missingFactPreview(page);
   await page.evaluate(() => {
     for (const id of ['card-stale', 'card-retired']) window.__assetSummaries.find(row => row.asset_id === id)!.missing = [{ path: 'dates.reviewed_on', reason: 'unknown' }];
     window.__assetSummaries.find(row => row.asset_id === 'card-missing')!.missing.push({ path: 'dates.removed_on', reason: 'unknown' });
   });
   await route.getByRole('button', { name: 'Refresh', exact: true }).click();
   for (const id of ['card-stale', 'card-retired']) {
-    const card = route.locator(`[data-yours-asset="${id}"]`);
+    await assetRowButton(route, id).click();
+    const card = assetPreview(route);
     await expect(card).toContainText('Reviewed on'); await expect(card.getByRole('button', { name: /Record reviewed on/u })).toHaveCount(0);
   }
-  const card = route.locator('[data-yours-asset="card-missing"]'); await card.locator('[data-yours-more-facts]>summary').click();
+  await assetRowButton(route, 'card-missing').click();
+  const card = assetPreview(route); await card.locator('[data-yours-more-facts]>summary').click();
   await expect(card).toContainText('Removed on'); await expect(card.getByRole('button', { name: /Record removed on/u })).toHaveCount(0);
   expect(await page.evaluate(() => window.__assetFactWrites)).toEqual([]);
 });
 
 for (const [kind, method] of [['date', 'yours.read'], ['reading', 'yours.read'], ['condition', 'yours.read'], ['date', 'contact.list']] as const) {
   test(`Missing fact shortcuts preserve a ${kind} draft when an older list refresh finishes${method === 'contact.list' ? ' after reading contacts' : ''}`, async ({ page }) => {
-    const route = await missingFactCards(page);
+    const route = await missingFactPreview(page);
     await page.evaluate(rpc => window.__app.holdRpcResponses?.(rpc), method);
     const before = await page.evaluate(rpc => window.__app.rpcCallCount(rpc), method);
     await route.getByRole('button', { name: 'Refresh', exact: true }).click();
@@ -858,8 +945,10 @@ test('Unknown reading units stay separate from known readings and retain their o
 });
 
 test('Schedule proposals expose only schedule edits and retain the original rule', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 720 });
   await page.goto(`${HARNESS_URL}?yours=demo&yours_rule_fields#yours/proposals`);
   const route = page.locator('[data-recued-yours]');
+  await route.locator('[data-yours-proposal-row="schedule-review"]').click();
   const card = route.locator('article').filter({ has: page.getByRole('heading', { name: 'Review renewal reminders', exact: true }) });
   await card.getByRole('button', { name: 'Review change', exact: true }).click(); const form = route.locator('[data-yours-editor]');
   await expect(form.getByLabel('Remind before (for example 6 months, 1 week)', { exact: true })).toBeFocused();
@@ -870,7 +959,8 @@ test('Schedule proposals expose only schedule edits and retain the original rule
   expect(await page.evaluate(() => window.__assetRuleWrites)).toEqual([{ action: 'proposal.edit', id: 'schedule-review',
     payload: { asset_id: 'passport', rule_id: 'renew', schedule: { before: [{ amount: 3, unit: 'weeks' }], on_day: false } } }]);
   await route.getByRole('link', { name: 'Assets', exact: true }).click();
-  await route.getByRole('link', { name: 'Open asset', exact: true }).click();
+  await assetRowButton(route, 'passport').click();
+  await openPreviewAsset(route).click();
   await assetSection(route, 'Rules'); await route.locator('article').filter({ has: page.getByRole('heading', { name: 'Renew', exact: true }) }).getByRole('button', { name: 'Edit rule', exact: true }).click();
   await expect(form.getByLabel('Title', { exact: true })).toHaveValue('Renew');
   await expect(form.getByLabel('Remind before (for example 6 months, 1 week)', { exact: true })).toHaveValue('6 months, 3 months, 1 month');
@@ -879,6 +969,7 @@ test('Schedule proposals expose only schedule edits and retain the original rule
 test('Schedule proposals with a missing rule stay on the proposal and explain the stale target', async ({ page }) => {
   await page.goto(`${HARNESS_URL}?yours=demo&yours_rule_fields&yours_missing_rule#yours/proposals`);
   const route = page.locator('[data-recued-yours]');
+  await route.locator('[data-yours-proposal-row="schedule-review"]').click();
   await route.locator('article').filter({ has: page.getByRole('heading', { name: 'Review renewal reminders', exact: true }) }).getByRole('button', { name: 'Review change', exact: true }).click();
   await expect(route.getByRole('alert')).toHaveText('Rule not found. Refresh this proposal.');
   await expect(route.locator('[data-yours-editor]')).toHaveCount(0);
@@ -1072,7 +1163,9 @@ test('Stopping a safety clock still requires the existing explicit confirmation'
 
 test('Editing a proposed asset rule saves its draft without enabling or applying it', async ({ page }) => {
   await page.goto(`${HARNESS_URL}?yours=demo&yours_rule_fields#yours/proposals`);
-  const route = page.locator('[data-recued-yours]'); const card = route.locator('article').filter({ has: page.getByRole('heading', { name: 'Review issue-date check', exact: true }) });
+  const route = page.locator('[data-recued-yours]');
+  await route.locator('[data-yours-proposal-row="rule-review"]').click();
+  const card = route.locator('article').filter({ has: page.getByRole('heading', { name: 'Review issue-date check', exact: true }) });
   await card.getByRole('button', { name: 'Review change', exact: true }).click(); const form = route.locator('[data-yours-editor]');
   await expect(form.getByLabel('Asset date', { exact: true })).toHaveValue('issued_on');
   await form.locator('[data-yours-rule-more]>summary').click();
@@ -1402,8 +1495,12 @@ test('Episodes lists stored episodes only and keeps a cited derived episode only
 // D-343 slice 2 — closing a day in the chat records what was skipped as well as what was done. A
 // skipped record is the owner's word that it did not happen, and every list of theirs says so.
 test('A skipped record from closing a day is marked in Episodes and on the contact it names', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 720 });
   await page.goto(`${HARNESS_URL}?yours=demo&closing_record=1#yours/episodes`);
   const route = page.locator('[data-recued-yours]');
+  const row = route.getByRole('group', { name: 'Episode timeline', exact: true }).getByRole('button', { name: 'Spanish lesson', exact: true });
+  await expect(row).toHaveAccessibleDescription('Skipped');
+  await row.click();
   await expect(route.getByRole('heading', { name: 'Spanish lesson', exact: true })).toBeVisible();
   await expect(route.getByText('Skipped · your record', { exact: true })).toBeVisible();
   await page.goto(`${HARNESS_URL}?yours=demo&data=contacts&closing_record=1&settle_reads=1#data/contact`);
@@ -1435,6 +1532,7 @@ test('Yours has six working tabs, Classes within Assets, and same-route addresse
   await expect(route.getByRole('heading', { name: 'Ana’s passport' })).toBeVisible();
   await nav.getByRole('link', { name: 'Proposals', exact: true }).click();
   await expect(route.locator('summary').filter({ hasText: /^What is read$/u })).toBeVisible();
+  await route.getByRole('button', { name: 'LG television', exact: true }).click();
   await expect(route.getByRole('heading', { name: 'LG television' })).toBeVisible();
   await nav.getByRole('link', { name: 'Assets', exact: true }).click();
   await route.getByRole('link', { name: 'Classes', exact: true }).click();
@@ -1928,12 +2026,14 @@ test('Due says each task’s deadline in words, and a renewal asks for its new d
   // The tab reads "Due" at its old address, and a task says when it is due, not its stored values.
   await expect(page.getByRole('navigation', { name: 'Yours', exact: true }).getByRole('link', { name: 'Due', exact: true })).toHaveAttribute('aria-current', 'page');
   await expect(route.getByRole('heading', { name: 'Due', exact: true })).toBeVisible();
-  await expect(route.getByText('Due Apr 17, 2027', { exact: true })).toBeVisible();
+  await route.locator('[data-yours-due-row="passport-occurrence"]').click();
+  const preview = route.getByRole('region', { name: 'Due preview', exact: true });
+  await expect(preview.getByText('Due Apr 17, 2027', { exact: true })).toBeVisible();
   // §15.7 (2026-10-24) — a passport's renewal is done by its new date: Done alone kept the old one.
   const date = route.getByLabel('New expiry date', { exact: true });
   await expect(date).toHaveAttribute('min', '2027-04-18');
   await route.getByRole('button', { name: 'Done', exact: true }).click();
-  await expect(route.locator('[data-yours-error]')).toHaveText('Enter a date after 2027-04-17');
+  await expect(preview.getByRole('alert')).toHaveText('Enter a date after 2027-04-17');
   await date.fill('2037-04-17');
   await route.getByRole('button', { name: 'Done', exact: true }).click();
   await expect(route.getByRole('heading', { name: 'Renew · Ana’s passport' })).toHaveCount(0);
@@ -1942,28 +2042,233 @@ test('Due says each task’s deadline in words, and a renewal asks for its new d
   expect(await page.evaluate(() => window.__app.rpcCallCount('work_entity.commitment.fulfill'))).toBe(0);
 });
 
+test.describe('Desktop Due', () => {
+  test.use({ timezoneId: 'America/Los_Angeles' });
+
+  test('groups deadlines by the local day and restores the filtered item after opening its asset', async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 720 });
+    await page.clock.setFixedTime(new Date('2026-11-25T06:30:00Z'));
+    await page.goto(`${HARNESS_URL}?yours=demo&yours_due_queue#yours/occurrences`);
+    const route = page.locator('[data-recued-yours]');
+    const queue = route.getByRole('group', { name: 'Due queue', exact: true });
+    const preview = route.getByRole('region', { name: 'Due preview', exact: true });
+    const namesIn = (group: string) => queue.getByRole('region', { name: group, exact: true }).getByRole('button');
+    await expect(namesIn('Overdue')).toHaveText([/Inspect the meter/u]);
+    await expect(namesIn('Today')).toHaveText([/Check insurance/u, /Check gate tonight/u, /Birthday reminder/u]);
+    await expect(namesIn('Upcoming')).toHaveText([/Test smoke alarm/u, /Renew · Ana’s passport/u]);
+    await expect(namesIn('No date')).toHaveText([/When was the boiler serviced\?/u]);
+    await queue.getByRole('button', { name: 'When was the boiler serviced?', exact: true }).press('Enter');
+    await expect(preview.getByLabel('Actual last-done date', { exact: true })).toBeVisible();
+    await queue.getByRole('button', { name: 'Birthday reminder', exact: true }).press('Enter');
+    await expect(preview.getByRole('link', { name: 'Open occasion', exact: true })).toHaveAttribute('href', '#yours/occasions/occasion/ana-birthday');
+
+    const sphere = route.getByLabel('Sphere on this page', { exact: true });
+    await sphere.selectOption('professional');
+    await expect(queue.getByRole('button')).toHaveCount(2);
+    const renewal = queue.locator('[data-yours-due-row="passport-occurrence"]');
+    await renewal.press('Enter');
+    await preview.getByRole('link', { name: 'Open asset', exact: true }).press('Enter');
+    await expect(page).toHaveURL(/#yours\/asset\/passport$/u);
+    await expect(route.getByRole('button', { name: 'Edit asset', exact: true })).toBeVisible();
+    await page.goBack();
+    await expect(sphere).toHaveValue('professional');
+    await expect(renewal).toBeFocused();
+    await expect(preview).toHaveAttribute('data-yours-due-preview', 'passport-occurrence');
+  });
+
+  test('saves a reminder without changing the deadline or dropping a renewal draft', async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 660 });
+    await page.clock.setFixedTime(new Date('2026-11-25T06:30:00Z'));
+    await page.goto(`${HARNESS_URL}?yours=demo&yours_due_queue&yours_fail_renewal_once#yours/occurrences`);
+    const route = page.locator('[data-recued-yours]');
+    const renewal = route.locator('[data-yours-due-row="passport-occurrence"]');
+    const preview = route.getByRole('region', { name: 'Due preview', exact: true });
+    await renewal.press('Enter');
+    const expiry = preview.getByLabel('New expiry date', { exact: true });
+    const again = preview.getByLabel('Remind me again on', { exact: true });
+    const refresh = route.getByRole('button', { name: 'Refresh', exact: true });
+    await expiry.fill('2037-04-17');
+    await again.fill('2026-11-25T09:00');
+    await refresh.click();
+    await expect(refresh).toBeEnabled();
+    await expect(renewal).toHaveAttribute('aria-current', 'true');
+    await expect(expiry).toHaveValue('2037-04-17');
+    await expect(again).toHaveValue('2026-11-25T09:00');
+
+    await preview.getByRole('button', { name: 'Save reminder time', exact: true }).press('Enter');
+    await expect(preview.getByText(/^Next reminder Nov 25, 2026/u)).toBeVisible();
+    await expect(preview.getByText('Due Apr 17, 2027', { exact: true })).toBeVisible();
+    await expect(expiry).toHaveValue('2037-04-17');
+    await expect(again).toHaveValue('');
+    expect(await page.evaluate(() => window.__occurrenceRenewals)).toEqual([]);
+
+    await page.evaluate(() => window.__app.holdRpcResponses?.('yours.read'));
+    await refresh.click();
+    const done = preview.getByRole('button', { name: 'Done', exact: true });
+    await done.press('Enter');
+    expect(await page.evaluate(() => window.__app.releaseRpcResponses?.('yours.read'))).toBe(1);
+    await expect(preview.getByRole('alert')).toHaveText('The new date could not be saved. Try again.');
+    await expect(renewal).toHaveAttribute('aria-current', 'true');
+    await expect(expiry).toHaveValue('2037-04-17');
+    await expect(done).toBeFocused();
+    await done.press('Enter');
+    await expect.poll(() => page.evaluate(() => window.__app.releaseRpcResponses?.('yours.read'))).toBe(1);
+    await expect(renewal).toHaveCount(0);
+    await expect(route.locator('[data-yours-due-row="boiler-date"]')).toBeFocused();
+  });
+});
+
 test('a receipt proposal becomes an asset only after acceptance and leaves the waiting lane', async ({ page }) => {
   await page.goto(`${HARNESS_URL}?yours=demo#yours/proposals`);
-  const route = page.locator('[data-recued-yours]'); const card = route.locator('article').filter({ has: page.getByRole('heading', { name: 'LG television', exact: true }) });
+  const route = page.locator('[data-recued-yours]');
+  await route.locator('[data-yours-proposal-row="receipt"]').click();
+  const card = route.locator('article').filter({ has: page.getByRole('heading', { name: 'LG television', exact: true }) });
   await card.getByText('Why suggested', { exact: true }).click(); await expect(card).toContainText('Fairly sure'); await card.getByRole('button', { name: 'Add asset', exact: true }).click();
   await expect(route.getByText('No proposals waiting.', { exact: true })).toBeVisible();
   await page.getByRole('navigation', { name: 'Yours', exact: true }).getByRole('link', { name: 'Assets', exact: true }).click();
   await expect(route.getByRole('heading', { name: 'LG television', exact: true })).toBeVisible();
 });
 
+test('Desktop Proposals keeps exact namesakes through Cancel, Refresh and a failed decision', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 640 });
+  await page.goto(`${HARNESS_URL}?yours=demo&yours_rule_fields&yours_focus_corrections&yours_fail_proposal_once=passport-review-a#yours/proposals`);
+  const route = page.locator('[data-recued-yours]');
+  const queue = route.getByRole('group', { name: 'Proposal queue' });
+  const preview = route.getByRole('region', { name: 'Proposal preview' });
+  const first = queue.locator('[data-yours-proposal-row="passport-review-a"]');
+  const second = queue.locator('[data-yours-proposal-row="passport-review-b"]');
+  const kind = route.getByLabel('Proposal kind', { exact: true });
+  const sphere = route.getByLabel('Sphere on this page', { exact: true });
+  await kind.selectOption('asset');
+  await expect(page).toHaveURL(/#yours\/proposals\/kind\/asset$/u);
+  await sphere.selectOption('unsorted');
+  await expect(queue.getByRole('button', { name: 'Review passport', exact: true })).toHaveCount(2);
+  await second.press('Enter');
+  const review = preview.getByRole('button', { name: 'Review change', exact: true });
+  await review.press('Enter');
+  await route.getByRole('button', { name: 'Cancel', exact: true }).click();
+  await expect(preview).toHaveAttribute('data-yours-proposal-preview-pane', 'passport-review-b');
+  await expect(review).toBeFocused();
+
+  await page.evaluate(() => window.__app.holdRpcResponses?.('yours.read'));
+  const refresh = route.getByRole('button', { name: 'Refresh', exact: true });
+  await refresh.click();
+  await second.press('ArrowUp');
+  await expect(first).toBeFocused();
+  await expect.poll(() => page.evaluate(() => window.__app.releaseRpcResponses?.('yours.read'))).toBe(1);
+  await expect(refresh).toBeEnabled();
+  await expect(first).toBeFocused();
+  await expect(preview).toHaveAttribute('data-yours-proposal-preview-pane', 'passport-review-a');
+
+  const accept = preview.getByRole('button', { name: 'Add asset', exact: true });
+  await refresh.click();
+  await page.evaluate(() => window.__app.holdRpcResponses?.('yours.change'));
+  await accept.press('Enter');
+  await expect(accept).toBeDisabled();
+  await expect.poll(() => page.evaluate(() => window.__app.releaseRpcResponses?.('yours.read'))).toBe(1);
+  await expect.poll(() => page.evaluate(() => window.__app.releaseRpcResponses?.('yours.change'))).toBe(1);
+  await expect(preview.getByRole('alert')).toHaveText('The proposed record is currently unavailable.');
+  await expect(accept).toBeEnabled();
+  await expect(accept).toBeFocused();
+  await expect(first).toHaveAttribute('aria-current', 'true');
+  await expect(second).toBeVisible();
+  await accept.press('Enter');
+  await expect.poll(() => page.evaluate(() => window.__app.releaseRpcResponses?.('yours.change'))).toBe(1);
+  await expect.poll(() => page.evaluate(() => window.__app.releaseRpcResponses?.('yours.read'))).toBe(1);
+  await expect(first).toHaveCount(0);
+  await expect(second).toBeFocused();
+  await expect(preview).toHaveAttribute('data-yours-proposal-preview-pane', 'passport-review-b');
+  await expect(preview.getByRole('alert')).toHaveCount(0);
+  await expect(kind).toHaveValue('asset');
+  await expect(sphere).toHaveValue('unsorted');
+
+  await preview.getByRole('button', { name: 'Not now', exact: true }).press('Enter');
+  await expect.poll(() => page.evaluate(() => window.__app.releaseRpcResponses?.('yours.change'))).toBe(1);
+  await expect.poll(() => page.evaluate(() => window.__app.releaseRpcResponses?.('yours.read'))).toBe(1);
+  await expect(second).toHaveCount(0);
+  await expect(queue.getByRole('button', { name: 'LG television', exact: true })).toBeFocused();
+});
+
+test('Desktop Proposals reconciles a partial acceptance within its visible group', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 800 });
+  await page.goto(`${HARNESS_URL}?yours=demo&yours_rule_fields&yours_focus_corrections&yours_fail_proposal_once=passport-review-b&yours_fail_confirmation_once#yours/proposals`);
+  const route = page.locator('[data-recued-yours]');
+  const queue = route.getByRole('group', { name: 'Proposal queue' });
+  const likely = queue.getByRole('region', { name: 'Likely assets', exact: true });
+  const other = queue.getByRole('region', { name: 'Other proposals and questions', exact: true });
+  const bulk = likely.getByRole('button', { name: 'Accept all 3 proposals', exact: true });
+  await expect(bulk).toBeVisible();
+  await page.evaluate(() => window.__app.holdRpcResponses?.('yours.read'));
+  await bulk.press('Enter');
+  await expect(bulk).toBeDisabled();
+  await expect(other.getByRole('button', { name: 'Review issue-date check', exact: true })).toBeDisabled();
+  await expect.poll(() => page.evaluate(() => window.__app.releaseRpcResponses?.('yours.read'))).toBe(1);
+  await expect(route.getByRole('alert')).toContainText('Proposal list unavailable.');
+  await expect(bulk).toBeDisabled();
+  await route.getByRole('button', { name: 'Refresh', exact: true }).click();
+  await expect.poll(() => page.evaluate(() => window.__app.releaseRpcResponses?.('yours.read'))).toBe(1);
+  await expect(bulk).toHaveCount(0);
+  await expect(likely.getByRole('button')).toHaveCount(1);
+  await expect(likely.locator('[data-yours-proposal-row="passport-review-b"]')).toBeFocused();
+  await expect(other.getByRole('button')).toHaveCount(2);
+  const preview = route.getByRole('region', { name: 'Proposal preview' });
+  await expect(preview).toHaveAttribute('data-yours-proposal-preview-pane', 'passport-review-b');
+  await expect(preview.getByRole('alert')).toHaveText('The proposed record is currently unavailable.');
+});
+
+test('Desktop Proposals keeps a service draft through Refresh and a narrower viewport', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await page.goto(`${HARNESS_URL}?yours=demo&yours_proposal_service#yours/proposals`);
+  const route = page.locator('[data-recued-yours]');
+  const service = route.locator('[data-yours-proposal-row="service-review"]');
+  await service.press('Enter');
+  const date = route.getByLabel('Actual service date', { exact: true });
+  const reading = route.getByLabel('Service reading (hours)', { exact: true });
+  await date.fill('2026-10-12'); await reading.fill('150');
+  const refresh = route.getByRole('button', { name: 'Refresh', exact: true });
+  await refresh.click(); await expect(refresh).toBeEnabled();
+  await expect(date).toHaveValue('2026-10-12'); await expect(reading).toHaveValue('150');
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(route.getByRole('group', { name: 'Proposal queue' })).toHaveCount(0);
+  await expect(date).toHaveValue('2026-10-12'); await expect(reading).toHaveValue('150');
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await expect(service).toHaveAttribute('aria-current', 'true');
+  const receipt = route.locator('[data-yours-proposal-row="receipt"]');
+  page.once('dialog', dialog => dialog.dismiss());
+  await receipt.press('Enter');
+  await expect(service).toBeFocused();
+  await expect(reading).toHaveValue('150');
+  page.once('dialog', dialog => dialog.accept());
+  await receipt.press('Enter');
+  await expect(receipt).toHaveAttribute('aria-current', 'true');
+  await service.press('Enter');
+  await expect(reading).toHaveValue('120');
+});
+
 test('sphere chips on assets, occurrences, occasions and episodes can be changed, reset and filtered', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 720 });
   for (const [tab, title] of [['assets', 'Ana’s passport'], ['occurrences', 'Renew · Ana’s passport'], ['occasions', 'Ana birthday'], ['episodes', 'Museum afternoon']]) {
     await page.goto(`${HARNESS_URL}?yours=demo&contact_history=1#yours/${tab}`);
     const route = page.locator('[data-recued-yours]'); const card = route.locator('article').filter({ has: page.getByRole('heading', { name: title, exact: true }) }).first();
-    const chip = card.locator('[data-yours-sphere]').first(); await chip.locator('summary').click();
+    const previewRow = tab === 'occurrences' ? route.locator('[data-yours-due-row="passport-occurrence"]')
+      : tab === 'occasions' ? route.locator('[data-yours-occasion-row="ana-birthday"]')
+      : tab === 'episodes' ? route.locator('[data-yours-episode-row="museum"]') : undefined;
+    if (tab === 'assets') await assetRowButton(route, 'passport').click();
+    await previewRow?.click();
+    const chip = (tab === 'assets' ? assetPreview(route) : card).locator('[data-yours-sphere]').first();
+    await chip.locator('summary').click();
     await chip.getByLabel('This record’s sphere', { exact: true }).selectOption('professional');
     await chip.getByRole('button', { name: 'Change', exact: true }).click(); await expect(chip.locator('summary')).toHaveText('Work'); await expect(chip).toContainText('Placement: placed by you');
-    await chip.locator('summary').click(); await chip.getByRole('button', { name: 'Reset', exact: true }).click(); await expect(chip.locator('summary')).toContainText('Unsorted');
+    if (!(await chip.evaluate(node => (node as HTMLDetailsElement).open))) await chip.locator('summary').click();
+    await chip.getByRole('button', { name: 'Reset', exact: true }).click(); await expect(chip.locator('summary')).toContainText('Unsorted');
     const filterLabel = tab === 'assets' ? 'Asset sphere' : 'Sphere on this page';
     if (tab === 'assets') await showAssetFilters(route);
     await route.getByLabel(filterLabel, { exact: true }).selectOption('professional'); await expect(card).not.toBeVisible();
+    if (previewRow) await expect(previewRow).toHaveCount(0);
     if (tab === 'assets') await showAssetFilters(route);
-    await route.getByLabel(filterLabel, { exact: true }).selectOption('unsorted'); await expect(card).toBeVisible();
+    await route.getByLabel(filterLabel, { exact: true }).selectOption('unsorted');
+    await previewRow?.click();
+    await expect(card).toBeVisible();
   }
 });
 
@@ -2794,17 +3099,18 @@ test('File browsing appends each page once and resets pagination for a new searc
 });
 
 test('Late file metadata cannot revive an asset page after navigation', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 720 });
   await page.goto(`${HARNESS_URL}?yours=demo&yours_file_details=ready#yours/assets`);
   await page.waitForFunction(() => window.__app?.ready);
   await page.evaluate(() => { window.__app.holdRpcResponses?.('data.file.attachments.get'); location.hash = '#yours/asset/passport/view/files'; });
   const route = page.locator('[data-recued-yours]');
   await expect(route.getByText('Loading file details…', { exact: true })).toBeVisible();
   await page.evaluate(() => { location.hash = '#yours/assets'; });
-  await expect(route.getByRole('link', { name: 'Open asset', exact: true })).toBeVisible();
+  await expect(assetRowButton(route, 'passport')).toBeVisible();
   expect(await page.evaluate(() => window.__app.releaseRpcResponses?.('data.file.attachments.get'))).toBe(1);
   await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
   await expect(route.locator('[data-yours-document]')).toHaveCount(0);
-  await expect(route.getByRole('link', { name: 'Open asset', exact: true })).toBeVisible();
+  await expect(assetRowButton(route, 'passport')).toBeVisible();
 });
 
 test('A parent is selected by name beyond the loaded asset page and saved explicitly', async ({ page }) => {
@@ -2933,7 +3239,9 @@ test('Asset relationship search reports read failures and capped matches', async
 
 test('Relationship proposal review resolves saved assets beyond page one and preserves them on save', async ({ page }) => {
   await page.goto(`${HARNESS_URL}?yours=relations#yours/proposals`);
-  const route = page.locator('[data-recued-yours]'); await route.getByRole('button', { name: 'Review change', exact: true }).click();
+  const route = page.locator('[data-recued-yours]');
+  await route.locator('[data-yours-proposal-row="link-review"]').click();
+  await route.getByRole('button', { name: 'Review change', exact: true }).click();
   const primary = route.getByRole('combobox', { name: 'Asset', exact: true }); const related = route.getByRole('combobox', { name: 'Related asset', exact: true });
   await expect(primary).toHaveValue('Kitchen boiler'); await expect(related).toHaveValue('Mountain cabin');
   await related.fill('Garden'); await route.getByRole('option', { name: /Garden flat/ }).click();
@@ -2953,6 +3261,7 @@ test('Relationship proposal review resolves saved assets beyond page one and pre
 test('A late saved-asset label cannot replace a relationship search query', async ({ page }) => {
   await page.goto(`${HARNESS_URL}?yours=relations#yours/proposals`);
   const route = page.locator('[data-recued-yours]'); const method = 'yours.read';
+  await route.locator('[data-yours-proposal-row="link-review"]').click();
   await expect(route.getByRole('button', { name: 'Review change', exact: true })).toBeVisible();
   await page.evaluate(rpc => window.__app.holdRpcResponses?.(rpc), method);
   const before = await page.evaluate(rpc => window.__app.rpcCallCount(rpc), method);
@@ -2972,6 +3281,7 @@ test('A late saved-asset label cannot replace a relationship search query', asyn
 test('A delayed saved-asset lookup cannot undo a chosen reference', async ({ page }) => {
   await page.goto(`${HARNESS_URL}?yours=relations#yours/proposals`);
   const route = page.locator('[data-recued-yours]'); const method = 'yours.read';
+  await route.locator('[data-yours-proposal-row="link-review"]').click();
   await expect(route.getByRole('button', { name: 'Review change', exact: true })).toBeVisible();
   await page.evaluate(rpc => window.__app.holdRpcResponses?.(rpc), method);
   const before = await page.evaluate(rpc => window.__app.rpcCallCount(rpc), method);
@@ -2993,6 +3303,7 @@ test('Proposal kind filters survive their route and leave the underlying proposa
   const route = page.locator('[data-recued-yours]'); await route.getByLabel('Proposal kind', { exact: true }).selectOption('rule');
   await expect(page).toHaveURL(/#yours\/proposals\/kind\/rule$/);
   await expect(route.getByLabel('Proposal kind', { exact: true })).toHaveValue('rule'); await expect(route.getByText('No proposals waiting.', { exact: true })).toBeVisible();
-  await route.getByLabel('Proposal kind', { exact: true }).selectOption(''); await expect(route.getByRole('heading', { name: 'LG television', exact: true })).toBeVisible();
+  await route.getByLabel('Proposal kind', { exact: true }).selectOption('');
+  await expect(route.getByRole('button', { name: 'LG television', exact: true })).toBeVisible();
   expect(await page.evaluate(() => window.__app.rpcCallCount('yours.change'))).toBe(0);
 });

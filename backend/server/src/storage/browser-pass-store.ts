@@ -21,6 +21,7 @@ import {
   BROWSER_PASS_SESSION_TTL_MS,
   BROWSER_REQUEST_PASS_TTL_MS,
   browserPassKeyHash,
+  browserPassOffersJob,
   browserPassOffersRequest,
   evaluateWriteRuleEvidence,
   isBrowserPassLive,
@@ -66,6 +67,8 @@ export interface BrowserPassStore {
     readonly host: string;
     readonly kind: BrowserPassKind;
     readonly channel_session_id?: string;
+    /** D-402 — a session pass ends here if sooner than its own day: an AI app's job's end. */
+    readonly expires_at?: number;
     readonly now: number;
   }): BrowserPassRow;
   /** Select a pass and bind a saved approval in one transaction. Replays leave the
@@ -304,7 +307,8 @@ export const createBrowserPassStore = (
       pass_id, key_hash, key_json, host: input.host, kind: input.kind,
       channel_session_id: input.kind === 'session' ? input.channel_session_id! : null,
       created_at: input.now,
-      expires_at: input.kind === 'session' ? input.now + BROWSER_PASS_SESSION_TTL_MS : null,
+      expires_at: input.kind === 'session'
+        ? Math.min(input.now + BROWSER_PASS_SESSION_TTL_MS, input.expires_at ?? Number.POSITIVE_INFINITY) : null,
     });
     return toPass(passRow.get(pass_id) as PassRowDb)!;
   }) as BrowserPassStore['mint'];
@@ -413,8 +417,9 @@ export const createBrowserPassStore = (
   const grantForDecision = db.transaction((input: BrowserPassApprovalInput): void => {
     const offer = readBrowserPassOffer(input.offer);
     if (typeof input.approval_ref !== 'string' || !input.approval_ref || offer === undefined
-      || !['session', 'always', 'request'].includes(input.kind)
-      || (input.kind === 'request' && !browserPassOffersRequest(offer))) {
+      || !['session', 'always', 'request', 'job'].includes(input.kind)
+      || (input.kind === 'request' && !browserPassOffersRequest(offer))
+      || (input.kind === 'job' && !browserPassOffersJob(offer))) {
       throw new BrowserPassError('bad_request', 'invalid browser pass approval');
     }
     const offer_sha256 = createHash('sha256').update(JSON.stringify([
@@ -435,11 +440,17 @@ export const createBrowserPassStore = (
       startRequestPass(offer.channel_session_id, input.now);
       selection_ref = (db.prepare('SELECT generation_id FROM browser_request_passes WHERE channel_session_id = ?')
         .get(offer.channel_session_id) as { generation_id: string }).generation_id;
+    } else if (input.kind === 'job' && browserPassOffersJob(offer)) {
+      // D-402 (2026-11-23) — a session pass whose conversation is the AI app's job, ending with it: only the app's
+      //   runs in that job look under it, so it covers nothing once the job is over.
+      selection_ref = mint({ key: offer.key, host: offer.host, kind: 'session', channel_session_id: offer.job.channel_session_id,
+        expires_at: offer.job.expires_at, now: input.now }).pass_id;
     } else {
-      selection_ref = mint({ ...offer, kind: input.kind, now: input.now }).pass_id;
+      selection_ref = mint({ ...offer, kind: input.kind as BrowserPassKind, now: input.now }).pass_id;
     }
+    // The decisions table keeps the pass's kind; a job's pass is a session pass, its conversation the job.
     db.prepare('INSERT INTO browser_pass_decisions (approval_ref, offer_sha256, kind, selection_ref) VALUES (?, ?, ?, ?)')
-      .run(input.approval_ref, offer_sha256, input.kind, selection_ref);
+      .run(input.approval_ref, offer_sha256, input.kind === 'job' ? 'session' : input.kind, selection_ref);
   });
 
   return { use, mint, grantForDecision: input => grantForDecision.immediate(input),

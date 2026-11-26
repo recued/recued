@@ -67,7 +67,7 @@ import { nextStepsChatFixture, nextStepsRpc } from './next-steps-fixture.js';
 import { setupRpc } from './setup-fixture.js';
 import { localUpdateUndoDemoReply } from './local-update-undo.js';
 import { localChangesDemoReply } from './local-change-sets.js';
-import { recordsBrowseReply } from './records-browse.js';
+import { recordsBrowseGetReply, recordsBrowseReply } from './records-browse.js';
 import { recordsImportReply } from './records-import.js';
 import { chatHistorySearchReply } from './chat-history-search.js';
 import { todayDemoReply, todayEmptyDemoReply } from './today-view.js';
@@ -1068,9 +1068,29 @@ const buildFakeTransport = (
     searchParams.get('automation_dish_response') === 'slow';
   let runPaletteRecipeListFailuresRemaining = runPaletteRecipeListFailures;
   const webhookOpenCatalogOn = searchParams.get('webhook_open_catalog') === '1';
+  const webhookWorkspaceOn = searchParams.get('webhook_workspace') === '1';
   let webhookDemoIngress = webhookOpenCatalogOn
     ? demoOpenCatalogWebhookIngress()
     : demoWebhookIngress();
+  if (webhookWorkspaceOn) {
+    webhookDemoIngress = {
+      ...webhookDemoIngress,
+      display_name: 'Delivery 01',
+      recipes: [{
+        recipe_id: 'record-test-delivery', name: 'Record test delivery', consumer_kind: 'local_recipe', armed: true, door: 'open',
+      }],
+    };
+  }
+  const webhookWorkspaceRows = webhookWorkspaceOn ? Array.from({ length: 20 }, (_, index) => {
+    const number = String(index + 2).padStart(2, '0');
+    return {
+      ...demoWebhookIngress(index === 19 ? 'disabled' : 'enabled'),
+      ingress_id: `whi_browserroster${number}`,
+      public_id: `browserRoster${number}`,
+      display_name: `Delivery ${number}`,
+      endpoint_url: `https://hooks.example.test/v1/webhooks/browserRoster${number}`,
+    };
+  }) : [];
   let webhookCreatedIngress: WebhookIngressView | null = null;
   let webhookDemoRetired = false;
   // D-201 Slice 10B — `webhook_dead_letters=1` gives the demo webhook two
@@ -1424,6 +1444,13 @@ const buildFakeTransport = (
       lifecycle_state: 'active',
     },
   ];
+  if (searchParams.get('logs_passes') === 'three') {
+    logsPasses.unshift({
+      ...logsPasses[1]!,
+      contract_id: 'pass-live-control-0',
+      display_name: 'Update billing contact',
+    });
+  }
   let runPaletteAutoRunEnabled = true;
   // D-319 §5.5 — the palette's auto-run recipe is switched on (it has a dish)
   // unless `run_palette=not-switched-on`, where Switch on… makes its dish.
@@ -1489,6 +1516,7 @@ const buildFakeTransport = (
     email: 'john@example.test',
     name: 'John Chen',
     company: 'Wayfinder',
+    phone: '+1 202-555-0143',
   };
   const thirdContactDemoRecord = {
     ...contactDemoRecord,
@@ -2483,6 +2511,8 @@ const buildFakeTransport = (
                         ? { matches: [], incomplete: false }
                       : rpc.method === 'mail.drafts.list'
                         ? { drafts: [], next_cursor: null }
+                      : rpc.method === 'mail.follow_up.list'
+                        ? { watches: [], next_cursor: null }
                       : rpc.method === 'collection.mail.list'
                         ? { instances: mailInstances() }
                         : rpc.method === 'collection.calendar.list'
@@ -3579,20 +3609,21 @@ const buildFakeTransport = (
             const args = rpc.args as {
               before?: { submission_id?: unknown };
             };
-            const previousId = args.before?.submission_id;
-            const index = previousId === 'submission-0'
-              ? 1
-              : previousId === 'submission-1'
-                ? 2
-                : 0;
-            const row = formResponseDemoRecord(index);
+            const match = typeof args.before?.submission_id === 'string'
+              ? /^submission-(\d+)$/.exec(args.before.submission_id) : null;
+            const index = match ? Number(match[1]) + 1 : 0;
+            const workspace = searchParams.get('form_response_workspace') === '1';
+            const count = workspace ? 34 : 3;
+            const end = Math.min(count, index + (workspace ? 20 : 1));
+            const responses = Array.from({ length: Math.max(0, end - index) }, (_, offset) => formResponseDemoRecord(index + offset));
+            const last = responses.at(-1);
             result = {
-              responses: [row],
-              ...(index < 2
+              responses,
+              ...(last && end < count
                 ? {
                     next_cursor: {
-                      accepted_at: row.accepted_at,
-                      submission_id: row.submission_id,
+                      accepted_at: last.accepted_at,
+                      submission_id: last.submission_id,
                     },
                   }
                 : {}),
@@ -3904,6 +3935,9 @@ const buildFakeTransport = (
           result = found === null
             ? { record: null, diagnostics: null }
             : { record: found, diagnostics: recordsDemoDiagnostics };
+          if (searchParams.get('records_browse') === '1') {
+            result = recordsBrowseGetReply(rpc.args as Parameters<typeof recordsBrowseGetReply>[0]);
+          }
         }
         if (recordsDemo && rpc.method === 'records.retention.list') {
           result = { policies: { [recordsDemoKind]: { mode: 'keep' } } };
@@ -4456,6 +4490,7 @@ const buildFakeTransport = (
                     : webhookDemoIngress]
                 : []),
               ...(webhookCreatedIngress === null ? [] : [webhookCreatedIngress]),
+              ...webhookWorkspaceRows,
             ],
             profiles: webhookOpenCatalogOn
               ? WEBHOOK_OPEN_CATALOG_PROFILES
@@ -4710,8 +4745,9 @@ const buildFakeTransport = (
           }
         }
         if (webhooksDemo && rpc.method === 'webhook.delivery.list') {
+          const args = rpc.args as { ingress_id?: unknown };
           result = {
-            deliveries: WEBHOOK_DEMO_DELIVERIES.map((fixture, index) => ({
+            deliveries: (args.ingress_id === WEBHOOK_DEMO_INGRESS_ID ? WEBHOOK_DEMO_DELIVERIES : []).map((fixture, index) => ({
               delivery_id: fixture.delivery_id,
               ingress_id: WEBHOOK_DEMO_INGRESS_ID,
               profile_id: WEBHOOK_DEMO_PROFILE_ID,
@@ -8019,6 +8055,10 @@ const buildFakeTransport = (
             result = { reminders: [], count: 0, page: { state: scope.state ?? 'pending', matched_count: 0, next_cursor: null,
               ...(scope.record_ref ? { record_ref: scope.record_ref } : {}), ...(scope.history_only ? { history_only: true } : {}) } };
         }
+        if (rpc.method === 'execution.search') result = { runs: [] };
+        // Unwired task-watch attachments behave like an older server. Journeys
+        // that use them override this with the real owner handlers below.
+        if (rpc.method.startsWith('mail.follow_up.task.')) error = { code: 'unknown_method', message: 'Task reply-watch links are not enabled in this fixture.' };
         const connectionsFixture = (window as Window & { __connectionsFixture?: (method: string, args: unknown) => Promise<{ result?: unknown; error?: { code: string; message: string } } | undefined> }).__connectionsFixture;
         if (connectionsFixture) { const reply = await connectionsFixture(rpc.method, rpc.args); if (reply) { result = reply.result; error = reply.error; } }
         // An opt-in persisted anchor lets result-navigation tests reach a real
@@ -8873,6 +8913,10 @@ const buildBrowserHashSource = (): BrowserHashSource => {
       // Fires the native `hashchange` → the registered listeners above.
       window.location.hash = hash;
     },
+    replaceHash(hash) {
+      // Match production's handoff navigation: Back skips the transient route.
+      window.location.replace(hash);
+    },
   };
 };
 
@@ -9496,7 +9540,7 @@ const transport = buildFakeTransport(
   searchParams.get('connection') === 'source-check',
   searchParams.get('logs_control_response') === 'slow',
   searchParams.get('logs_control_followup_response') === 'fail',
-  searchParams.get('logs_passes') === 'active',
+  ['active', 'three'].includes(searchParams.get('logs_passes') ?? ''),
   searchParams.get('compose_commit_response') === 'slow',
   searchParams.get('reception_decision_response') === 'slow',
   searchParams.get('recipe_default_run') === '1',
@@ -10621,6 +10665,7 @@ void (async (): Promise<void> => {
           exposureProfile: 'community-shareable',
           hashSource,
           now: () => FIXED_NOW,
+          ...(accountDemo ? { accountBindingFetch: accountDemoFetch } : {}),
           enableReachabilityProbe: true,
           enablePassportFetchVerify: false,
         }),

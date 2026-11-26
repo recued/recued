@@ -1,6 +1,6 @@
 /** D-174 Runs/Audit read-RPC seam.
  *
- *  `execution.list` and `execution.get` are local-UI / paired-client
+ *  `execution.list`, `execution.search` and `execution.get` are local-UI / paired-client
  *  reads over existing audit/checkpoint/link stores. The detail shape is
  *  intentionally projected: no audit `config_snapshot`, no checkpoint
  *  `step_state`, and no arg overrides or raw source token ids leave the
@@ -14,6 +14,8 @@ import {
   GATED_ACTION_STATUSES,
   RUN_ANCHOR_STATUSES,
   RpcError,
+  parseRunSearchScope,
+  runMatchesSearchScope,
   isCliFailureDetail,
   isLocalMutationReceiptSummary,
   provenanceAttributionFromSource,
@@ -35,6 +37,9 @@ import {
   type ExecutionListCursor,
   type ExecutionListQuery,
   type ExecutionListResponse,
+  type ExecutionSearchRequest,
+  type ExecutionSearchResponse,
+  type ExecutionSearchCursor,
   type HandlerSlice,
   type PolicyResult,
   type RunGatewayCallDecision,
@@ -76,6 +81,7 @@ export interface ExecutionFeedRpcDeps {
   checkpointStore: CheckpointStore;
   commitStore: CommitStore;
   serverInstanceId: string;
+  recipeNameOf?: (recipeId: string) => string | null | undefined;
   gatedActionStore?: GatedActionStore;
   /** What an owner's page-started run answered once its approval let it
    *  finish. Absent ⇒ `execution.get` never carries a `result`. */
@@ -605,6 +611,59 @@ export const handleExecutionList = async (
   return response;
 };
 
+export const handleExecutionSearch = async (
+  deps: ExecutionFeedRpcDeps, raw: ExecutionSearchRequest,
+): Promise<ExecutionSearchResponse> => {
+  const args = asObject('execution.search', raw);
+  const invalid = (): never => { throw new RpcError('bad_request', 'execution.search: invalid query, limit, or cursor', 400); };
+  if (typeof args.query !== 'string' || args.query.length > 2000) return invalid();
+  if (args.limit !== undefined && (!Number.isSafeInteger(args.limit) || Number(args.limit) < 1)) return invalid();
+  const limit = Math.min(Number(args.limit ?? 20), 50);
+  const filters = args.filters === undefined ? undefined : parseRunSearchScope(args.filters);
+  if (filters === null) return invalid();
+  let cursor: ExecutionSearchCursor | undefined;
+  if (args.cursor !== undefined) {
+    const c = args.cursor as ExecutionSearchCursor;
+    if (!c || !Number.isFinite(c.last_event_at) || Math.abs(c.last_event_at) > 8.64e15
+      || typeof c.last_run_id !== 'string' || !c.last_run_id || c.last_run_id.length > 2000) return invalid();
+    cursor = { last_event_at: c.last_event_at, last_run_id: c.last_run_id };
+  }
+  const fold = (value: string): string => value.normalize('NFKC').toLowerCase().replace(/ς/gu, 'σ');
+  const terms = fold(args.query).split(/\s+/u).filter(Boolean);
+  const names = new Map<string, string>();
+  const matches: Array<{ entry: AuditEntry; name: string }> = [];
+  let scanned = 0, exhausted = false;
+  // Each request does bounded work. Even a page without matches can have an
+  // older-history cursor; the client must not call that an exhausted search.
+  while (scanned < 500 && matches.length < limit && !exhausted) {
+    const size = Math.min(100, 500 - scanned);
+    const page = await deps.auditLog.listWindow({ limit: size,
+      ...(cursor ? { before: { ts: cursor.last_event_at, id: cursor.last_run_id } } : {}) });
+    if (!page.length) { exhausted = true; break; }
+    for (let index = 0; index < page.length; index++) {
+      const entry = page[index]!;
+      const next = { last_event_at: entry.event_at ?? entry.started_at, last_run_id: entry.run_id };
+      if (cursor && (next.last_event_at > cursor.last_event_at
+        || next.last_event_at === cursor.last_event_at && next.last_run_id === cursor.last_run_id)) {
+        throw new RpcError('internal', 'Run history cursor did not advance.', 500);
+      }
+      cursor = next; scanned++;
+      if (!names.has(entry.recipe_id)) names.set(entry.recipe_id, deps.recipeNameOf?.(entry.recipe_id) || entry.recipe_id);
+      const name = names.get(entry.recipe_id)!;
+      const text = fold(entry.run_id + ' ' + entry.recipe_id + ' ' + name);
+      if (terms.every(term => text.includes(term)) && (!filters || runMatchesSearchScope({
+        started_at: entry.started_at, status: entry.commit_status, run_yield: feedYield(entry.run_yield), error_category: entry.error_category,
+      }, filters))) matches.push({ entry, name });
+      if (index === page.length - 1 && page.length < size) exhausted = true;
+      if (matches.length === limit) break;
+    }
+  }
+  const runs = await Promise.all(matches.map(async ({ entry, name }) => ({
+    ...projectRunFeedRow(entry, [], await deps.commitStore.listByRun(entry.run_id)), name,
+  })));
+  return { runs, ...(filters ? { applied_filters: filters } : {}), ...(!exhausted && cursor ? { next_cursor: cursor } : {}) };
+};
+
 export const handleExecutionGet = async (
   deps: ExecutionFeedRpcDeps,
   raw: ExecutionGetRequest,
@@ -836,6 +895,7 @@ export const handleGatedActionList = async (
 
 type ExecutionFeedMethods =
   | 'execution.list'
+  | 'execution.search'
   | 'execution.get'
   | 'execution.action.get'
   | 'execution.action.list';
@@ -847,11 +907,16 @@ export const makeExecutionFeedHandlers = (
   return {
     methods: [
       'execution.list',
+      'execution.search',
       'execution.get',
       'execution.action.get',
       'execution.action.list',
     ],
     handlers: {
+      'execution.search': async (args, client) => {
+        requireRegisteredClient(client);
+        return handleExecutionSearch(deps, args);
+      },
       'execution.list': async (args, client) => {
         requireRegisteredClient(client);
         return handleExecutionList(deps, args as ExecutionListQuery);

@@ -193,7 +193,7 @@ export interface PreflightCheckpointContext {
 export type HeldBrowserTarget =
   | { site: string; title: string; role: string; label: string; protected: boolean; origin?: string;
       steps?: HeldBrowserStep[] }
-  | { site: string; unread: string; gone?: true; steps?: HeldBrowserStep[] };
+  | { site: string; unread: string; gone?: true; tab_selection_required?: true; steps?: HeldBrowserStep[] };
 
 /** D-335 slice J — one step of a held sequence (`core.dom.act`), in order: its element as the
  *  Bridge read it while the run was held, why it could not be read, or a wait, which names
@@ -211,7 +211,9 @@ export type HeldBrowserStep = (
 ) & { on?: HeldBrowserTab;
   /** D-335 slice AQ — the owner's file an `upload` step puts into the page, as the owner's files name it:
    *  the ask names the file that leaves, never its ref alone. Display only, read defensively. */
-  file?: { filename: string; size_bytes: number } };
+  file?: { filename: string; size_bytes: number };
+  files?: Array<{ filename: string; size_bytes: number } | null>;
+  drop?: { role: string; label: string } };
 
 /** D-335 slice X — the tab a held step runs on, as the hold read it. */
 export type HeldBrowserTab = { site: string; title: string } | { opens: string };

@@ -3328,10 +3328,6 @@ export const TIER1_TOOL_DESCRIPTORS: Readonly<Record<Tier1ToolName, Tier1ToolDes
           description:
             'Inline recipe definition to run directly instead of `recipe_id` (the AI-authored escape hatch). Provide `recipe_id` OR `recipe`, not both.',
         },
-        vault: {
-          type: 'object',
-          description: 'Advanced — normally omit: per-run credential overrides.',
-        },
         context: {
           type: 'object',
           description: 'Advanced — normally omit: extra runtime context.',

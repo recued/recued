@@ -363,13 +363,25 @@ test('leaving Data during import and returning to the same file cannot revive a 
 test('Data searches and pages source metadata, and a source-list failure keeps saved files reachable', async ({ browser }) => {
   const f = await setup(browser);
   try {
+    await f.page.setViewportSize({ width: 1440, height: 900 });
     for (let i = 0; i < 35; i++) f.fixture.cloudSource!.add(`invoice-${String(i).padStart(2, '0')}`, `Invoice ${i}.pdf`);
     f.failNext('data.file.attachments.sources', 'Sources temporarily unavailable');
     await f.page.evaluate(() => { location.hash = '#data/files'; });
     await expect(f.page.getByRole('alert')).toContainText('Sources temporarily unavailable');
     await expect(f.page.locator('[data-collection-record]').filter({ hasText: 'Attachment.pdf' })).toBeVisible();
+    const toolbar = f.page.getByRole('group', { name: 'File actions', exact: true });
+    const connect = toolbar.getByText('Connect a source', { exact: true });
+    const google = toolbar.getByRole('link', { name: /^Google Drive/ });
+    await expect(google).toBeHidden();
+    await connect.press('Enter');
+    await expect(google).toHaveAttribute('href', '#connections/others/enroll/google');
+    await google.press('Escape'); await expect(connect).toBeFocused();
+    await expect(google).toBeHidden();
     await f.page.getByRole('button', { name: 'Reload file sources', exact: true }).click();
-    await f.page.getByRole('button', { name: 'Google Drive · Work drive', exact: true }).click();
+    const drive = toolbar.getByRole('button', { name: 'Google Drive · Work drive', exact: true });
+    await drive.click();
+    await expect(drive).toHaveAttribute('aria-pressed', 'true');
+    await expect(drive).toBeFocused();
     await f.page.getByRole('searchbox', { name: 'Search cloud files', exact: true }).fill('clients invoice');
     await f.page.getByRole('searchbox', { name: 'Search cloud files', exact: true }).press('Enter');
     await expect(f.page.locator('[data-collection-record]')).toHaveCount(30);
@@ -580,18 +592,45 @@ test('a lost import ACK reuses its receipt after disconnection and adds only one
 test('a partial batch retries the failed download and preserves the successful copy', async ({ browser }) => {
   const f = await setup(browser);
   try {
+    await f.page.setViewportSize({ width: 390, height: 640 });
     f.fixture.cloudSource!.add('two', 'Second cloud file.pdf');
     f.fixture.cloudSource!.beforeFetch(async () => { if (f.fixture.cloudSource!.downloads() === 2) throw new Error('Download interrupted'); });
     await f.pick(); await f.dialog.getByRole('checkbox', { name: /Cloud report.pdf/ }).check();
     await f.dialog.getByRole('checkbox', { name: /Second cloud file.pdf/ }).check();
     await f.dialog.getByRole('button', { name: 'Import and attach 2 files', exact: true }).click();
     await expect(f.dialog).toContainText('1 of 2 files ready to attach.');
-    await expect(f.dialog.getByRole('button', { name: 'Attach ready files' })).toBeVisible();
+    await expect(f.dialog.getByRole('button', { name: 'Attach ready files' })).toBeInViewport({ ratio: 1 });
+    await expect(f.dialog.getByRole('button', { name: 'Import and attach 2 files', exact: true })).toBeInViewport({ ratio: 1 });
+    await expect(f.dialog.getByRole('button', { name: 'Cancel', exact: true })).toBeInViewport({ ratio: 1 });
     await f.dialog.getByRole('button', { name: 'Import and attach 2 files', exact: true }).click();
     await expect(f.chips).toHaveCount(2); expect(f.fixture.cloudSource!.downloads()).toBe(3);
     expect(f.fixture.files!.list({ platform: 'file', slug: 'received' })).toHaveLength(3);
     expect(f.calls.filter(call => call.method === 'chat.send')).toHaveLength(0);
   } finally { await f.close(); }
+});
+
+test('a short-screen cloud picker keeps Close reachable during a pending import', async ({ browser }) => {
+  const f = await setup(browser); let release: (() => void) | undefined;
+  try {
+    await f.page.setViewportSize({ width: 844, height: 390 });
+    for (let index = 0; index < 35; index++) f.fixture.cloudSource!.add(`picker-${index}`, `Picker file ${index}.pdf`);
+    const pending = new Promise<void>(done => { release = done; });
+    f.fixture.cloudSource!.beforeFetch(() => pending);
+    await f.input.fill('Keep this cloud file draft'); await f.pick();
+    await expect(f.dialog.getByRole('button', { name: 'Cancel', exact: true })).toBeInViewport({ ratio: 1 });
+    await f.dialog.getByRole('checkbox', { name: /Cloud report.pdf/ }).check();
+    await f.dialog.getByRole('button', { name: 'Import and attach 1 file', exact: true }).click();
+    await expect.poll(() => f.fixture.cloudSource!.downloads()).toBe(1);
+    const close = f.dialog.getByRole('button', { name: 'Close', exact: true });
+    await expect(close).toBeInViewport({ ratio: 1 }); await close.click();
+    await expect(f.dialog).toHaveCount(0);
+    await expect(f.page.getByRole('button', { name: 'Attach a file', exact: true })).toBeFocused();
+    release?.();
+    await expect.poll(() => f.fixture.files!.list({ platform: 'file', slug: 'received' }).length).toBe(2);
+    await expect(f.chips).toHaveCount(0); await expect(f.input).toHaveValue('Keep this cloud file draft');
+    expect(f.calls.filter(call => call.method === 'data.file.attachments.import')).toHaveLength(1);
+    expect(f.calls.some(call => call.method === 'chat.send')).toBe(false);
+  } finally { release?.(); await f.close(); }
 });
 
 test('closing during import leaves the saved copy in Files and never attaches it to a later conversation', async ({ browser }) => {

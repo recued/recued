@@ -142,6 +142,34 @@ describe('D-345 slice A — a fetch of a public address', () => {
     expect((await failure(publicFetch(`http://site.test:${String(port)}/slow`, asSite({ timeoutMs: 300 })))).code).toBe('timeout');
   });
 
+  // 2026-11-23 (task L; the owner: "go ahead with L download fix too") — nothing new for `idleTimeoutMs` ends a fetch,
+  // said as a stall; an answer still arriving goes on, past the idle limit in all.
+  it('goes on while the answer keeps arriving, and lets go of one that stalls or never answers, saying so', async () => {
+    const port = await serve((req, res) => {
+      if (req.url === '/silent') return;
+      res.writeHead(200, { 'content-type': 'application/octet-stream' });
+      if (req.url === '/stall') { res.write('a'); return; }
+      let sent = 0;
+      const tick = setInterval(() => {
+        sent += 1;
+        res.write('x'.repeat(100));
+        if (sent === 8) { clearInterval(tick); res.end(); }
+      }, 60);
+    });
+    const at = (path: string) => `http://site.test:${String(port)}${path}`;
+    const options = asSite({ timeoutMs: 5_000, idleTimeoutMs: 300 });
+    const steady = await publicFetch(at('/steady'), options);
+    expect(steady.body.length).toBe(800);
+    for (const path of ['/stall', '/silent']) {
+      const stalled = await failure(publicFetch(at(path), options));
+      expect(stalled.code, path).toBe('timeout');
+      expect(stalled.message, path).toBe(`site.test:${String(port)} sent nothing for 0.3 seconds.`);
+    }
+    // Its whole limit still holds: without an idle limit, a stall is said as before.
+    expect((await failure(publicFetch(at('/stall'), asSite({ timeoutMs: 300 })))).message)
+      .toBe(`site.test:${String(port)} did not finish answering in time.`);
+  });
+
   it('refuses the same local server when nothing stands it in for a site', async () => {
     const port = await serve((_req, res) => res.end('ok'));
     const error = await failure(publicFetch(`http://site.test:${String(port)}/`, { maxBytes: 10, overflow: 'fail', timeoutMs: 2_000,

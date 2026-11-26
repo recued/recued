@@ -113,7 +113,7 @@ export const createReminderTriage = (deps: Deps) => {
     })();
   };
   const readyCount = (r: Review) => r.request.items.length;
-  const render = (): string => {
+  const render = (compact = false): string => {
     if (!available()) return '';
     const loaded = deps.rows().filter(personal), count = selected.size;
     if (!loaded.length && !count && !review) return '';
@@ -121,13 +121,14 @@ export const createReminderTriage = (deps: Deps) => {
     const retryable = [...(review?.outcomes.values() ?? [])].filter(i => i.status === 'failed').length;
     const status = writing ? 'Applying reminder changes…' : reading ? 'Checking selected reminders…'
       : review?.attempted ? `${successes} applied. ${count} remaining selected.` : `${count} selected.`;
-    return `<section class="reminders-triage" aria-label="Bulk reminder actions">
+    const compactIdle = compact && !count && !review && !error && !reading && !writing;
+    return `<section class="reminders-triage${compactIdle ? ' reminders-triage--compact' : ''}" aria-label="Bulk reminder actions">
       <div class="reminders-buttons">
         <button type="button" class="data-button" ${attr('select-loaded')} ${writing || reading || !loaded.length ? 'disabled' : ''}>Select loaded personal reminders${loaded.length > REMINDER_TRIAGE_MAX ? ` (up to ${REMINDER_TRIAGE_MAX})` : ''}</button>
         ${count || review ? `<button type="button" class="data-button" ${attr('clear')} ${writing ? 'disabled' : ''}>Clear selection</button>` : ''}
       </div>
-      <p class="reminders-subtle">Selection covers loaded results only. Yours reminders and finished reminders cannot be selected.</p>
-      <p role="status" aria-live="polite" tabindex="-1" ${focus('status')}>${e(status)}</p>
+      ${compactIdle ? '' : `<p class="reminders-subtle">Selection covers loaded results only. Yours reminders and finished reminders cannot be selected.</p>
+        <p role="status" aria-live="polite" tabindex="-1" ${focus('status')}>${e(status)}</p>`}
       ${error ? `<p role="alert" class="reminders-error">${e(error)}</p>` : ''}
       ${count && !review && !reading ? `<div class="reminders-buttons">
         <button type="button" class="data-button" ${attr('tomorrow')}>Move to tomorrow</button>
@@ -159,8 +160,8 @@ export const createReminderTriage = (deps: Deps) => {
   };
   return {
     render,
-    renderSelection: (r: ReminderView): string => available() && personal(r) ? `<label class="reminders-triage-select">
-      <input type="checkbox" ${deps.fieldAttr}="triage-select" data-reminder-id="${e(r.reminder_id)}" ${focus(`select:${r.reminder_id}`)} aria-label="${e(`Select reminder: ${r.text}`)}" ${selected.has(r.reminder_id) ? 'checked' : ''} ${writing ? 'disabled' : ''}>Select</label>` : '',
+    renderSelection: (r: ReminderView, compact = false): string => available() && personal(r) ? `<label class="reminders-triage-select">
+      <input type="checkbox" ${deps.fieldAttr}="triage-select" data-reminder-id="${e(r.reminder_id)}" ${focus(`select:${r.reminder_id}`)} aria-label="${e(`Select reminder: ${r.text}`)}" ${selected.has(r.reminder_id) ? 'checked' : ''} ${writing ? 'disabled' : ''}>${compact ? '' : 'Select'}</label>` : '',
     handleChange: (target: HTMLElement): boolean => {
       const field = target.getAttribute(deps.fieldAttr);
       if (field === 'triage-at') { if (form && !writing) form.value = (target as HTMLInputElement).value; return true; }

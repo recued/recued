@@ -48,6 +48,135 @@ const opened = (page: Page, kind: Kind, id: string) => expect(reader(page, kind)
 const waitForRead = (page: Page, id: string) => page.waitForFunction(id =>
   (window as unknown as { __taskReaderSettled: string[] }).__taskReaderSettled.includes(`work_entity.get:${id}`), id);
 
+test('the desktop Notes workspace switches rows directly and saves through the guarded note editor', async ({ page }) => {
+  await page.setViewportSize({ width: 1536, height: 900 });
+  const f = await boot(page, 'note', { count: 6 });
+  try {
+    await page.getByRole('button', { name: 'Open navigation', exact: true }).click();
+    await page.getByRole('button', { name: 'Pin navigation', exact: true }).click();
+    const first = row(page, 'note', 'review-000'), selected = row(page, 'note', 'review-004');
+    const pane = reader(page, 'note');
+    await first.click(); await opened(page, 'note', 'review-000');
+    await expect(page.getByRole('region', { name: 'Review note 0', exact: true })).toBeVisible();
+    const listBox = (await first.boundingBox())!, paneBox = (await pane.boundingBox())!;
+    expect(listBox.x + listBox.width).toBeLessThan(paneBox.x);
+
+    f.hold('work_entity.get', 'review-001');
+    await row(page, 'note', 'review-001').click(); await expect.poll(f.waiting).toBe(true);
+    await expect(first).toHaveAttribute('aria-current', 'true');
+    await selected.click(); await opened(page, 'note', 'review-004');
+    f.release(); await waitForRead(page, 'review-001');
+    await expect(selected).toHaveAttribute('aria-current', 'true');
+    await expect(first).not.toHaveAttribute('aria-current');
+
+    const edit = pane.getByRole('button', { name: 'Edit', exact: true });
+    await expect(edit).toBeInViewport(); await edit.click();
+    const editor = page.getByRole('dialog', { name: 'Edit Note', exact: true });
+    await expect(editor).toHaveAttribute('aria-modal', 'true');
+    await editor.getByRole('textbox', { name: 'Title', exact: true }).fill('Review note revised');
+    await editor.getByRole('button', { name: 'Save', exact: true }).click();
+    await expect(page.getByRole('region', { name: 'Review note revised', exact: true })).toBeVisible();
+    await expect(selected).toHaveAttribute('aria-current', 'true');
+    await page.goBack();
+    await expect(pane).toHaveCount(0);
+    await expect(page.getByRole('searchbox', { name: 'Search notes', exact: true })).toHaveValue('Review');
+    await expect(selected).toBeFocused();
+    expect(f.note('review-004').body).toBe(body);
+    expect(f.writes).toEqual([{ method: 'work_entity.upsert', args: { kind: 'note', id: 'review-004', title: 'Review note revised' } }]);
+  } finally { f.dispose(); }
+});
+
+test('the desktop Tasks pane supports direct row changes while retaining the guarded editor', async ({ page }, info) => {
+  await page.setViewportSize({ width: 1536, height: 900 });
+  const f = await boot(page, 'task', { count: 24 });
+  try {
+    await page.getByRole('button', { name: 'Open navigation', exact: true }).click();
+    await page.getByRole('button', { name: 'Pin navigation', exact: true }).click();
+    const order = await ids(rows(page, 'task'));
+    const first = row(page, 'task', order[0]!), selected = row(page, 'task', order[4]!);
+    const pane = reader(page, 'task');
+    await first.click();
+    await opened(page, 'task', order[0]!);
+    await expect(page.getByRole('region', { name: f.task(order[0]!).title, exact: true })).toBeVisible();
+    await expect(pane).not.toHaveAttribute('aria-modal');
+    await expect(first).toHaveAttribute('aria-current', 'true');
+    const listBox = (await first.boundingBox())!, paneBox = (await pane.boundingBox())!;
+    expect(listBox.x + listBox.width).toBeLessThan(paneBox.x);
+
+    f.hold('work_entity.get', order[1]!);
+    await next(page, 'task').click(); await expect.poll(f.waiting).toBe(true);
+    await selected.click(); await opened(page, 'task', order[4]!);
+    f.release(); await waitForRead(page, order[1]!);
+    await expect(selected).toHaveAttribute('aria-current', 'true');
+    await expect(first).not.toHaveAttribute('aria-current');
+    await expect(pane.getByRole('heading', { name: f.task(order[4]!).title, exact: true })).toBeFocused();
+    await page.screenshot({ path: info.outputPath('task-list-reader-desktop.png') });
+
+    const edit = pane.getByRole('button', { name: 'Edit', exact: true });
+    await expect(edit).toBeInViewport({ ratio: 1 });
+    await edit.click();
+    const editor = page.getByRole('dialog', { name: 'Edit Task', exact: true });
+    await expect(editor).toHaveAttribute('aria-modal', 'true');
+    await editor.getByRole('textbox', { name: 'Title', exact: true }).fill('Unsaved title');
+    await page.keyboard.press('Escape');
+    await page.getByRole('alertdialog').getByRole('button', { name: 'Discard changes', exact: true }).click();
+    await opened(page, 'task', order[4]!);
+    await expect(edit).toBeFocused();
+    expect(f.writes).toEqual([]);
+    await edit.click();
+    await editor.getByRole('textbox', { name: 'Title', exact: true }).fill('Review updated task');
+    await editor.getByRole('button', { name: 'Save', exact: true }).click();
+    await expect(page.getByRole('region', { name: 'Review updated task', exact: true })).toBeVisible();
+    await expect(selected).toHaveAttribute('aria-current', 'true');
+    await pane.getByRole('button', { name: 'Close task', exact: true }).click();
+    await expect(pane).toHaveCount(0);
+    await expect(selected).toBeFocused();
+    expect(f.writes).toEqual([{ method: 'work_entity.upsert', args: expect.objectContaining({ kind: 'task', id: order[4], title: 'Review updated task' }) }]);
+
+    const later = row(page, 'task', order[21]!);
+    await later.scrollIntoViewIfNeeded();
+    await later.click(); await opened(page, 'task', order[21]!);
+    await expect(later).toBeInViewport({ ratio: 1 });
+    await expect(pane.getByRole('heading', { name: f.task(order[21]!).title, exact: true })).toBeInViewport();
+  } finally { f.dispose(); }
+});
+
+test('the desktop Tasks pane keeps the filtered list live and preserves it on browser Back', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 900 });
+  const f = await boot(page, 'task', { count: 6 });
+  try {
+    const selected = row(page, 'task', 'review-000');
+    const query = page.getByRole('searchbox', { name: 'Search tasks', exact: true });
+    const pane = reader(page, 'task');
+    await selected.click(); await opened(page, 'task', 'review-000');
+    // Reverse Tab from the first pane action can move back into the list.
+    await pane.getByRole('button', { name: 'Close', exact: true }).press('Shift+Tab');
+    await expect(page.locator('.work-entity-task-workspace .work-entity-page-body :focus')).toHaveCount(1);
+    await page.setViewportSize({ width: 390, height: 900 });
+    const modal = page.getByRole('dialog', { name: 'Review task 0', exact: true });
+    await expect(modal).toHaveAttribute('aria-modal', 'true');
+    await expect(modal.getByRole('heading', { name: 'Review task 0', exact: true })).toBeFocused();
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await expect(page.getByRole('region', { name: 'Review task 0', exact: true })).toBeVisible();
+    await row(page, 'task', 'review-001').click(); await opened(page, 'task', 'review-001');
+
+    await page.getByRole('button', { name: 'Task filters', exact: true }).click();
+    await page.getByRole('combobox', { name: 'Task status', exact: true }).selectOption('open');
+    await query.fill('Review task 5');
+    await expect(rows(page, 'task')).toHaveCount(1);
+    await expect(row(page, 'task', 'review-005')).toBeVisible();
+    await expect(query).toBeFocused();
+    await opened(page, 'task', 'review-001');
+    await page.goBack();
+    await expect(page).toHaveURL(/#data\/task$/);
+    await expect(pane).toHaveCount(0);
+    await expect(query).toHaveValue('Review task 5');
+    await expect(query).toBeFocused();
+    await expect(page.getByRole('combobox', { name: 'Task status', exact: true })).toHaveValue('open');
+    expect(f.writes).toEqual([]);
+  } finally { f.dispose(); }
+});
+
 for (const kind of ['task', 'note'] as const) {
   test(`${kind} reader follows the list order, keeps keyboard focus, and returns to its last row and scroll`, async ({ page }, info) => {
     const f = await boot(page, kind);

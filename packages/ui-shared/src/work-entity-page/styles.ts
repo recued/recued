@@ -167,10 +167,10 @@ ${TASK_DUE_STYLES}
   min-width: 0;
 }
 .work-entity-page--external-header { padding:0; gap:12px; }
-.work-entity-page--external-header > .work-entity-page-source-row { align-items:end; gap:8px; }
-.work-entity-page--external-header > .work-entity-page-source-row .work-entity-source-dropdown { display:grid; flex:1 1 15rem; gap:4px; max-width:28rem; }
-.work-entity-page--external-header > .work-entity-page-source-row .work-entity-source-dropdown-label { font-size:12px; }
-.work-entity-page--external-header > .work-entity-page-source-row .work-entity-source-dropdown-select { width:100%; min-width:0; min-height:var(--wc-control-h,40px); }
+.work-entity-page--external-header .work-entity-page-source-row { align-items:end; gap:8px; }
+.work-entity-page--external-header .work-entity-page-source-row .work-entity-source-dropdown { display:grid; flex:1 1 15rem; gap:4px; max-width:28rem; }
+.work-entity-page--external-header .work-entity-page-source-row .work-entity-source-dropdown-label { font-size:12px; }
+.work-entity-page--external-header .work-entity-page-source-row .work-entity-source-dropdown-select { width:100%; min-width:0; min-height:var(--wc-control-h,40px); }
 
 .work-entity-page--compact-task { --task-controls-columns:minmax(0,1fr) var(--wc-task-filter-width,6.5rem) var(--wc-task-action-width,7.5rem); padding:0; gap:12px; }
 .work-entity-task-tools { display:grid; gap:8px; }
@@ -420,6 +420,14 @@ ${TASK_DUE_STYLES}
   justify-content: flex-end;
   gap: 8px;
 }
+.work-entity-booking-detail--inline { padding: 0; gap: 0; overflow: hidden; }
+.work-entity-booking-toolbar { display: grid; min-width: 0; gap: 8px; padding: 12px 16px; flex-shrink: 0; border-bottom: 1px solid var(--rx-divider,var(--border)); }
+.work-entity-booking-toolbar .work-entity-booking-detail-nav { align-items: flex-start; flex-wrap: wrap; }
+.work-entity-booking-toolbar button { min-height: var(--wc-control-h,40px); }
+.work-entity-booking-toolbar p { margin: 0; overflow-wrap: anywhere; }
+.work-entity-booking-content { display: grid; align-content: start; gap: 16px; min-width: 0; min-height: 0; overflow: auto; padding: 16px; }
+.work-entity-booking-content h2 { margin: 0; overflow-wrap: anywhere; }
+.work-entity-booking-content .work-entity-booking-facts { grid-template-columns: repeat(auto-fit,minmax(min(100%,9rem),1fr)); }
 .work-entity-booking-back,
 .work-entity-booking-manage,
 .work-entity-booking-edit {
@@ -507,13 +515,16 @@ ${TASK_DUE_STYLES}
   background: var(--rx-input-bg, var(--surface));
   border-radius: 8px;
   width: min(560px, 100%);
-  max-height: 90vh;
-  overflow: auto;
+  box-sizing: border-box;
+  max-height: calc(100vh - 32px);
+  max-height: calc(100dvh - 32px);
+  overflow: hidden;
   box-shadow: 0 20px 60px rgba(0, 0, 0, 0.2);
   display: flex;
   flex-direction: column;
 }
 .work-entity-dialog-header {
+  flex-shrink: 0;
   min-width: 0;
   display: flex;
   align-items: center;
@@ -536,11 +547,15 @@ ${TASK_DUE_STYLES}
 }
 .work-entity-dialog-form {
   min-width: 0;
-  padding: 16px;
+  min-height: 0;
+  overflow: hidden;
+  padding: 0;
   display: flex;
   flex-direction: column;
   gap: 12px;
 }
+.work-entity-dialog-body { min-height:0; overflow:auto; overscroll-behavior:contain; scroll-padding:16px; padding:16px; display:flex; flex-direction:column; gap:12px; overflow-wrap:anywhere; }
+.work-entity-dialog-body > * { flex-shrink:0; }
 .work-entity-dialog-source-picker,
 .work-entity-dialog-source-static {
   min-width: 0;
@@ -567,9 +582,11 @@ ${TASK_DUE_STYLES}
 }
 .work-entity-dialog-actions {
   display: flex;
+  flex-shrink: 0;
+  flex-wrap: wrap;
   gap: 8px;
   justify-content: flex-end;
-  padding-top: 8px;
+  padding: 12px 16px;
   border-top: 1px solid var(--rx-divider, var(--border));
 }
 .work-entity-dialog-cancel,
@@ -646,6 +663,16 @@ ${TASK_DUE_STYLES}
 .work-entity-commitment-meta { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 16px; margin: 0; }
 .work-entity-commitment-meta dt { font-size: 12px; color: var(--fg-muted); margin-bottom: 4px; }
 .work-entity-commitment-meta dd { margin: 0; overflow-wrap: anywhere; }
+.work-entity-commitment-reader.work-entity-reader--inline .work-entity-commitment-toolbar { display: grid; grid-template-columns: minmax(0,1fr); gap: 8px; padding: 8px 16px 12px; }
+.work-entity-commitment-toolbar-row { display: flex; align-items: flex-start; gap: 12px; min-width: 0; }
+.work-entity-commitment-toolbar .work-entity-note-display { max-width: none; min-width: 0; margin: 0; padding: 0; border: 0; }
+.work-entity-commitment-toolbar .work-entity-dialog-close { margin-inline-start: auto; flex: 0 0 auto; min-height: 40px; min-width: 40px; }
+.work-entity-commitment-overview { display: grid; align-content: start; gap: 14px; min-width: 0; }
+.work-entity-commitment-heading-context { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 14px; color: var(--fg-muted); font-size: 13px; }
+.work-entity-commitment-overview .work-entity-commitment-meta { grid-template-columns: repeat(auto-fit, minmax(min(100%, 8rem), 1fr)); }
+.work-entity-commitment-reader .work-entity-commitment-toolbar .work-entity-dialog-actions { padding: 0; border: 0; }
+.work-entity-commitment-toolbar .work-entity-dialog-actions button { min-height: var(--wc-control-h, 40px); }
+.work-entity-commitment-toolbar .work-entity-note-notice { margin: 0; }
 .work-entity-commitment-evidence { min-width: 0; border-top: 1px solid var(--border); padding-top: 8px; }
 .work-entity-commitment-evidence > summary { display: list-item; cursor: pointer; min-height: 44px; padding: 10px 0; box-sizing: border-box; font-weight: 600; }
 .work-entity-commitment-evidence > summary span { font-weight: 400; color: var(--fg-muted); }

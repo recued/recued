@@ -1,9 +1,14 @@
-import { expect, test } from '@playwright/test';
+import { expect, test, type Page } from '@playwright/test';
+import type {
+  CalendarCollectionCaps, CollectionInstanceRow, CollectionOAuthAppContext,
+  CollectionOAuthAppSwitchRequest, SavedOAuthApp,
+} from '@recued/contracts';
+import type { MailAccountListRow } from '../src/connections/accounts-lane-panel.js';
 import { clickActionGlyph } from './helpers/action-glyph.js';
 import {
   CHAT_ACTIVATION, CHAT_ANSWER_WAITING, CHAT_INPUT, CHAT_MESSAGE,
   CHAT_SEND, CHAT_SESSION_ROW, CHAT_SOURCE_HANDOFF, CONNECTIONS_ROUTE,
-  HARNESS_URL, SHARED_REFERENCE, SHARED_REFERENCE_ID, installFullAppHooks,
+  FIXED_NOW, HARNESS_URL, SHARED_REFERENCE, SHARED_REFERENCE_ID, installFullAppHooks,
 } from './helpers/full-app.js';
 
 /** Connections browser journeys against the deterministic full-app harness. */
@@ -39,6 +44,7 @@ const WEBHOOKS_NEW = 'data-recued-webhooks-new';
 const WEBHOOKS_PANEL = 'data-recued-webhooks-panel';
 const WEBHOOKS_PAYLOAD = 'data-recued-webhooks-payload';
 const WEBHOOKS_TEST_DELIVERY = 'data-recued-webhooks-test-delivery';
+const WEBHOOK_DEMO_ROUTE = '#connections/webhooks/webhook/whi_browserdemo0123456789abcdef012345';
 const ACCOUNTS_EMPTY = 'data-accounts-empty';
 const ACCOUNT_CONNECTION_SUCCESS = 'data-accounts-connection-success';
 const OAUTH_APP_STATE = 'data-oauth-app-state';
@@ -199,6 +205,275 @@ test('a Connections account detail returns focus to its exact row', async ({ pag
   await expect(account).toBeFocused();
 });
 
+type WorkspaceLane = 'mail' | 'calendar';
+const accountWorkspace = (page: Page, lane: WorkspaceLane) => page.locator(`[data-accounts-lane="${lane}"] [data-accounts-workspace]`);
+const workspaceRow = (page: Page, lane: WorkspaceLane, index: number) => accountWorkspace(page, lane).locator(`[data-account-slug="desk-${lane}-${index}"]`);
+const workspaceDetails = (page: Page, lane: WorkspaceLane) => accountWorkspace(page, lane).getByRole(
+  'region', { name: lane === 'mail' ? 'Mailbox details' : 'Calendar details', exact: true },
+);
+
+const openAccountWorkspace = async (page: Page, lane: WorkspaceLane, mode: 'review' | 'completed' | 'refused'): Promise<void> => {
+  await page.addInitScript(({ lane, mode, now }) => {
+    const count = mode === 'review' ? 36 : 2;
+    let instances: Array<MailAccountListRow | CollectionInstanceRow> = Array.from({ length: count }, (_, index) => {
+      const auth_state = mode === 'review' && index === count - 1 ? 'expired' : 'healthy';
+      const last_synced_at = now - index * 3_600_000;
+      if (lane === 'mail') return {
+        slug: `desk-mail-${index + 1}`, account_email: `review-${index + 1}@example.test`,
+        adapter_type: mode === 'review' && index === count - 2 ? 'gmail' : 'imap',
+        auth_state, last_synced_at, send_capable: false,
+        sync_status: { access_verified: true, initial_sync_complete: true },
+      };
+      const adapter_type = mode !== 'review' ? 'gcal' : index === count - 2 ? 'graph' : 'caldav';
+      const caps: CalendarCollectionCaps = {
+        read: 'yes', list_calendars: 'yes', create_event: 'no', update_event: 'no', delete_event: 'no',
+        rsvp: 'no', search: 'local', watch: 'poll', auth: adapter_type === 'caldav' ? 'basic' : 'oauth',
+        recurrence: adapter_type === 'caldav' ? 'client' : 'server',
+      };
+      return {
+        slug: mode === 'review' && index === 0 ? 'external-calendar' : `desk-calendar-${index + 1}`,
+        platform: 'calendar', adapter_type, auth_state, last_synced_at, caps,
+      };
+    });
+    window.__connectionsFixture = async (method, args) => {
+      if (method === `collection.${lane}.list`) return { result: { instances } };
+      if (method !== `collection.${lane}.resync`) return undefined;
+      const slug = (args as { slug: string }).slug;
+      if (mode === 'refused') return { error: {
+        code: 'UNAVAILABLE', message: `This ${lane === 'mail' ? 'mailbox' : 'calendar'} re-sync was refused.`,
+      } };
+      instances = instances.map(account => account.slug === slug ? { ...account, last_synced_at: now + 3_600_000 } : account);
+      return { result: { ok: true } };
+    };
+  }, { lane, mode, now: FIXED_NOW });
+  const rosterHash = lane === 'mail' ? '#connections' : '#connections/calendar';
+  await page.goto(`${HARNESS_URL}?connection=source-ready&settle_reads=1${rosterHash}`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+};
+
+for (const { lane, account, rosterName, rosterHash, queryText, providerId, syncLabel } of [
+  { lane: 'mail', account: 'mailbox', rosterName: 'Mailboxes', rosterHash: '#connections',
+    queryText: 'review-', providerId: 'imap', syncLabel: 'Last mailbox read' },
+  { lane: 'calendar', account: 'calendar', rosterName: 'Calendars', rosterHash: '#connections/calendar',
+    queryText: 'desk-calendar-', providerId: 'caldav', syncLabel: 'Last synced' },
+] as const) {
+  const listMethod = `collection.${lane}.list`;
+  const resyncMethod = `collection.${lane}.resync`;
+
+  test(`desktop ${account} workspace preserves filters, scroll and the exact row through Back and Forward`, async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 720 });
+    await openAccountWorkspace(page, lane, 'review');
+    const workspace = accountWorkspace(page, lane);
+    const rows = workspace.locator('[data-account-slug]');
+    const filters = workspace.getByRole('group', { name: 'Filter connections', exact: true });
+    const query = filters.getByRole('searchbox', { name: 'Search connections' });
+    const provider = filters.getByRole('combobox', { name: 'Provider' });
+    const status = filters.getByRole('combobox', { name: 'Status' });
+    await expect(rows).toHaveCount(36);
+    await query.fill(queryText);
+    await provider.selectOption(providerId);
+    await status.selectOption('healthy');
+    await expect(rows).toHaveCount(lane === 'mail' ? 34 : 33);
+
+    const first = workspaceRow(page, lane, 24).getByRole('button');
+    const selected = workspaceRow(page, lane, 25).getByRole('button');
+    const selectedSlug = `desk-${lane}-25`;
+    const inspector = workspaceDetails(page, lane);
+    const position = () => workspace.evaluate(root => ({
+      roster: root.querySelector('.accounts-rows')?.scrollTop,
+      page: root.closest('[data-recued-webclient-content]')?.scrollTop,
+    }));
+    await first.scrollIntoViewIfNeeded();
+    await first.press('Enter');
+    await expect(inspector.getByRole('heading', { name: `desk-${lane}-24`, exact: true })).toBeFocused();
+    await selected.scrollIntoViewIfNeeded();
+    await selected.focus();
+    const saved = await position();
+    expect(saved.roster).toBeGreaterThan(0);
+    await page.keyboard.press('Enter');
+    await expect(page).toHaveURL(url => url.hash === `#connections/${lane}/${selectedSlug}`);
+    await expect(selected).toHaveAttribute('aria-current', 'true');
+    await expect(inspector.getByRole('heading', { name: selectedSlug, exact: true })).toBeFocused();
+    await expect(inspector).toContainText(syncLabel);
+    if (lane === 'mail') {
+      await expect(inspector).toContainText('review-25@example.test');
+    } else {
+      await expect(inspector.getByText('CalDAV', { exact: true })).toBeVisible();
+      await expect(inspector.getByText('Connected', { exact: true })).toBeVisible();
+      await expect(inspector.getByRole('button', { name: 'Update credentials', exact: true })).toBeVisible();
+    }
+    const rosterBounds = (await workspace.getByRole('region', { name: rosterName, exact: true }).boundingBox())!;
+    const detailBounds = (await inspector.boundingBox())!;
+    expect(rosterBounds.x + rosterBounds.width).toBeLessThan(detailBounds.x);
+    await expect.poll(position).toEqual(saved);
+    const reads = await page.evaluate(method => window.__app.rpcCallCount(method), listMethod);
+
+    await page.goBack();
+    await expect(page).toHaveURL(url => url.hash === rosterHash);
+    await expect(inspector.getByRole('heading')).toHaveCount(0);
+    await expect(selected).toBeFocused();
+    await expect(query).toHaveValue(queryText);
+    await expect(provider).toHaveValue(providerId);
+    await expect(status).toHaveValue('healthy');
+    await expect.poll(position).toEqual(saved);
+    expect(await page.evaluate(method => window.__app.rpcCallCount(method), listMethod)).toBe(reads);
+
+    await page.goForward();
+    await expect(selected).toHaveAttribute('aria-current', 'true');
+    await inspector.getByRole('button', { name: 'Close details', exact: true }).click();
+    await expect(page).toHaveURL(url => url.hash === rosterHash);
+    await expect(selected).toBeFocused();
+    await page.goForward();
+    await expect(selected).toHaveAttribute('aria-current', 'true');
+    if (lane === 'calendar') {
+      await page.setViewportSize({ width: 1279, height: 720 });
+      await expect(workspace).toHaveCount(0);
+      await expect(page.getByRole('button', { name: 'Back', exact: true })).toBeVisible();
+    }
+    await page.setViewportSize({ width: 390, height: 844 });
+    await expect(workspace).toHaveCount(0);
+    await expect(page.getByRole('heading', { name: selectedSlug, exact: true })).toBeVisible();
+    await page.getByRole('button', { name: 'Back', exact: true }).press('Enter');
+    const phoneRow = page.locator(`[data-account-slug="${selectedSlug}"] button`);
+    await expect(phoneRow).toBeFocused();
+    await expect(phoneRow).toBeInViewport();
+  });
+
+  for (const result of ['completed', 'refused'] as const) {
+    test(`desktop ${account} workspace keeps a ${result} re-sync with its original ${account}`, async ({ page }) => {
+      await page.setViewportSize({ width: 1440, height: 900 });
+      await openAccountWorkspace(page, lane, result);
+      const original = workspaceRow(page, lane, 1);
+      const other = workspaceRow(page, lane, 2);
+      const inspector = workspaceDetails(page, lane);
+      const lastSync = inspector.getByText(syncLabel, { exact: true }).locator('xpath=following-sibling::dd[1]');
+      await original.getByRole('button').click();
+      const originalSync = await lastSync.innerText();
+      await page.evaluate(method => window.__app.holdRpcResponses!(method), resyncMethod);
+      await inspector.getByRole('button', { name: 'Re-sync', exact: true }).press('Enter');
+      const pending = inspector.getByRole('button', { name: 'Re-syncing…', exact: true });
+      await expect(pending).toHaveAttribute('aria-busy', 'true');
+      await pending.dispatchEvent('click');
+      await other.getByRole('button').click();
+      const heading = inspector.getByRole('heading', { name: `desk-${lane}-2`, exact: true });
+      await expect(heading).toBeFocused();
+      const otherSync = await lastSync.innerText();
+      await expect(original).toContainText('Re-syncing…');
+      await expect(other).not.toContainText('Re-syncing…');
+      if (result === 'completed') {
+        await page.goBack();
+        await expect(other.getByRole('button')).toBeFocused();
+        await expect(original).toContainText('Re-syncing…');
+        await page.goForward();
+        await expect(heading).toBeFocused();
+      }
+
+      const before = await page.evaluate(({ listMethod, resyncMethod }) => ({
+        resyncs: window.__app.rpcCallCount(resyncMethod),
+        reads: window.__app.rpcCallCount(listMethod),
+      }), { listMethod, resyncMethod });
+      expect(before.resyncs).toBe(1);
+      const refusal = `This ${account} re-sync was refused.`;
+      if (result === 'completed') await page.evaluate(method => window.__app.holdRpcResponses!(method), listMethod);
+      expect(await page.evaluate(method => window.__app.releaseRpcResponses!(method), resyncMethod)).toBe(1);
+      if (result === 'completed') {
+        await expect.poll(() => page.evaluate(method => window.__app.rpcCallCount(method), listMethod)).toBeGreaterThan(before.reads);
+        await expect(original).toContainText('Re-syncing…');
+        await expect(heading).toBeFocused();
+        expect(await page.evaluate(method => window.__app.releaseRpcResponses!(method), listMethod)).toBe(1);
+      } else {
+        await expect(original.getByRole('alert')).toHaveText(refusal);
+        await expect(inspector).not.toContainText(refusal);
+      }
+      await expect(original).not.toContainText('Re-syncing…');
+      await expect(heading).toBeFocused();
+      await expect(lastSync).toHaveText(otherSync);
+      await original.getByRole('button').click();
+      if (result === 'completed') await expect(lastSync).not.toHaveText(originalSync);
+      else await expect(inspector).toContainText(refusal);
+    });
+  }
+}
+
+test('desktop mailbox switching honors the existing password draft guard', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await openAccountWorkspace(page, 'mail', 'completed');
+  await workspaceRow(page, 'mail', 1).getByRole('button').click();
+  const inspector = workspaceDetails(page, 'mail');
+  await inspector.getByRole('button', { name: 'Update credentials', exact: true }).click();
+  const password = inspector.getByLabel('New IMAP password / app password');
+  await password.fill('unsaved fixture text');
+  const other = workspaceRow(page, 'mail', 2).getByRole('button');
+  const observe = (decision: 'accept' | 'dismiss') => page.once('dialog', async dialog => {
+    expect(dialog.message()).toBe('Discard the replacement password?');
+    await dialog[decision]();
+  });
+  observe('dismiss');
+  await other.click();
+  await expect(inspector.getByRole('heading', { name: 'desk-mail-1', exact: true })).toBeVisible();
+  await expect(password).toHaveValue('unsaved fixture text');
+  observe('accept');
+  await other.click();
+  await expect(inspector.getByRole('heading', { name: 'desk-mail-2', exact: true })).toBeFocused();
+  await expect(password).toHaveCount(0);
+});
+
+test('desktop calendar workspace keeps a pending sign-in review on its calendar', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await openAccountWorkspace(page, 'calendar', 'completed');
+  await page.evaluate(() => {
+    const base = window.__connectionsFixture!;
+    window.__connectionsFixture = async (method, input) => {
+      if (method !== 'collection.connection.managedOAuth') return base(method, input);
+      const request = input as CollectionOAuthAppSwitchRequest;
+      if (request.action === 'collection_authentication_app_retire') return { result: { action: request.action } };
+      if (request.action !== 'collection_authentication_app_context') return base(method, input);
+      const app: SavedOAuthApp = {
+        id: 'default', issuer: 'google', label: 'Calendar test app', client_id: 'CALENDAR-TEST', has_secret: true, revision: 1,
+      };
+      const { platform, slug } = request;
+      const scopes = ['https://www.googleapis.com/auth/calendar.readonly'];
+      const context: CollectionOAuthAppContext = {
+        intent: request.intent, platform, slug, issuer: 'google',
+        id: (slug === 'desk-calendar-1' ? 'a' : 'b').repeat(43), fingerprint: 'f'.repeat(64), expires_at: Date.now() + 600_000,
+        current_app: app, apps: [app], requested_scopes: scopes, retained_scopes: [], added_scopes: [],
+        collections: [{
+          platform, slug, provider: 'gcal', required_scopes: scopes, selections: ['Primary'],
+          current: { status: 'known', account_id: slug, email: `${slug}@example.test` },
+        }],
+      };
+      return { result: { action: request.action, context } };
+    };
+  });
+  const inspector = workspaceDetails(page, 'calendar');
+  const manage = inspector.getByRole('button', { name: 'Manage authentication', exact: true });
+  const review = inspector.getByRole('region', { name: 'Re-authorize current sign-in', exact: true });
+  const other = workspaceRow(page, 'calendar', 2).getByRole('button');
+  const checking = review.getByText('Checking sign-in and account access…', { exact: true });
+  const releaseReview = () => page.evaluate(() => window.__app.releaseRpcResponses!('collection.connection.managedOAuth'));
+  await workspaceRow(page, 'calendar', 1).getByRole('button').click();
+  await manage.click();
+  await expect(review.getByRole('listitem').filter({ hasText: 'desk-calendar-1@example.test' })).toBeVisible();
+  await page.evaluate(() => window.__app.holdRpcResponses!('collection.connection.managedOAuth'));
+  await review.getByRole('button', { name: 'Review permissions', exact: true }).click();
+  await expect(checking).toBeVisible();
+  await other.click();
+  await inspector.getByRole('button', { name: 'Close details', exact: true }).click();
+  await expect(page).toHaveURL(/#connections\/calendar\/desk-calendar-1$/);
+  await expect(review.getByRole('heading', { name: 'Re-authorize desk-calendar-1', exact: true })).toBeVisible();
+  expect(await releaseReview()).toBeGreaterThan(0);
+  await expect(review.getByRole('listitem').filter({ hasText: 'desk-calendar-1@example.test' })).toBeVisible();
+  await expect(review.getByRole('heading', { name: 'Re-authorize desk-calendar-1', exact: true })).toBeFocused();
+  await other.click();
+  await expect(inspector.getByRole('heading', { name: 'desk-calendar-2', exact: true })).toBeFocused();
+  await expect(review).toHaveCount(0);
+  await manage.click();
+  await expect(checking).toBeVisible();
+  expect(await releaseReview()).toBeGreaterThan(0);
+  await expect(review.getByRole('listitem').filter({ hasText: 'desk-calendar-2@example.test' })).toBeVisible();
+  await expect(review).not.toContainText('desk-calendar-1@example.test');
+});
+
 test('Connections contains long account identities through removal review', async ({ page }) => {
   const longSlug = `mailbox-${'identity'.repeat(7)}`;
   const longEmail = `${'account'.repeat(8)}@example.test`;
@@ -300,9 +575,116 @@ test('Connections contains long account identities through removal review', asyn
   }
 });
 
+test('Connections Webhooks restores its filtered row and scroll through Back and Forward', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await page.goto(`${HARNESS_URL}?connection=webhooks&webhook_workspace=1#connections/webhooks`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  const roster = page.getByRole('region', { name: 'Webhook list', exact: true });
+  const detail = page.getByRole('region', { name: 'Webhook details', exact: true });
+  const rows = roster.locator('[data-webhook-roster-rows]');
+  const card = page.locator(`[${WEBHOOKS_CARD}]`);
+  await expect(roster.getByRole('button', { name: /^Delivery 21/ })).toBeVisible();
+  await expect(card).toHaveCount(0);
+  const search = page.getByRole('searchbox', { name: 'Search webhooks', exact: true });
+  const status = page.getByRole('combobox', { name: 'Status', exact: true });
+  await search.fill('Delivery');
+  await status.selectOption('enabled');
+  await expect(roster.getByRole('button', { name: /^Delivery 21/ })).toHaveCount(0);
+
+  await roster.getByRole('button', { name: /^Delivery 01/ }).press('Enter');
+  await expect(page).toHaveURL(new RegExp(WEBHOOK_DEMO_ROUTE + '$'));
+  await expect(detail.getByRole('heading', { name: 'Delivery 01', exact: true })).toBeFocused();
+  await expect(detail).toContainText(/healthy.*Last delivery:/);
+  await expect(detail.getByRole('link', { name: 'Record test delivery', exact: true })).toBeVisible();
+
+  const row = roster.getByRole('button', { name: /^Delivery 19/ });
+  await row.scrollIntoViewIfNeeded();
+  await row.focus();
+  const top = await rows.evaluate((node) => node.scrollTop);
+  const reads = await page.evaluate(() => window.__app.rpcCallCount('webhook.ingress.list'));
+  expect(top).toBeGreaterThan(0);
+  await row.press('Enter');
+  const heading = detail.getByRole('heading', { name: 'Delivery 19', exact: true });
+  await expect(heading).toBeFocused();
+  await expect(row).toHaveAttribute('aria-current', 'true');
+
+  await page.goBack();
+  await expect(page).toHaveURL(/#connections\/webhooks$/);
+  await expect(row).toBeFocused();
+  await expect(card).toHaveCount(0);
+  await expect(search).toHaveValue('Delivery');
+  await expect(status).toHaveValue('enabled');
+  expect(await rows.evaluate((node) => node.scrollTop)).toBe(top);
+  await page.goForward();
+  await expect(heading).toBeFocused();
+  expect(await page.evaluate(() => window.__app.rpcCallCount('webhook.ingress.list'))).toBe(reads);
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(roster).toHaveCount(0);
+  await expect(card).toHaveCount(1);
+  await page.getByRole('button', { name: 'Back to webhooks', exact: true }).click();
+  await expect(page).toHaveURL(/#connections\/webhooks$/);
+  await expect(card.getByRole('heading', { name: 'Delivery 19', exact: true })).toBeFocused();
+  await expect(card).toHaveCount(20);
+  await expect(search).toHaveValue('Delivery');
+  await expect(status).toHaveValue('enabled');
+});
+
+test('Connections Webhooks keeps held message history and test receipts with the initiating webhook', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await page.goto(`${HARNESS_URL}?connection=webhooks&webhook_workspace=1#connections/webhooks`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  const roster = page.getByRole('region', { name: 'Webhook list', exact: true });
+  const detail = page.getByRole('region', { name: 'Webhook details', exact: true });
+  const first = roster.getByRole('button', { name: /^Delivery 01/ });
+  const second = roster.getByRole('button', { name: /^Delivery 02/ });
+  const secondHeading = detail.getByRole('heading', { name: 'Delivery 02', exact: true });
+  const deliveries = detail.locator(`[${WEBHOOKS_ACTION}="deliveries"]`);
+  const deliveryList = detail.locator(`[${WEBHOOKS_DELIVERY}]`);
+  const receipt = detail.locator(`[${WEBHOOKS_TEST_DELIVERY}]`);
+  await second.click();
+  await deliveries.click();
+  await expect(deliveries).toBeEnabled();
+  await expect(deliveries).toHaveText('Hide the messages that got through');
+  await expect(deliveryList).toHaveCount(0);
+
+  await first.click();
+  await page.evaluate(() => window.__app.holdRpcResponses?.('webhook.delivery.list'));
+  await deliveries.press('Enter');
+  await expect(detail).toContainText('Loading the messages that got through');
+  await second.click();
+  await expect(secondHeading).toBeFocused();
+  await expect(detail).not.toContainText('Loading the messages that got through');
+  await expect.poll(() => page.evaluate(() => window.__app.rpcCallCount('webhook.delivery.list'))).toBe(2);
+  expect(await page.evaluate(() => window.__app.releaseRpcResponses?.('webhook.delivery.list'))).toBe(1);
+  await expect(deliveries).toBeEnabled();
+  await expect(secondHeading).toBeFocused();
+  await expect(deliveryList).toHaveCount(0);
+  await first.click();
+  await expect(deliveryList).toHaveCount(2);
+
+  const testMessage = detail.locator(`[${WEBHOOKS_ACTION}="test-delivery"]`);
+  await page.evaluate(() => window.__app.holdRpcResponses?.('webhook.ingress.test.deliver'));
+  await testMessage.press('Enter');
+  await expect(testMessage).toHaveAttribute('aria-busy', 'true');
+  await second.click();
+  await page.goBack();
+  await expect(second).toBeFocused();
+  await page.goForward();
+  await expect(secondHeading).toBeFocused();
+  await expect.poll(() => page.evaluate(() => window.__app.rpcCallCount('webhook.ingress.test.deliver'))).toBe(1);
+  expect(await page.evaluate(() => window.__app.releaseRpcResponses?.('webhook.ingress.test.deliver'))).toBe(1);
+  await expect(testMessage).toBeEnabled();
+  await expect(secondHeading).toBeFocused();
+  await expect(receipt).toHaveCount(0);
+  await first.click();
+  await expect(receipt).toContainText('whd_browserdemo0123456789abcdef012345');
+  await expect(deliveryList).toHaveCount(2);
+});
+
 test('Connections webhook writes retain their exact action focus and stay single-flight', async ({ page }) => {
   await page.goto(
-    `${HARNESS_URL}?connection=webhooks&webhook_test_response=slow#connections/webhooks`,
+    `${HARNESS_URL}?connection=webhooks&webhook_test_response=slow${WEBHOOK_DEMO_ROUTE}`,
   );
   await page.waitForFunction(() => window.__app?.ready === true);
 
@@ -543,7 +925,7 @@ test('Connections webhook events: a typed name the service grammar takes, Enter 
 });
 
 test('Connections webhook disclosures hand focus to their logical destination', async ({ page }) => {
-  await page.goto(`${HARNESS_URL}?connection=webhooks#connections/webhooks`);
+  await page.goto(`${HARNESS_URL}?connection=webhooks${WEBHOOK_DEMO_ROUTE}`);
   await page.waitForFunction(() => window.__app?.ready === true);
 
   const card = page.locator(`[${WEBHOOKS_CARD}]`);
@@ -614,6 +996,7 @@ test('Connections webhook inventory failures can refresh without claiming the in
 });
 
 test('Connections webhook terminal writes hand focus to durable context', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 720 });
   await page.goto(
     `${HARNESS_URL}?connection=webhooks&webhook_terminal_response=slow#connections/webhooks`,
   );
@@ -641,22 +1024,21 @@ test('Connections webhook terminal writes hand focus to durable context', async 
   const originalCard = page.locator(`[${WEBHOOKS_CARD}]`, {
     hasText: 'Signed test deliveries',
   });
-  await expect(originalCard.locator(`[${WEBHOOKS_ACTION}="credentials"]`))
-    .toHaveAccessibleName(
-      /^Swap the keys for Signed test deliveries \(whi_/,
-    );
   await expect(createdCard.locator(`[${WEBHOOKS_ACTION}="credentials"]`))
     .toHaveAccessibleName(
       /^Swap the keys for Browser-created webhook \(whi_/,
-    );
-  await expect(originalCard.locator(`[${WEBHOOKS_ACTION}="deliveries"]`))
-    .toHaveAccessibleName(
-      /^See the messages that got through for Signed test deliveries \(whi_/,
     );
   await expect(createdCard.locator(`[${WEBHOOKS_ACTION}="deliveries"]`))
     .toHaveAccessibleName(
       /^See the messages that got through for Browser-created webhook \(whi_/,
     );
+  const roster = panel.getByRole('region', { name: 'Webhook list', exact: true });
+  const originalRow = roster.getByRole('button', { name: /^Signed test deliveries/ });
+  await originalRow.click();
+  await expect(originalCard.locator(`[${WEBHOOKS_ACTION}="credentials"]`))
+    .toHaveAccessibleName(/^Swap the keys for Signed test deliveries \(whi_/);
+  await expect(originalCard.locator(`[${WEBHOOKS_ACTION}="deliveries"]`))
+    .toHaveAccessibleName(/^See the messages that got through for Signed test deliveries \(whi_/);
   await originalCard.locator(`[${WEBHOOKS_ACTION}="disable"]`).click();
   await expect(originalCard.locator(`[${WEBHOOKS_ACTION}="enable"]`)).toBeFocused();
   await originalCard.locator(`[${WEBHOOKS_ACTION}="retire"]`).click();
@@ -671,6 +1053,8 @@ test('Connections webhook terminal writes hand focus to durable context', async 
 
   await expect(originalCard).toHaveCount(0);
   await expect(panel.locator('h2')).toBeFocused();
+  await expect(originalRow).toHaveCount(0);
+  await roster.getByRole('button', { name: /^Browser-created webhook/ }).click();
   await expect(createdCard).toBeVisible();
 });
 

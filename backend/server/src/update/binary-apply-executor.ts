@@ -112,12 +112,65 @@ export type DownloadFn = (url: string, destPath: string) => Promise<void>;
  *  and `release-build.mjs` now refuses to PUBLISH an artifact above this, so
  *  the two can no longer drift apart silently. */
 export const UPDATE_ARTIFACT_MAX_BYTES = 512 * 1024 * 1024;
-export const UPDATE_DOWNLOAD_TIMEOUT_MS = 10 * 60 * 1000;
+
+/** How long a download may go without a single byte arriving before it is given
+ *  up, from the request to the last chunk. THIS is the guard against a hung
+ *  connection, which is what the old cap was for.
+ *
+ *  ⛔ IT REPLACED A HARD 10-MINUTE CAP ON THE WHOLE DOWNLOAD (2026-11-22). A total
+ *  cap cannot tell a stalled download from a slow one: the owner's own Mac,
+ *  downloading through a proxy at 54–149 KB/s, could never install 26.11.22, a
+ *  ~150 MB binary that needs about 17 to 46 minutes there. Both tries ended
+ *  "download: This operation was aborted" exactly 600 s in, and the page went
+ *  back to "Update to 26.11.22" (the updates ledger has both). A download that
+ *  keeps moving now finishes. */
+export const UPDATE_DOWNLOAD_STALL_MS = 60 * 1000;
+/** The longest a download may take in all, however steadily it moves: a bound on
+ *  how long a trickle can hold an apply open, not a speed requirement. Six hours
+ *  lets a ~150 MB binary through at about 7 KB/s. */
+export const UPDATE_DOWNLOAD_TIMEOUT_MS = 6 * 60 * 60 * 1000;
 
 export interface UpdateDownloadOptions {
   fetchImpl?: typeof fetch;
   maxBytes?: number;
+  /** The overall ceiling (default {@link UPDATE_DOWNLOAD_TIMEOUT_MS}). */
   timeoutMs?: number;
+  /** Time allowed with no byte arriving (default {@link UPDATE_DOWNLOAD_STALL_MS}). */
+  stallMs?: number;
+}
+
+const megabytes = (bytes: number): string => `${(bytes / 1_000_000).toFixed(1)} MB`;
+const duration = (ms: number): string => ms >= 3_600_000 && ms % 3_600_000 === 0
+  ? `${String(ms / 3_600_000)} h` : ms >= 60_000 && ms % 60_000 === 0 ? `${String(ms / 60_000)} min` : `${String(ms / 1000)} s`;
+const progress = (received: number, total: number | undefined): string =>
+  total === undefined ? `${megabytes(received)} received` : `${megabytes(received)} of ${megabytes(total)} received`;
+
+/** No byte arrived for `stallMs`: the connection dropped or hung. Its `code` is
+ *  the revert reason the apply records (`UpdateRevertReason`). */
+export class UpdateDownloadStalledError extends Error {
+  readonly code = 'download_stalled';
+  constructor(
+    public readonly stallMs: number,
+    public readonly receivedBytes: number,
+    public readonly totalBytes?: number,
+  ) {
+    super(`no data arrived for ${duration(stallMs)}, with ${progress(receivedBytes, totalBytes)}`);
+    this.name = 'UpdateDownloadStalledError';
+  }
+}
+
+/** Still moving when the overall ceiling ran out. Its `code` is the revert reason
+ *  the apply records. */
+export class UpdateDownloadTooSlowError extends Error {
+  readonly code = 'download_too_slow';
+  constructor(
+    public readonly timeoutMs: number,
+    public readonly receivedBytes: number,
+    public readonly totalBytes?: number,
+  ) {
+    super(`still downloading after ${duration(timeoutMs)}, with ${progress(receivedBytes, totalBytes)}`);
+    this.name = 'UpdateDownloadTooSlowError';
+  }
 }
 
 export class UpdateArtifactTooLargeError extends Error {
@@ -141,11 +194,15 @@ export const defaultDownload = async (
 ): Promise<void> => {
   const maxBytes = options.maxBytes ?? UPDATE_ARTIFACT_MAX_BYTES;
   const timeoutMs = options.timeoutMs ?? UPDATE_DOWNLOAD_TIMEOUT_MS;
+  const stallMs = options.stallMs ?? UPDATE_DOWNLOAD_STALL_MS;
   if (!Number.isSafeInteger(maxBytes) || maxBytes < 1) {
     throw new TypeError('update artifact limit must be a positive safe integer');
   }
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1) {
     throw new TypeError('update download timeout must be a positive safe integer');
+  }
+  if (!Number.isSafeInteger(stallMs) || stallMs < 1) {
+    throw new TypeError('update download stall limit must be a positive safe integer');
   }
 
   // Database startup also uses this module's snapshot recovery helpers. Keep
@@ -154,7 +211,20 @@ export const defaultDownload = async (
   const { discardResponseBody, fetchOriginPinned } = await import('@recued/ingredients');
   const origin = new URL(url).origin;
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  // Which limit aborted, so the caller is told which: either one makes the fetch
+  // and the body stream reject with a bare AbortError.
+  let stopped: 'stalled' | 'too_slow' | undefined;
+  let received = 0;
+  let total: number | undefined;
+  const ceiling = setTimeout(() => { stopped ??= 'too_slow'; controller.abort(); }, timeoutMs);
+  let stall: ReturnType<typeof setTimeout> | undefined;
+  /** Armed before the request, so a server that never answers counts too; moved
+   *  on by every chunk. */
+  const armStall = (): void => {
+    if (stall !== undefined) clearTimeout(stall);
+    stall = setTimeout(() => { stopped ??= 'stalled'; controller.abort(); }, stallMs);
+  };
+  armStall();
   let res: Response | undefined;
   try {
     res = await fetchOriginPinned(
@@ -171,11 +241,12 @@ export const defaultDownload = async (
       if (Number.isSafeInteger(declared) && declared > maxBytes) {
         throw new UpdateArtifactTooLargeError(maxBytes, declared);
       }
+      if (Number.isSafeInteger(declared)) total = declared;
     }
 
-    let received = 0;
     const limiter = new Transform({
       transform(chunk: Buffer, _encoding: BufferEncoding, callback: TransformCallback) {
+        armStall();
         received += chunk.byteLength;
         if (received > maxBytes) {
           callback(new UpdateArtifactTooLargeError(maxBytes, received));
@@ -184,14 +255,23 @@ export const defaultDownload = async (
         callback(null, chunk);
       },
     });
+    // The signal goes to the pipeline as well: an abort must stop the copy whether
+    // or not the fetch implementation ties its body to the signal (undici does; a
+    // body that does not would keep the download, and its limits, running).
     await pipeline(
       Readable.fromWeb(res.body as Parameters<typeof Readable.fromWeb>[0]),
       limiter,
       createWriteStream(destPath),
+      { signal: controller.signal },
     );
+  } catch (error) {
+    if (stopped === 'stalled') throw new UpdateDownloadStalledError(stallMs, received, total);
+    if (stopped === 'too_slow') throw new UpdateDownloadTooSlowError(timeoutMs, received, total);
+    throw error;
   } finally {
     if (res !== undefined) discardResponseBody(res);
-    clearTimeout(timer);
+    clearTimeout(ceiling);
+    if (stall !== undefined) clearTimeout(stall);
   }
 };
 

@@ -76,6 +76,7 @@ const startReception = async (overrides: Partial<DropLinkConfig> = {}) => {
 
 test('public upload replaces a rejected file with a fresh nonce and keeps visitor input under the shipped CSP', async ({ page }) => {
   const reception = await startReception();
+  await page.setViewportSize({ width: 1280, height: 620 });
   const errors: string[] = [];
   page.on('pageerror', error => errors.push(error.message));
   try {
@@ -84,17 +85,25 @@ test('public upload replaces a rejected file with a fresh nonce and keeps visito
     await page.getByLabel('Email', { exact: true }).fill('ada@example.test');
     await page.getByLabel('Description', { exact: true }).fill('Keep this note after a rejection.');
     const nonceBefore = await page.locator('[name="form_nonce"]').inputValue();
-    await page.locator('[name="blob"]').setInputFiles({ name: 'wrong.pdf', mimeType: 'image/png', buffer: Buffer.from('89504e470d0a1a0a00000000', 'hex') });
-    await page.getByRole('button', { name: 'Upload', exact: true }).click();
-    await expect(page.locator('.rcp-upload-status')).toContainText('file type');
-    await expect(page.getByRole('button', { name: 'Try again', exact: true })).toBeEnabled();
+    const file = page.locator('[name="blob"]');
+    await expect(file).toHaveAccessibleDescription('Up to 1 KB. Accepted types: application/pdf.');
+    await file.setInputFiles({ name: 'wrong.pdf', mimeType: 'image/png', buffer: Buffer.from('89504e470d0a1a0a00000000', 'hex') });
+    const upload = page.getByRole('button', { name: 'Upload', exact: true });
+    await expect(upload).toBeInViewport({ ratio: 1 });
+    await upload.click();
+    const status = page.locator('.rcp-upload-status');
+    await expect(status).toContainText('file type');
+    await expect(status).toBeInViewport({ ratio: 1 });
+    const retry = page.getByRole('button', { name: 'Try again', exact: true });
+    await expect(retry).toBeEnabled();
+    await expect(retry).toBeInViewport({ ratio: 1 });
     await expect(page.getByLabel('Name', { exact: true })).toHaveValue('Ada');
     await expect(page.getByLabel('Email', { exact: true })).toHaveValue('ada@example.test');
     await expect(page.getByLabel('Description', { exact: true })).toHaveValue('Keep this note after a rejection.');
-    await page.locator('[name="blob"]').setInputFiles({ name: 'correct.pdf', mimeType: 'application/pdf', buffer: PDF });
-    await page.getByRole('button', { name: 'Try again', exact: true }).focus();
+    await file.setInputFiles({ name: 'correct.pdf', mimeType: 'application/pdf', buffer: PDF });
+    await retry.focus();
     await page.keyboard.press('Enter');
-    await expect(page.locator('.rcp-upload-status')).toContainText('Upload received');
+    await expect(status).toContainText('Upload received');
     expect(await page.locator('[name="form_nonce"]').inputValue()).not.toBe(nonceBefore);
     const rows = reception.drops.listPendingForEndpoint('ep-browser');
     expect(rows).toHaveLength(1);
@@ -171,16 +180,25 @@ test('a lost confirmation after real acceptance blocks another upload, including
   } finally { await reception.close(); }
 });
 
-test('the public multipart form still accepts an upload with JavaScript disabled', async ({ browser }) => {
-  const reception = await startReception();
+test('the public multipart form saves the file and required visitor details with JavaScript disabled', async ({ browser }) => {
+  const reception = await startReception({
+    required_visitor_fields: { name: 'required', email: 'required', description: 'required' },
+  });
   const context = await browser.newContext({ javaScriptEnabled: false });
   try {
     const page = await context.newPage();
     await page.goto(reception.url);
     await page.locator('[name="blob"]').setInputFiles({ name: 'report.pdf', mimeType: 'application/pdf', buffer: PDF });
+    await page.getByLabel(/^Name/).fill('Ada');
+    await page.getByLabel(/^Email/).fill('ada@example.test');
+    await page.getByLabel(/^Description/).fill('Signed project brief.');
     await page.getByRole('button', { name: 'Upload', exact: true }).click();
     await expect(page.locator('body')).toContainText('Received.');
-    expect(reception.drops.listPendingForEndpoint('ep-browser')).toHaveLength(1);
+    const rows = reception.drops.listPendingForEndpoint('ep-browser');
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.filename_sanitized).toBe('report.pdf');
+    expect(await openDropBlobPiiField({ key: reception.key, endpoint_id: 'ep-browser', blob_id: rows[0]!.blob_id,
+      field: 'visitor_description', ciphertext: rows[0]!.visitor_description_encrypted! })).toBe('Signed project brief.');
     expect(reception.requests.filter(r => r.method === 'POST').map(r => r.path)).toEqual(['/reception/drop/ep-browser']);
   } finally { await context.close(); await reception.close(); }
 });

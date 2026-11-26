@@ -1,3 +1,5 @@
+import { createMailFollowUpStore, type MailFollowUpStore } from '../storage/mail-follow-up-store.js';
+import { createMailFollowUpSendStore, type MailFollowUpSendStore } from '../storage/mail-follow-up-send-store.js';
 import {
   MEMORY_RETENTION_DEFAULT_DAYS,
   defaultDdnsZone,
@@ -210,6 +212,8 @@ export interface StorageContext {
   db: Database.Database;
   preapprovalStorage: PreapprovalStorage;
   mailWorkStore: MailWorkStore;
+  mailFollowUpStore?: MailFollowUpStore;
+  mailFollowUpSendStore?: MailFollowUpSendStore;
   manifests: ManifestRegistry;
   /** D-170 — persistent body store for locally-authored (decomposed)
    *  catalog / ingredient / entity-schema manifests. Boot re-registers its
@@ -872,6 +876,8 @@ export const composeStorageContext = async (
   const browserLoginStore = createBrowserLoginStore(db, { key: () => getVaultKey?.() ?? null });
   const preapprovalStorage = createPreapprovalStorage(db, gatedActionChangeClock, () => getVaultKey?.() ?? null,
     { limits: preapprovalLimitsFromEnvironment(process.env) });
+  const mailFollowUpStore = createMailFollowUpStore(db, createPreapprovalCodec(() => getVaultKey?.() ?? null, 'Unlock Recued to use reply watches.'));
+  const mailFollowUpSendStore = createMailFollowUpSendStore(db, createPreapprovalCodec(() => getVaultKey?.() ?? null, 'Unlock Recued to use reply watches.'));
   const mailWorkStore = createMailWorkStore(db, createPreapprovalCodec(() => getVaultKey?.() ?? null));
   // Receipt content stays in the owner-only RPC. The bus frame only wakes
   // paired surfaces so reconnect/replay remains safe and bounded.
@@ -1048,7 +1054,7 @@ export const composeStorageContext = async (
   return {
     db,
     preapprovalStorage,
-    mailWorkStore,
+    mailWorkStore, mailFollowUpStore, mailFollowUpSendStore,
     manifests,
     localManifestStore,
     draftStore,

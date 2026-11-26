@@ -4,6 +4,7 @@ import { invalidateTriage, openTriage, triage, triageApprove, triageCard, triage
   triageNote, triageRefresh, triageSearch, triageSummary } from './helpers/approval-triage-fixture.js';
 
 let external: string[] = [];
+const queueTab = (page: Page, key: string) => triage(page).locator(`[data-recued-approvals-queue-key="${key}"]`);
 test.beforeEach(async ({ page }) => {
   external = [];
   await page.route('**/*', route => {
@@ -94,17 +95,72 @@ test('required reasons and held answer recovery preserve the shell navigation ow
   expect(await page.evaluate(() => { const event = new Event('beforeunload', { cancelable: true }); dispatchEvent(event); return event.defaultPrevented; })).toBe(false);
 });
 
-test('triage does not authorize an armed destructive gate until its exact second action', async ({ page }) => {
+test('the desktop queue keeps the selected question and its native reason through filtering and refresh', async ({ page }) => {
+  await openTriage(page, { width: 1440 });
+  const queue = triage(page).getByRole('tablist', { name: 'Pending decision queue' });
+  const panel = triage(page).getByRole('tabpanel');
+  await expect(queue.getByRole('tab')).toHaveCount(4);
+  await expect(queueTab(page, 'ask:ask-a')).toHaveAccessibleName(/Review customer follow-up 1.*Question.*just now/);
+  await triageSearch(page).fill('follow-up');
+  await triageFilter(page, 'ask').click();
+  await expect(queue.getByRole('tab')).toHaveCount(2);
+  const first = queueTab(page, 'ask:ask-a');
+  const second = queueTab(page, 'ask:ask-b');
+  await first.click();
+  await expect(first).toHaveAttribute('aria-selected', 'true');
+  await expect(first).toBeFocused();
+  await page.keyboard.press('Tab');
+  await expect(panel).toBeFocused();
+  const reason = triageNote(page, 'ask-a');
+  await reason.fill('Keep the draft with the first question.');
+  const original = await reason.elementHandle();
+
+  await second.click();
+  await expect(triageCard(page, 'ask-a')).toBeHidden();
+  await expect(triageCard(page, 'ask-b')).toBeVisible();
+  await page.evaluate(() => {
+    const fixture = window.__approvalTriage;
+    const first = fixture.asks[0]!;
+    fixture.asks = [...fixture.asks, { ...first, ask_id: 'ask-c', title: 'Earlier customer follow-up', created_at: first.created_at - 60000 }];
+  });
+  await invalidateTriage(page);
+  await expect(queue.getByRole('tab')).toHaveCount(3);
+  await expect(queue.getByRole('tab').first()).toHaveAccessibleName(/Earlier customer follow-up/);
+  await expect(second).toHaveAttribute('aria-selected', 'true');
+  await expect(second).toBeFocused();
+  await expect(triageSearch(page)).toHaveValue('follow-up');
+  await expect(triageFilter(page, 'ask')).toHaveAttribute('aria-pressed', 'true');
+  await second.press('ArrowUp');
+  await expect(first).toBeFocused();
+  await expect(first).toHaveAttribute('aria-selected', 'true');
+  await expect(reason).toHaveValue('Keep the draft with the first question.');
+  expect(await original!.evaluate(node => node.isConnected)).toBe(true);
+  await expect(triageNote(page, 'ask-b')).toHaveValue('');
+});
+
+test('the desktop queue submits only explicit decisions and focuses the next matching item', async ({ page }) => {
   await openTriage(page);
+  await queueTab(page, 'gate:gate-a').click();
   const gate = triageCard(page, 'gate-a'); const arm = gate.locator('[data-recued-approval-action="arm"]');
   await arm.focus(); await arm.press('Enter');
   await expect(gate.locator('[data-recued-approval-action="confirm"]')).toBeFocused();
   await triageFilter(page, 'ask').click(); await invalidateTriage(page); await expect(triageFilter(page, 'ask')).toBeFocused();
   await triageFilter(page, 'gate').click(); await expect(gate.locator('[data-recued-approval-action="confirm"]')).toBeVisible();
+  await triageFilter(page, 'all').click();
   expect(await page.evaluate(() => window.__approvalTriage.calls.filter(call => call.method === 'approval.resolve'))).toEqual([]);
   await page.evaluate(() => window.__approvalTriage.expectedWrites.push({ method: 'approval.resolve', args: { approval_id: 'gate-a', decision: 'approve' } }));
-  await gate.locator('[data-recued-approval-action="confirm"]').click();
+  await gate.locator('[data-recued-approval-action="confirm"]').press('Enter');
   await expect(gate).toHaveCount(0); await expect(triageFilter(page, 'all')).toHaveText('All (3)');
+  await expect(queueTab(page, 'plan:plan-a')).toHaveAttribute('aria-selected', 'true');
+  await expect(triageCard(page, 'plan-a')).toBeFocused();
+  await page.evaluate(() => window.__approvalTriage.expectedWrites.push({ method: 'chat.plan.cancel', args: { plan_id: 'plan-a' } }));
+  await triageCard(page, 'plan-a').locator('[data-recued-chat-plan-action="reject"]').press('Enter');
+  const receipt = triage(page).locator('[data-recued-approvals-plan-resolution]');
+  await expect(receipt).toBeVisible();
+  await expect(triageFilter(page, 'all')).toHaveText('All (2)');
+  await triageDrain(page);
+  await expect(triageCard(page, 'ask-a')).toBeFocused();
+  await expect(queueTab(page, 'ask:ask-a')).toHaveAttribute('aria-selected', 'true');
 });
 
 test('a pending secret guards departure, sends once and keeps later triage focus', async ({ page }) => {
@@ -131,6 +187,7 @@ test('a pending secret guards departure, sends once and keeps later triage focus
 
 test('a secret refresh keeps pending ownership and recovers a failed give without reviving retired controls', async ({ page }) => {
   await openTriage(page, { secret: true, held: ['notification.giveSecret'] });
+  await queueTab(page, 'ask:ask-a').click();
   const form = triageCard(page, 'ask-a').locator('[data-recued-ask-secret]'); const input = form.locator('input[type="password"]');
   const use = form.getByRole('button', { name: 'Use it', exact: true });
   const args = { ask_id: 'ask-a', value: 'first-fixture-value', remember: true };
@@ -154,6 +211,7 @@ test('a secret refresh keeps pending ownership and recovers a failed give withou
 
 test('an accepted departure fences a late secret reply and the next mount starts empty', async ({ page }) => {
   await openTriage(page, { secret: true, serverProfiles: true, held: ['notification.giveSecret'] });
+  await queueTab(page, 'ask:ask-a').click();
   const form = triageCard(page, 'ask-a').locator('[data-recued-ask-secret]');
   const args = { ask_id: 'ask-a', value: 'retired-fixture-value', remember: false };
   await form.locator('input[type="password"]').fill(args.value);
@@ -172,6 +230,7 @@ test('an accepted departure fences a late secret reply and the next mount starts
   await page.evaluate(() => { const f = window.__approvalTriage; f.held = []; f.release('notification.giveSecret', 'error'); });
   await triageDrain(page); await expect(triage(page)).toHaveCount(0);
   await page.evaluate(() => window.__app.setHash('#approvals'));
+  await queueTab(page, 'ask:ask-a').click();
   await expect(triageCard(page, 'ask-a').locator('input[type="password"]')).toHaveValue('');
   await expect(triageCard(page, 'ask-a').getByRole('alert')).toBeHidden();
 });
@@ -201,6 +260,10 @@ test.describe('pending decisions in Universal Search', () => {
   };
   const boot = (page: Page, options: Parameters<typeof openTriage>[1] = {}) => openTriage(page, { ...options, address: '#data/search' });
   const back = (page: Page) => triage(page).getByRole('link', { name: 'Back to search', exact: true });
+  const review = (page: Page) => triage(page).getByRole('region', { name: 'Matching decision navigation', exact: true });
+  const remaining = (page: Page) => review(page).getByRole('status');
+  const previous = (page: Page) => review(page).getByRole('button', { name: 'Previous matching decision', exact: true });
+  const next = (page: Page) => review(page).getByRole('button', { name: 'Next matching decision', exact: true });
 
   test('finds readable requests across all three kinds while excluding hidden payloads, raw metadata, and typed values', async ({ page }) => {
     await boot(page); await find(page);
@@ -214,9 +277,12 @@ test.describe('pending decisions in Universal Search', () => {
       f.asks[0]!.title = 'Review Café ﬁle <img.*>';
     });
     await group(page).getByRole('button', { name: 'Refresh pending decisions', exact: true }).click();
+    await type(page).selectOption('decision');
     for (const text of ['hidden-payload-needle', 'hidden-metadata-needle', 'typed-value-needle']) {
-      await query(page).fill(text); await expect(hits(page)).toHaveCount(0);
+      await query(page).fill(text);
       await expect(group(page)).toHaveAttribute('aria-busy', 'false');
+      await expect(group(page).getByText('No pending decisions match this search.', { exact: true })).toBeVisible();
+      await expect(hits(page)).toHaveCount(0);
     }
     await query(page).fill('CAFÉ FILE <img.*>'); await expect(hits(page)).toHaveCount(1);
     await expect(hit(page, 'ask:ask-a')).toContainText('Café ﬁle <img.*>');
@@ -244,6 +310,9 @@ test.describe('pending decisions in Universal Search', () => {
       await expect(triageCard(page, id)).toBeFocused();
       await expect(back(page)).toHaveAttribute('href', '#data/search');
       if (key === 'ask:ask-b') {
+        await expect(triageSearch(page)).toHaveValue(text);
+        await previous(page).press('Enter'); await expect(triageCard(page, 'ask-a')).toBeFocused();
+        await next(page).press('Enter'); await expect(triageCard(page, 'ask-b')).toBeFocused();
         await page.screenshot({ path: info.outputPath('decision-search-review-phone.png'), animations: 'disabled' });
         await page.goBack();
       } else await back(page).click();
@@ -251,6 +320,146 @@ test.describe('pending decisions in Universal Search', () => {
       await expect(hit(page, key)).toBeFocused(); await expect(hits(page)).toHaveCount(count);
       await expect.poll(async () => Math.abs(await top(key) - before)).toBeLessThanOrEqual(2);
     }
+  });
+
+  test('steps through matching reviews by keyboard without losing notes or destructive confirmation', async ({ page }, info) => {
+    await boot(page, { width: 390 }); await find(page, 'follow-up');
+    await hit(page, 'ask:ask-a').press('Enter');
+    await expect(triageSearch(page)).toHaveValue('follow-up');
+    await expect(triageCard(page, 'plan-a')).toBeHidden();
+    await expect(remaining(page)).toHaveText('3 matching decisions remaining. Reviewing 2 of 3.');
+    await triageNote(page).fill('Keep this review reason.');
+    await previous(page).focus(); await page.keyboard.press('Enter');
+    await expect(triageCard(page, 'gate-a')).toBeFocused();
+    await expect(previous(page)).toHaveAttribute('aria-disabled', 'true');
+    await triageCard(page, 'gate-a').locator('[data-recued-approval-action="arm"]').press('Enter');
+    const confirm = () => triageCard(page, 'gate-a').locator('[data-recued-approval-action="confirm"]');
+    await expect(confirm()).toBeVisible();
+    await next(page).focus(); await page.keyboard.press('Enter'); await expect(triageCard(page, 'ask-a')).toBeFocused();
+    await expect(triageNote(page)).toHaveValue('Keep this review reason.');
+    // Real keyboard traversal keeps the controls usable in WebKit too.
+    await previous(page).focus(); await page.keyboard.press(info.project.name === 'webkit' ? 'Alt+Tab' : 'Tab');
+    await expect(next(page)).toBeFocused(); await page.keyboard.press('Enter');
+    await expect(triageCard(page, 'ask-b')).toBeFocused(); await expect(next(page)).toHaveAttribute('aria-disabled', 'true');
+    await next(page).evaluate(button => (button as HTMLButtonElement).click()); await expect(triageCard(page, 'ask-b')).toBeFocused();
+    await previous(page).press('Enter'); await previous(page).press('Enter');
+    await expect(triageCard(page, 'gate-a')).toBeFocused(); await expect(confirm()).toBeVisible();
+    await page.screenshot({ path: info.outputPath('matching-decisions-phone.png'), animations: 'disabled' });
+    await back(page).click(); await expect(hit(page, 'ask:ask-a')).toBeFocused();
+    await expect(query(page)).toHaveValue('follow-up'); await expect(type(page)).toHaveValue('decision');
+  });
+
+  test('advances after each explicit decision across all three kinds and focuses the completed queue', async ({ page }) => {
+    await boot(page); await find(page); await hit(page, 'gate:gate-a').press('Enter');
+    await expect(remaining(page)).toHaveText('4 matching decisions remaining. Reviewing 1 of 4.');
+    await page.evaluate(() => window.__approvalTriage.expectedWrites.push(
+      { method: 'approval.resolve', args: { approval_id: 'gate-a', decision: 'approve' } },
+      { method: 'chat.plan.cancel', args: { plan_id: 'plan-a' } },
+      { method: 'notification.submitAnswer', args: { ask_id: 'ask-a', option_id: 'yes', note: 'Checked the extra visit.' } },
+      { method: 'notification.submitAnswer', args: { ask_id: 'ask-b', option_id: 'no' } },
+    ));
+    await triageCard(page, 'gate-a').locator('[data-recued-approval-action="arm"]').press('Enter');
+    await triageCard(page, 'gate-a').locator('[data-recued-approval-action="confirm"]').press('Enter');
+    await expect(triageCard(page, 'plan-a')).toBeFocused(); await expect(remaining(page)).toContainText('3 matching decisions remaining');
+    await expect(next(page)).toHaveAttribute('aria-disabled', 'false');
+    await triageCard(page, 'plan-a').locator('[data-recued-chat-plan-action="reject"]').press('Enter');
+    await expect(triageCard(page, 'ask-a')).toBeFocused();
+    await expect(triage(page).locator('[data-recued-approvals-plan-resolution]')).toBeVisible();
+    await triageNote(page).fill('Checked the extra visit.'); await triageApprove(page).press('Enter');
+    await expect(triageCard(page, 'ask-b')).toBeFocused();
+    await expect(remaining(page)).toHaveText('1 matching decision remaining. Reviewing 1 of 1.');
+    await triageCard(page, 'ask-b').locator('[data-recued-ask-option="no"]').press('Enter');
+    await expect(remaining(page)).toHaveText('0 matching decisions remaining.'); await expect(remaining(page)).toBeFocused();
+    await expect(previous(page)).toHaveAttribute('aria-disabled', 'true'); await expect(next(page)).toHaveAttribute('aria-disabled', 'true');
+    await back(page).click(); await expect(hits(page)).toHaveCount(0); await expect(query(page)).toBeFocused();
+    await expect(type(page)).toHaveValue('decision'); await expect(query(page)).toHaveValue('');
+  });
+
+  test('guards matching navigation during a write and keeps the exact failed review ready for retry', async ({ page }) => {
+    await boot(page); await find(page, 'additional visit'); await hit(page, 'ask:ask-a').press('Enter');
+    await triageNote(page).fill('Keep this if sending fails.');
+    await page.evaluate(() => { const f = window.__approvalTriage; f.held = ['notification.submitAnswer'];
+      f.expectedWrites.push({ method: 'notification.submitAnswer', args: { ask_id: 'ask-a', option_id: 'yes', note: 'Keep this if sending fails.' } }); });
+    await triageApprove(page).press('Enter');
+    await expect(next(page)).toHaveAttribute('aria-disabled', 'true');
+    // Dispatching click directly also exercises the handler's in-flight guard.
+    await next(page).evaluate(button => (button as HTMLButtonElement).click());
+    await expect(remaining(page)).toHaveText('2 matching decisions remaining. Reviewing 1 of 2.');
+    await page.evaluate(() => { const f = window.__approvalTriage; f.held = []; f.release('notification.submitAnswer', 'error'); });
+    await expect(triageApprove(page)).toBeFocused(); await expect(triageNote(page)).toHaveValue('Keep this if sending fails.');
+    await expect(triageCard(page, 'ask-a').getByRole('alert')).toBeVisible();
+    await expect(next(page)).toHaveAttribute('aria-disabled', 'false');
+    await page.evaluate(() => { const f = window.__approvalTriage; f.expectedWrites.push(f.expectedWrites[0]!); });
+    await triageApprove(page).press('Enter'); await expect(triageCard(page, 'ask-b')).toBeFocused();
+    await expect(remaining(page)).toContainText('1 matching decision remaining');
+  });
+
+  test('reconciles live removals and new matches without taking focus from later filter edits', async ({ page }) => {
+    await boot(page); await find(page, 'additional visit'); await hit(page, 'ask:ask-a').press('Enter');
+    await page.evaluate(() => { window.__approvalTriage.asks = window.__approvalTriage.asks.filter(ask => ask.ask_id !== 'ask-a'); });
+    await invalidateTriage(page); await expect(triageCard(page, 'ask-b')).toBeFocused();
+    await expect(remaining(page)).toHaveText('1 matching decision remaining. Reviewing 1 of 1.');
+    await triageSearch(page).fill('Welcome pack'); await expect(triageSearch(page)).toBeFocused();
+    await expect(remaining(page)).toHaveText('1 matching decision remaining.');
+    await page.evaluate(() => { const f = window.__approvalTriage; f.asks = [{ ...f.asks[0]!, ask_id: 'new-ask', title: 'Welcome pack follow-up' }]; });
+    await invalidateTriage(page); await expect(triageSearch(page)).toBeFocused();
+    await expect(remaining(page)).toHaveText('2 matching decisions remaining.');
+    await next(page).press('Enter'); await expect(triageCard(page, 'plan-a')).toBeFocused();
+    await next(page).press('Enter'); await expect(triageCard(page, 'new-ask')).toBeFocused();
+    await triageFilter(page, 'gate').press('Enter'); await expect(remaining(page)).toHaveText('0 matching decisions remaining.');
+    await expect(triageFilter(page, 'gate')).toBeFocused();
+    await triageClear(page).press('Enter'); await expect(triageSearch(page)).toHaveValue('');
+    await expect(remaining(page)).toHaveText('3 matching decisions remaining.');
+    await back(page).click(); await expect(query(page)).toHaveValue('additional visit'); await expect(type(page)).toHaveValue('decision');
+  });
+
+  test('keeps a secret inside its review and guards navigation until its submission settles', async ({ page }) => {
+    await boot(page, { secret: true, held: ['notification.giveSecret'] }); await find(page);
+    await hit(page, 'ask:ask-a').press('Enter');
+    const form = triageCard(page, 'ask-a').locator('[data-recued-ask-secret]');
+    const input = form.locator('input[type="password"]'); const use = form.getByRole('button', { name: 'Use it', exact: true });
+    const args = { ask_id: 'ask-a', value: 'queue-fixture-value', remember: false };
+    await input.fill(args.value);
+    await next(page).press('Enter'); await expect(triageCard(page, 'ask-b')).toBeFocused();
+    await previous(page).press('Enter'); await expect(input).toHaveValue(args.value);
+    await page.evaluate(args => window.__approvalTriage.expectedWrites.push({ method: 'notification.giveSecret', args }), args);
+    await use.press('Enter'); await expect(use).toHaveAttribute('aria-busy', 'true');
+    await expect(previous(page)).toHaveAttribute('aria-disabled', 'true'); await expect(next(page)).toHaveAttribute('aria-disabled', 'true');
+    await next(page).evaluate(button => (button as HTMLButtonElement).click()); await expect(use).toBeFocused();
+    await page.evaluate(() => { const f = window.__approvalTriage; f.held = []; f.release('notification.giveSecret', 'success'); });
+    await expect(input).toHaveValue(''); await expect(next(page)).toHaveAttribute('aria-disabled', 'false');
+    await next(page).press('Enter'); await expect(triageCard(page, 'ask-b')).toBeFocused();
+  });
+
+  test('explains an arrival that stopped matching and waits for explicit navigation to the remaining match', async ({ page }) => {
+    await boot(page); await find(page, 'additional visit');
+    await page.evaluate(() => { const f = window.__approvalTriage; f.afterReply = method => {
+      if (method === 'notification.pending_asks') { f.afterReply = undefined;
+        f.asks = f.asks.map(ask => ask.ask_id === 'ask-a' ? { ...ask, body: 'Revised customer request.' } : ask);
+      }
+    }; });
+    await hit(page, 'ask:ask-a').press('Enter');
+    const landing = triage(page).locator('[data-decision-search-landing]');
+    await expect(landing).toContainText('no longer matches'); await expect(landing).toBeFocused();
+    await expect(triageCard(page, 'ask-a')).toBeHidden(); await expect(triageCard(page, 'ask-b')).not.toBeFocused();
+    await expect(remaining(page)).toHaveText('1 matching decision remaining.');
+    await next(page).press('Enter'); await expect(triageCard(page, 'ask-b')).toBeFocused(); await expect(landing).toBeHidden();
+    await back(page).click(); await expect(query(page)).toHaveValue('additional visit'); await expect(hits(page)).toHaveCount(1);
+  });
+
+  test('labels incomplete queues and recovers their missing matches without changing the selected review', async ({ page }) => {
+    await boot(page); await find(page); await hit(page, 'gate:gate-a').press('Enter');
+    await expect(triageCard(page, 'gate-a')).toBeFocused();
+    await page.evaluate(() => { window.__approvalTriage.failing = ['notification.pending_asks']; });
+    await triageRefresh(page).press('Enter');
+    await expect(remaining(page)).toContainText('among loaded decisions');
+    await expect(triage(page).getByRole('alert').first()).toContainText('temporarily unavailable');
+    await next(page).press('Enter'); await expect(triageCard(page, 'plan-a')).toBeFocused();
+    await page.evaluate(() => { window.__approvalTriage.failing = []; });
+    await triageRefresh(page).focus(); await triageRefresh(page).press('Enter');
+    await expect(remaining(page)).toHaveText('4 matching decisions remaining. Reviewing 2 of 4.');
+    await expect(triageRefresh(page)).toBeFocused();
+    await next(page).press('Enter'); await expect(triageCard(page, 'ask-a')).toBeFocused();
   });
 
   test('refreshes pending counts after an explicit decision and keeps the search when its selected row disappears', async ({ page }) => {

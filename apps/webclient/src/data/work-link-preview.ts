@@ -1,9 +1,12 @@
-import { dueDayIso, isMentionOnlyEmail, type ContactRecord, type WorkEntity, type WorkEntityGetRpcResponse, type CollectionRecord, type CollectionSourceFreshness } from '@recued/contracts';
+import { dueDayIso, isMentionOnlyEmail, type Asset, type ContactRecord, type WorkEntity, type WorkEntityGetRpcResponse, type CollectionRecord, type CollectionSourceFreshness } from '@recued/contracts';
 import { bookingTimeLabel, bookingReaderWarning, commitmentDeadlineLabel, commitmentDirectionLabel, commitmentReaderWarning, commitmentStatusLabel, taskDeadlineLabel, taskReaderWarning } from '@recued/ui-shared/work-entity-page';
 import { sourceRecordLinkDetails } from './source-record-link.js';
 import type { WorkReaderLink } from './task-note-source.js';
 
+export type RecordLinkTarget = WorkReaderLink | { tab: 'asset'; id: string; hash: string };
+
 export interface WorkLinkPreviewReaders {
+  asset?: (id: string) => Promise<Pick<Asset, 'id' | 'name' | 'status' | 'created_at' | 'deleted_at' | 'sync_state'> | null>;
   source?: (args: { platform: 'mail' | 'calendar'; slug: string; record_id: string }) => Promise<{ record: CollectionRecord | null; source_freshness?: CollectionSourceFreshness }>;
   contact?: (id: string) => Promise<{ contact: ContactRecord | null }>;
   work?: (kind: 'task' | 'note' | 'commitment' | 'booking' | 'project', id: string) => Promise<WorkEntityGetRpcResponse>;
@@ -17,14 +20,22 @@ const brief = (text: string, limit = 180): string => {
   const chars = Array.from(text.replace(/\s+/gu, ' ').trim());
   return chars.slice(0, limit).join('') + (chars.length > limit ? '…' : '');
 };
-const unavailable = (target: WorkReaderLink): WorkLinkPreviewResult =>
+const unavailable = (target: RecordLinkTarget): WorkLinkPreviewResult =>
   ({ state: 'missing', message: 'This ' + target.tab + ' is no longer available.' });
 class PreviewReadError extends Error {}
-const unconfirmed = (target: WorkReaderLink) => new PreviewReadError('This linked ' + target.tab + ' could not be confirmed. Try again.');
+const unconfirmed = (target: RecordLinkTarget) => new PreviewReadError('This linked ' + target.tab + ' could not be confirmed. Try again.');
 
 /** Read the saved record only after Preview is requested. A preview is never
  * passed back as a confirmed record or permission to edit. */
-export const readWorkLinkPreview = async (target: WorkReaderLink, readers: WorkLinkPreviewReaders, receivedAt?: number): Promise<WorkLinkPreviewResult> => {
+export const readWorkLinkPreview = async (target: RecordLinkTarget, readers: WorkLinkPreviewReaders, receivedAt?: number): Promise<WorkLinkPreviewResult> => {
+  if (target.tab === 'asset') {
+    if (!readers.asset) throw new PreviewReadError('Yours asset previews are unavailable here.');
+    const asset = await readers.asset(target.id);
+    if (!asset || asset.deleted_at != null || asset.sync_state === 'tombstoned') return unavailable(target);
+    if (asset.id !== target.id) throw unconfirmed(target);
+    return { state: 'ready', title: brief(asset.name || 'Asset', 240),
+      details: ['Yours', 'Status: ' + asset.status.replaceAll('_', ' ')] };
+  }
   if (!('id' in target)) {
     if (!readers.source) throw new PreviewReadError('Source previews are unavailable here.');
     const { record, source_freshness } = await readers.source({ platform: target.tab, slug: target.collectionSlug, record_id: target.recordId });

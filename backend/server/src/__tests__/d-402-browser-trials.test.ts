@@ -7,6 +7,12 @@ import {
 
 import type { BrowserSecretNotifier } from '../bridges/browser-secrets.js';
 import { createBrowserTrials } from '../bridges/browser-trials.js';
+import type { BridgeResult } from '@recued/contracts';
+import type { ResolvedCall } from '@recued/ingredients';
+import { vi } from 'vitest';
+import { createBridgeDomAdapter } from '../bridges/dom-adapter.js';
+import type { DispatchRequest } from '../bridges/dispatcher.js';
+import { KERNEL_MANIFESTS } from '../kernel-manifests.js';
 
 /** A notification block that keeps its asks and lets the test answer them. */
 const block = (leftOver: Array<{ ask_id: string; handler_kind: string }> = []) => {
@@ -97,8 +103,45 @@ describe('D-402 slice C — a trial asks before each change in a web page', () =
       .toBe('Type “Ada” into the search box “Search”, then send the form on https://login.example.com/.');
     expect(browserTrialSentence({ ...at, action: 'click', element: { role: 'button', label: 'Delete' } }))
       .toBe('Click the button “Delete” on https://login.example.com/.');
-    expect(browserTrialSentence({ ...at, action: 'open', url: 'https://example.com/a' })).toBe('Open https://example.com/a in a new tab.');
+    // 2026-11-23 (the owner: "ditch that ask for try it") — opening a page, going to an address and a collect turning
+    //   pages are reads: a trial asks before none of them, so a prompt naming one is no trial prompt.
+    for (const action of ['open', 'go', 'collect']) {
+      expect(readBrowserTrialPrompt({ ...at, action, url: 'https://example.com/a' })).toBeUndefined();
+    }
+    expect(readBrowserTrialPrompt({ ...at, action: 'back' })).toMatchObject({ action: 'back' });
     expect(browserTrialSentence({ ...at, action: 'upload', element: { role: 'file field', label: 'CV' }, file: 'cv.pdf' }))
       .toBe('Put your file “cv.pdf” into the file field “CV” on https://login.example.com/.');
+  });
+});
+
+// 2026-11-23 (the owner: "make the go read no ask default too", "ditch that ask for try it") — a trial asks before each
+//   change: going to an address, like opening a page and a collect turning pages, is a read, and asks nothing.
+describe('a trial of a draft asks before changes only', () => {
+  it('going to an address asks nothing; going back, a change, asks with the page it leaves', async () => {
+    const requests: DispatchRequest[] = [];
+    let url = 'https://shop.example.com/start';
+    const adapter = createBridgeDomAdapter({
+      manifests: { get: slug => KERNEL_MANIFESTS.find(m => m.slug === slug) ?? null },
+      getDispatcher: () => ({ cancel: vi.fn(), canResolve: vi.fn(() => true), dispatch: async request => {
+        requests.push(request);
+        if (request.action === 'navigate') url = String(request.args.url);
+        if (request.action === 'go_back') url = 'https://shop.example.com/start';
+        return { kind: 'completed' as const, bridge_client_token_id: 'bridge', attempts: 1,
+          result: { command_id: 'command', duration_ms: 1, bridge_version: '0.0.13', idempotency_key_seen: false, status: 'ok',
+            outputs: { page: '7:DOC1', url, title: 'Shop', html: '<main><h1>Shop</h1></main>', truncated: false } } as BridgeResult };
+      } }),
+      trials: { isTrial: run_id => run_id === 'trial-run',
+        ask: async ({ prompt }) => { asked.push({ action: prompt.action, url: prompt.url, sent: requests.length }); return { done: true }; } },
+    });
+    const asked: Array<{ action: string; url: string; sent: number }> = [];
+    const call: ResolvedCall = { slug: 'dom-act', risk_tier: 'write', output: {}, input: { target: '*://*/*', page: '7:DOC1',
+      steps: [{ do: 'go', address: 'https://shop.example.com/lamps' }, { do: 'back' }] },
+      stepMeta: { recipe_id: 'draft', step_id: 'act', run_id: 'trial-run' } };
+    await adapter(call);
+    // One ask, for going back, on the page the step leaves, once the go had gone there and nothing more was sent.
+    const went = requests.findIndex(request => request.action === 'navigate');
+    expect(went).toBeGreaterThanOrEqual(0);
+    expect(asked).toEqual([{ action: 'back', url: 'https://shop.example.com/lamps', sent: went + 1 }]);
+    expect(requests.map(request => request.action).filter(action => ['navigate', 'go_back'].includes(action))).toEqual(['navigate', 'go_back']);
   });
 });

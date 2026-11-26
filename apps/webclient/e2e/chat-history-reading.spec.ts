@@ -1,12 +1,107 @@
 import { expect, test, type Page } from '@playwright/test';
 import { HARNESS_ORIGIN } from './helpers/harness-origin.js';
 import { openChatHistory } from './helpers/chat-history.js';
+import { CONNECTION_BANNER } from './helpers/full-app.js';
 
 const url = () => `${HARNESS_ORIGIN}/full-app-harness.html?chat_search=1`;
 const message = (page: Page, id: string) => page.locator(`[data-recued-chat-route-message="${id}"]`);
 const input = (page: Page) => page.locator('[data-recued-chat-route-input]');
 const latest = (page: Page) => page.getByRole('button', { name: 'Go to latest messages', exact: true });
 const ready = (page: Page) => page.waitForFunction(() => window.__app?.ready === true);
+
+const desktopChatLayout = (page: Page) => page.locator('[data-recued-chat-route]').evaluate(route => {
+  const history = route.querySelector('[data-recued-chat-route-session-list]')!;
+  const thread = route.querySelector('[data-recued-chat-route-thread]')!;
+  const workspace = route.parentElement!;
+  const paneBottom = thread.getBoundingClientRect().bottom;
+  return {
+    paneBottom,
+    clearance: workspace.getBoundingClientRect().bottom - paneBottom,
+    paneMismatch: Math.abs(history.getBoundingClientRect().bottom - paneBottom),
+    historyScroll: history.querySelector('.chat-history-browse')!.scrollTop,
+    transcriptScroll: thread.querySelector('[data-recued-chat-route-messages]')!.scrollTop,
+    workspaceScroll: workspace.scrollTop,
+  };
+});
+
+test('wide Chat fills the workspace and keeps history and transcript scrolling independently', async ({ page }) => {
+  await page.setViewportSize({ width: 1536, height: 1200 });
+  await page.addInitScript(() => {
+    const sessions = Array.from({ length: 48 }, (_, index) => ({
+      id: index === 0 ? 'a' : `layout-${index}`,
+      title: index === 0 ? 'Weekly planning' : `Saved chat ${index}`,
+      created_at: 1000, last_active_at: 4000 - index, message_count: index === 0 ? 250 : 2,
+      archived: false, picker_state: { current: 'self' }, model_routing: { current: 'byok' },
+    }));
+    Object.assign(window, { __connectionsFixture: (method: string) =>
+      method === 'chat.sessions.list' ? { result: { sessions } } : undefined });
+  });
+  await page.goto(`${url()}#chat/session/a`);
+  await ready(page);
+  await expect(message(page, 'a-m249')).toBeInViewport();
+  await page.getByRole('button', { name: 'Open navigation', exact: true }).click();
+  await page.getByRole('button', { name: 'Pin navigation', exact: true }).click();
+  await input(page).fill('Finish the weekly plan');
+  const send = page.getByRole('button', { name: 'Send', exact: true });
+  await expect(send).toBeInViewport({ ratio: 1 });
+
+  const initial = await desktopChatLayout(page);
+  expect(initial.clearance).toBeGreaterThanOrEqual(0);
+  expect(initial.clearance).toBeLessThan(48);
+  expect(initial.paneMismatch).toBeLessThanOrEqual(1);
+  expect(initial.workspaceScroll).toBe(0);
+  const sendBefore = (await send.boundingBox())!.y;
+
+  await page.locator('[data-recued-chat-route-session-row="layout-47"]').scrollIntoViewIfNeeded();
+  const afterHistoryScroll = await desktopChatLayout(page);
+  expect(afterHistoryScroll.historyScroll).toBeGreaterThan(initial.historyScroll);
+  expect(afterHistoryScroll.transcriptScroll).toBe(initial.transcriptScroll);
+
+  await message(page, 'a-m190').scrollIntoViewIfNeeded();
+  const afterTranscriptScroll = await desktopChatLayout(page);
+  expect(afterTranscriptScroll.transcriptScroll).toBeLessThan(initial.transcriptScroll);
+  expect(afterTranscriptScroll.historyScroll).toBe(afterHistoryScroll.historyScroll);
+  expect(afterTranscriptScroll.workspaceScroll).toBe(0);
+  expect((await send.boundingBox())!.y).toBeCloseTo(sendBefore);
+});
+
+test('desktop Chat keeps Send above the connection banner in a short window', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 500 });
+  await page.goto(`${url()}&settle_reads=1#chat/session/a`);
+  await ready(page);
+  await expect(message(page, 'a-m249')).toBeInViewport();
+  const draft = 'Pick this up when the server comes back.';
+  await input(page).fill(draft);
+  const send = page.getByRole('button', { name: 'Send', exact: true });
+  await expect(send).toBeInViewport({ ratio: 1 });
+  const before = await desktopChatLayout(page);
+
+  await page.evaluate(() => {
+    window.__app.setServerAvailable(false);
+    window.__app.fireState('closed');
+  });
+  const banner = page.locator(`[${CONNECTION_BANNER}][data-state="offline"]`);
+  await expect(banner).toBeVisible();
+  await expect(input(page)).toHaveValue(draft);
+  await expect(send).toBeInViewport({ ratio: 1 });
+  const after = await desktopChatLayout(page);
+  const bannerTop = (await banner.boundingBox())!.y;
+  expect(after.paneBottom).toBeLessThan(before.paneBottom);
+  expect(bannerTop - after.paneBottom).toBeGreaterThanOrEqual(0);
+  expect(Math.abs(bannerTop - after.paneBottom - before.clearance)).toBeLessThanOrEqual(1);
+  expect(after.paneMismatch).toBeLessThanOrEqual(1);
+  expect(after.workspaceScroll).toBe(0);
+  const hit = await send.evaluate(button => {
+    const box = button.getBoundingClientRect();
+    return button.contains(document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2));
+  });
+  expect(hit).toBe(true);
+
+  await page.setViewportSize({ width: 1280, height: 390 });
+  await send.scrollIntoViewIfNeeded();
+  await expect(send).toBeInViewport({ ratio: 1 });
+  expect((await desktopChatLayout(page)).workspaceScroll).toBeGreaterThan(0);
+});
 
 test('an ordinary open reaches the latest reply, and returning restores the visible message and draft', async ({ page }) => {
   await page.goto(`${url()}#chat/session/a`); await ready(page);

@@ -1,4 +1,4 @@
-import type { KitchenImportDraft, KitchenWorkBase, KitchenWorkItem, RecipeDefinition } from '@recued/contracts';
+import type { IngredientDraftSummary, KitchenImportDraft, KitchenWorkBase, KitchenWorkItem, RecipeDefinition } from '@recued/contracts';
 import { validateRecipe } from '@recued/recipes';
 import { validatePack } from '@recued/ingredient-authoring';
 
@@ -109,15 +109,51 @@ const trialAnswer = (method: string, args: unknown): FixtureAnswer => {
   return undefined;
 };
 
-/** D-333 — Kitchen's work in progress as the server keeps it, for `?kitchen_import=<mode>`.
- *  Every mode but `new`, `saved-recipe` and `missing` starts with one item an AI app handed
- *  over; `new` and `saved-recipe` start with none, and a first change creates one (with
- *  `saved-recipe`, changes that name a saved recipe). Saving a recipe is answered too, so the
- *  item can be seen to leave Kitchen. */
 /** What the fake transport answers: a result, an error, or nothing (another fixture's turn). */
 type FixtureAnswer = { result?: unknown; error?: { code: string; message: string } } | undefined;
 
+const createKitchenHomeFixture = () => {
+  const now = Date.now();
+  const first: KitchenWorkItem = {
+    draft_id: 'briefing', kind: 'recipe', title: 'Morning briefing', revision: 3, from: 'Kitchen',
+    created_at: now - 600_000, updated_at: now - 120_000, ready: true, problems: 0,
+  };
+  const items: KitchenWorkItem[] = [first, {
+    ...first,
+    draft_id: 'renewals',
+    title: 'Quarter-end customer follow-up and renewal briefing for North America enterprise account owners after the September pricing and retention review',
+    updated_at: now - 240_000, from: 'VS Code', ready: false, problems: 3,
+    base: { recipe_id: 'quarterly-renewals', version: 2 },
+  }];
+  const drafts: IngredientDraftSummary[] = [{
+    draft_id: 'bookings', title: 'Bookings', slug: 'bookings', surface: null, operation_count: 2,
+    created_at: now - 600_000, updated_at: now - 360_000,
+  }];
+  return (method: string, args: unknown): FixtureAnswer => {
+    if (method === 'kitchen.draft.list') return { result: { items } };
+    if (method === 'ingredient.draft.list') return { result: { ok: true, drafts } };
+    if (method === 'kitchen.draft.discard') {
+      const input = args as { draft_id: string; expected_revision: number };
+      const index = items.findIndex(item => item.draft_id === input.draft_id && item.revision === input.expected_revision);
+      if (index < 0) return { error: { code: 'conflict', message: 'The draft has changed.' } };
+      items.splice(index, 1);
+      return { result: { draft_id: input.draft_id, discarded: true } };
+    }
+    if (method === 'ingredient.draft.delete') {
+      const index = drafts.findIndex(draft => draft.draft_id === (args as { draft_id: string }).draft_id);
+      if (index >= 0) drafts.splice(index, 1);
+      return { result: { ok: true, deleted: index >= 0 } };
+    }
+    return undefined;
+  };
+};
+
+/** D-333 — Kitchen's work in progress for `?kitchen_import=<mode>`.
+ *  `home` serves a mix of recipe and pack drafts. Editor modes can start with an imported
+ *  draft or create one on the first change. Saving a recipe and discarding drafts update
+ *  the work shown in Kitchen. */
 export const createKitchenImportFixture = (mode: string | null) => {
+  if (mode === 'home') return createKitchenHomeFixture();
   let source = JSON.stringify(mode === 'pack' ? pack : mode === 'trial' ? trialRecipe : recipe, null, 2);
   if (mode === 'crlf') source = source.replace(/\n/g, '\r\n');
   if (mode === 'invalid') source = '{"recipe_id":';

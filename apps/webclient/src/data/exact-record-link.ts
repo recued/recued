@@ -1,14 +1,14 @@
 import { recordLink } from '../shell/record-link.js';
 import { serializeShellRoute } from '../shell/route.js';
 import { workReaderLink, type WorkReaderLink } from './task-note-source.js';
-import { readWorkLinkPreview, type WorkLinkPreviewReaders, type WorkLinkPreviewResult } from './work-link-preview.js';
+import { readWorkLinkPreview, type RecordLinkTarget, type WorkLinkPreviewReaders, type WorkLinkPreviewResult } from './work-link-preview.js';
 
 export const EXACT_LINK_OPEN_ACTION = 'universal-search-open-exact-link';
 export const EXACT_LINK_RETRY_ACTION = 'universal-search-retry-exact-link';
 export const EXACT_LINK_KEY_ATTR = 'data-exact-link-key';
 export const RECORD_LINK_QUERY_LIMIT = 65_536;
 export interface ExactRecordLinkMatch {
-  key: string; target: WorkReaderLink; href: string; title: string; details: string[]; identity: string; routeAliases?: string[]; warning?: string;
+  key: string; target: RecordLinkTarget; href: string; title: string; details: string[]; identity: string; routeAliases?: string[]; warning?: string;
 }
 export type ExactRecordLinkState = { state: 'loading' }
   | { state: 'ready'; match: ExactRecordLinkMatch }
@@ -29,13 +29,20 @@ export const parseRecordLinkQuery = (query: string, clientHref: string): RecordL
   if (!target || ('id' in target ? target.id.length > 2048 : target.collectionSlug.length > 2048 || target.recordId.length > 2048)) return invalid;
   return { kind: 'link', target };
 };
-export const exactRecordNoun = (target: WorkReaderLink) => target.tab === 'mail' ? 'email' : target.tab === 'calendar' ? 'event' : target.tab;
+export const assetRecordIdentity = (id: string, createdAt: number): string => JSON.stringify(['asset', id, createdAt]);
+
+export const exactRecordNoun = (target: RecordLinkTarget) => target.tab === 'mail' ? 'email' : target.tab === 'calendar' ? 'event' : target.tab;
 
 /** Project through the existing reader, retaining only bounded labels and a
  * lifetime token. Bodies and pairing parameters never enter lookup state. */
-export const readExactRecordLink = async (target: WorkReaderLink, readers: WorkLinkPreviewReaders, clientHref: string, onPreview?: (result: Extract<WorkLinkPreviewResult, { state: 'ready' }>) => void): Promise<Exclude<ExactRecordLinkState, { state: 'loading' | 'error' | 'invalid' }>> => {
+export const readExactRecordLink = async (target: RecordLinkTarget, readers: WorkLinkPreviewReaders, clientHref: string, onPreview?: (result: Extract<WorkLinkPreviewResult, { state: 'ready' }>) => void): Promise<Exclude<ExactRecordLinkState, { state: 'loading' | 'error' | 'invalid' }>> => {
   let identity: string | undefined, canonical = target, merged = false, routeAliases: string[] | undefined;
   const result = await readWorkLinkPreview(target, {
+    ...(readers.asset ? { asset: async (id: string) => {
+      const asset = await readers.asset!(id);
+      if (asset && Number.isSafeInteger(asset.created_at) && asset.created_at >= 0) identity = assetRecordIdentity(asset.id, asset.created_at);
+      return asset;
+    } } : {}),
     ...(readers.work ? { work: async (kind: 'task' | 'note' | 'commitment' | 'booking' | 'project', id: string) => {
       const reply = await readers.work!(kind, id), entity = reply.entity;
       if (entity && Number.isSafeInteger(entity.created_at)) identity = JSON.stringify([kind, entity.id, entity.source_id, entity.source_record_id ?? null, entity.created_at]);

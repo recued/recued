@@ -707,6 +707,8 @@ export interface ChatRouteConn extends ChatQueueClient, ChatDeliveryClient, Prom
   ): Promise<import('@recued/contracts').WorkEntityListRpcResponse>;
 }
 
+const CHAT_SHELL_WORKSPACE = `[data-recued-webclient-content] > [${CHAT_ROUTE_HOST_ATTR}]`;
+
 /** This route's OWN chrome. Exported for the style-scale ratchet, which must
  *  assert on exactly this and not on the combined `CHAT_ROUTE_STYLES` — that
  *  folds in the primitives and provenance sheets, whose radii belong to their
@@ -2891,6 +2893,53 @@ button.chat-composer-attachment-name, .chat-message-file-preview {
   [${CHAT_ROUTE_ANSWER_WAITING_ATTR}]::before,
   [${CHAT_ROUTE_SESSION_STATUS_ATTR}="working"]::before {
     animation: none;
+  }
+}
+@media (min-width: 1280px) and (hover: hover) and (pointer: fine) {
+  /* The shell already ends above the connection banner. Let the header and
+     any route notices take their actual height before filling the rest. */
+  ${CHAT_SHELL_WORKSPACE} {
+    display: flex;
+    flex-direction: column;
+    min-height: 100%;
+  }
+  ${CHAT_SHELL_WORKSPACE} > .chat-route-shell {
+    flex: 1 0 auto;
+  }
+  ${CHAT_SHELL_WORKSPACE} :is([${CHAT_ROUTE_SESSION_LIST_ATTR}], [${CHAT_ROUTE_THREAD_ATTR}]) {
+    height: auto;
+    min-height: 0;
+  }
+  ${CHAT_SHELL_WORKSPACE} [${CHAT_ROUTE_THREAD_ATTR}] {
+    display: flex;
+  }
+  ${CHAT_SHELL_WORKSPACE} [${CHAT_ROUTE_HISTORY_LANDING_ATTR}] {
+    flex: 1 0 auto;
+    min-height: 0;
+  }
+  /* Only the scrolling regions absorb long lists and transcripts. The route
+     may grow in a short window when its controls need more room. */
+  ${CHAT_SHELL_WORKSPACE} :is(.chat-history-browse, .chat-thread-messages) {
+    height: 0;
+    min-height: 4rem;
+  }
+  @media (max-height: 600px) {
+    ${CHAT_SHELL_WORKSPACE},
+    ${CHAT_SHELL_WORKSPACE} [${CHAT_ROUTE_THREAD_ATTR}] > .chat-composer {
+      padding-block: var(--wc-space-sm, 8px);
+    }
+    ${CHAT_SHELL_WORKSPACE} > .chat-route-header {
+      margin-bottom: var(--wc-space-sm, 8px);
+    }
+    ${CHAT_SHELL_WORKSPACE} [${CHAT_ROUTE_THREAD_ATTR}] > .chat-composer {
+      margin-block: var(--wc-space-sm, 8px);
+    }
+    ${CHAT_SHELL_WORKSPACE} :is(.chat-thread-header, .chat-thread-messages) {
+      padding-block: 4px;
+    }
+    ${CHAT_SHELL_WORKSPACE} .chat-thread-messages {
+      min-height: 2rem;
+    }
   }
 }
 @media (max-width: 820px) {

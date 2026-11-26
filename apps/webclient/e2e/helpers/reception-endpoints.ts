@@ -1,4 +1,5 @@
 import { expect, type Page } from '@playwright/test';
+import { buildViewAsVisitorPanel } from '@recued/contracts';
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { HARNESS_ORIGIN } from './harness-origin.js';
@@ -16,7 +17,14 @@ export const releaseEndpoint = (page: Page, method: string, failed = false) => p
 }, { method, failed });
 export const failEndpoint = (page: Page, method?: string) => page.evaluate(method => { (window as any).__endpoints.failing = method ? [method] : []; }, method);
 export async function installEndpointPage(page: Page) {
-  await page.addInitScript({ content: `(${installReceptionEndpointsFixture.toString()})();` });
+  const now = 1_700_000_000_000;
+  const visitorPanel = buildViewAsVisitorPanel({
+    kind: 'scheduling_link',
+    packet_declaration: { packet_kind: 'scheduling_link_packet', source_query_ref: { kind: 'data.calendar.combined' } },
+    now,
+    expires_at: now + 7 * 86_400_000,
+  });
+  await page.addInitScript({ content: `(${installReceptionEndpointsFixture.toString()})(${JSON.stringify(visitorPanel)});` });
   const policy = (await readFile(resolve(import.meta.dirname, '../../public/_headers'), 'utf8')).match(/^\s*Content-Security-Policy:\s*(.+)$/m)![1]!;
   await page.route('**/full-app-harness.html*', async route => { const response = await route.fetch(); await route.fulfill({ response, headers: { ...response.headers(), 'content-security-policy': policy } }); });
 }

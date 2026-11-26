@@ -81,6 +81,7 @@ import {
 type WorkEntityDispatchers = ReturnType<typeof createWorkEntityDispatchers>;
 
 export interface WorkEntityCrudRpcDeps {
+  refundCredits?: import('./refund-credits-service.js').RefundCreditsService;
   /** Read path for `list` count + (via the resolver below) the rows. */
   store: WorkEntityStore;
   /** The owner's zone: a DATE-ONLY due's day is read in it by the Tasks
@@ -730,6 +731,8 @@ type WorkEntityCrudMethods =
   | 'work_entity.task.mark_done'
   | 'work_entity.commitment.fulfill'
   | 'work_entity.commitment.cancel'
+  | 'work_entity.refund_credits.read'
+  | 'work_entity.refund_credits.change'
   | 'work_entity.delete';
 
 export const makeWorkEntityCrudHandlers = (
@@ -750,6 +753,8 @@ export const makeWorkEntityCrudHandlers = (
       'work_entity.task.mark_done',
       'work_entity.commitment.fulfill',
       'work_entity.commitment.cancel',
+      'work_entity.refund_credits.read',
+      'work_entity.refund_credits.change',
       'work_entity.delete',
     ],
     handlers: {
@@ -805,6 +810,18 @@ export const makeWorkEntityCrudHandlers = (
         requireRegisteredClient(client);
         if (client.client_kind !== 'webclient') throw new RpcError('unauthorized', 'A paired webclient is required.', 401);
         return handleWorkEntityCommitmentClose(deps, args, 'cancelled');
+      },
+      'work_entity.refund_credits.read': async (args, client) => {
+        requireRegisteredClient(client);
+        if (client.client_kind !== 'webclient') throw new RpcError('unauthorized', 'A paired webclient is required.', 401);
+        if (!deps.refundCredits) throw new RpcError('unavailable', 'Refund credit review is unavailable.', 503);
+        return deps.refundCredits.read(args);
+      },
+      'work_entity.refund_credits.change': async (args, client) => {
+        requireRegisteredClient(client);
+        if (client.client_kind !== 'webclient') throw new RpcError('unauthorized', 'A paired webclient is required.', 401);
+        if (!deps.refundCredits) throw new RpcError('unavailable', 'Refund credit review is unavailable.', 503);
+        return deps.refundCredits.change(args);
       },
       'work_entity.delete': async (args, client) => {
         requireRegisteredClient(client);

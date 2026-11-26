@@ -19,7 +19,7 @@ const boot = async (page: Page, tab: 'task' | 'contact' = 'task', hold = false):
   } });
   await page.goto(`${BASE}?data=${tab === 'task' ? 'work-entities-paged&task_filters=1' : 'contacts'}${hold ? '&hold_rpc=data_views.update' : ''}#views/${ID}`);
   await page.waitForFunction(() => window.__app?.ready === true);
-  await expect(opened(page)).toBeVisible();
+  await expect(tools(page).getByRole('button', { name: 'Update view', exact: true })).toBeVisible();
 };
 
 test('Task alerts enable, pause and resume durably without changing the saved filters', async ({ page }) => {
@@ -112,7 +112,6 @@ test('Records alerts preserve saved filters across enable, reload, pause and res
     views[0].alert.status = 'unavailable';
     sessionStorage.setItem(key, JSON.stringify(views));
   }, KEY);
-  await openSavedViewList(page);
   await tools(page).getByRole('button', { name: 'Refresh saved views', exact: true }).click();
   await expect(opened(page)).toContainText('Alerts resume when the data is available');
   await tools(page).screenshot({ path: test.info().outputPath('recued-records-alert-controls.png') });
@@ -131,7 +130,6 @@ test('Refreshing updates alert health without changing filters or their revision
     views[0].alert.status = 'unavailable';
     sessionStorage.setItem(key, JSON.stringify(views));
   }, KEY);
-  await openSavedViewList(page);
   await tools(page).getByRole('button', { name: 'Refresh saved views', exact: true }).click();
   await expect(opened(page)).toContainText('Alerts waiting for your tasks');
   await expect(search).toHaveValue('Unsaved');
@@ -139,6 +137,7 @@ test('Refreshing updates alert health without changing filters or their revision
 });
 
 test('Alert controls in the refreshed list use its reviewed revision while an older view stays open', async ({ page }) => {
+  await page.setViewportSize({ width: 1100, height: 900 });
   await boot(page);
   await page.evaluate(key => {
     const views = JSON.parse(sessionStorage.getItem(key)!);

@@ -190,6 +190,10 @@ const whoAsks = (key: { readonly principal: WriteRulePrincipal }, names: Readonl
 /** How long a pass lasts and how often it let a write through. */
 const passTerms = (pass: BrowserPassRow): string => {
   const used = `used ${pass.uses} time${pass.uses === 1 ? '' : 's'}`;
+  // D-402 (2026-11-23) — "Allow on <site> until this job ends": a session pass whose conversation is an AI app's job.
+  if (pass.kind !== 'always' && pass.channel_session_id?.startsWith('job:') === true) {
+    return `For one job of this app, until ${formatTime(pass.expires_at ?? Number.NaN)} at the latest; ${used}`;
+  }
   return pass.kind === 'always'
     ? `Always, since ${formatDate(pass.created_at)}; ${used}`
     : `In one conversation, until ${formatTime(pass.expires_at ?? Number.NaN)}; ${used}`;

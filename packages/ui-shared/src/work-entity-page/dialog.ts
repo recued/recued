@@ -80,6 +80,7 @@ export interface WorkEntityDialogProps {
   task_completion?: { done: boolean; can_change: boolean; busy?: boolean; notice?: string };
   task_details_open?: boolean;
   task_view?: WorkEntityTaskView;
+  work_reader_inline?: boolean;
   note_details_open?: boolean;
   note_view?: WorkEntityNoteView;
   duplicate?: { can_duplicate: boolean; busy?: boolean; from?: string };
@@ -88,14 +89,14 @@ export interface WorkEntityDialogProps {
   commitment_view?: WorkEntityCommitmentView;
 }
 
-/** Render the dialog. The dialog body is wrapped in a backdrop +
- *  modal envelope; the host portals or appends as needed. */
+/** Render a modal or a reader within its list workspace. */
 export const renderWorkEntityDialog = (props: WorkEntityDialogProps): string => {
   if (props.kind === 'task' && props.state.mode === 'edit' && props.task_view?.mode === 'read') {
     return renderTaskReader(props.task_view, {
       source_label: props.sources.find(source => source.id === props.state.source_id)?.label ?? 'Source unavailable',
       busy: props.state.submitting, error: props.state.submit_error, history_html: props.history_html,
       close_label: props.close_label, completion: props.task_completion, duplicate: props.duplicate,
+      inline: props.work_reader_inline,
     });
   }
   if (props.kind === 'commitment' && props.state.mode === 'edit' && props.commitment_view?.mode === 'read') {
@@ -104,12 +105,13 @@ export const renderWorkEntityDialog = (props: WorkEntityDialogProps): string => 
       can_fulfill: props.commitment_lifecycle?.can_fulfill ?? (props.commitment_lifecycle?.can_change === true),
       can_cancel: props.commitment_lifecycle?.can_cancel ?? (props.commitment_lifecycle?.can_change === true),
       busy: props.state.submitting, error: props.state.submit_error,
-      history_html: props.history_html, close_label: props.close_label,
+      history_html: props.history_html, close_label: props.close_label, inline: props.work_reader_inline,
     });
   }
   if (props.kind === 'note' && props.state.mode === 'edit' && props.note_view?.mode === 'read') {
     return renderNoteReader(props.note_view,
-      props.sources.find(source => source.id === props.state.source_id)?.label ?? 'Source unavailable', props.history_html, props.close_label);
+      props.sources.find(source => source.id === props.state.source_id)?.label ?? 'Source unavailable',
+      props.history_html, props.close_label, props.work_reader_inline);
   }
   const spec = workEntityNavSpec(props.kind);
   const title =
@@ -212,8 +214,7 @@ export const renderWorkEntityDialog = (props: WorkEntityDialogProps): string => 
           >×</button>
         </header>
         <form class="work-entity-dialog-form" data-form-kind="${e(props.kind)}"${editorStateAttr}>
-          ${props.kind === 'task' ? '<div class="work-entity-task-content">' : ''}
-          ${props.kind === 'note' ? '<div class="work-entity-note-content">' : ''}
+          <div class="work-entity-dialog-body${props.kind === 'task' ? ' work-entity-task-content' : props.kind === 'note' ? ' work-entity-note-content' : ''}" data-dialog-scroll-key="${e(props.kind)}:${e(props.state.mode)}:${e(props.state.entity_id ?? props.state.source_id ?? '')}">
           ${sourcePicker}
           ${completionHtml}
           ${commitmentHtml}
@@ -227,9 +228,8 @@ export const renderWorkEntityDialog = (props: WorkEntityDialogProps): string => 
             ? props.kind === 'note' ? `<details class="work-entity-note-secondary"><summary>Activity timeline</summary>${props.history_html}</details>`
               : `<section class="work-entity-dialog-history" aria-label="What has happened to this ${e(spec.singular_label.toLowerCase())}">${props.history_html}</section>`
             : ''}
-          ${props.kind === 'task' || props.kind === 'note' ? '</div>' : ''}
           ${props.duplicate?.from ? `<p class="work-entity-note-meta" role="status">${props.state.mode === 'create' ? `New ${e(props.kind)} draft from ${e(props.duplicate.from)}. Review the Source and details before saving.` : `Copied from ${e(props.duplicate.from)}.`}</p>` : ''}
-          <footer class="work-entity-dialog-actions">
+          </div><footer class="work-entity-dialog-actions">
             ${props.kind === 'task' && props.state.mode === 'edit' && props.duplicate?.can_duplicate ? `<button type="button" class="work-entity-dialog-cancel" data-action="duplicate-work-entity"${props.state.submitting || props.duplicate.busy ? ' disabled' : ''}>${props.duplicate.busy ? 'Opening copy…' : 'Duplicate task'}</button>` : ''}
             <button
               type="button"

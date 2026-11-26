@@ -14,6 +14,7 @@ import {
   admitByOpRisk,
   isBrowserActionSlug,
   isOutboundSendSlug,
+  kernelOpRiskTier,
   resolveSessionGrantOffer,
   resolveTrustCeiling,
 } from '../index.js';
@@ -31,14 +32,14 @@ const admit = (source: ExecutionSource, slug: string, risk_tier: RiskTier = 'wri
 
 describe('D-335 — a browser write follows its approval: it asks in the owner\'s chat', () => {
   it('names the kernel browser writes, alias included, and keeps them apart from sends', () => {
-    for (const slug of ['dom-write', 'dom-click', 'dom-open', 'core-dom-click']) expect(isBrowserActionSlug(slug), slug).toBe(true);
+    for (const slug of ['dom-write', 'dom-click', 'core-dom-click']) expect(isBrowserActionSlug(slug), slug).toBe(true);
     expect(isBrowserActionSlug('dom-inspect')).toBe(false);
     expect(isOutboundSendSlug('dom-click')).toBe(false);
   });
 
   it('asks in the chat by its approval, with no review lift', () => {
     expect(resolveTrustCeiling(CHAT)).toBe('read');
-    for (const slug of ['dom-write', 'dom-click', 'dom-open']) {
+    for (const slug of ['dom-write', 'dom-click']) {
       const decision = admit(CHAT, slug);
       if (decision.verdict !== 'ask') throw new Error(`${slug}: expected ask, got ${decision.verdict}`);
       expect(decision.detail).toBe('This acts on a web page in your browser, signed in as you, so Recued asks you first.');
@@ -48,7 +49,16 @@ describe('D-335 — a browser write follows its approval: it asks in the owner\'
 
   it('runs when the owner runs it from the app, like every write', () => {
     expect(resolveTrustCeiling(APP)).toBe('admin');
-    for (const slug of ['dom-write', 'dom-click', 'dom-open']) expect(admit(APP, slug).verdict, slug).toBe('admit');
+    for (const slug of ['dom-write', 'dom-click']) expect(admit(APP, slug).verdict, slug).toBe('admit');
+  });
+
+  // 2026-11-23 (the owner: "make all reads & open as normal read permission, which does not need ask, it is more
+  // align with human expectation") — opening a page is a read: no browser action, so no pass and no hold names it, and
+  // it runs for the chat and an AI app as every read does.
+  it('opening a page is a read that asks no one, the chat\'s or an AI app\'s', () => {
+    expect(kernelOpRiskTier('core.dom.open')).toBe('read');
+    expect(isBrowserActionSlug('dom-open')).toBe(false);
+    for (const source of [CHAT, APP_AI]) expect(admit(source, 'dom-open', 'read').verdict).toBe('admit');
   });
 
   // Slice F lets the owner allow a site for a session; the ask must stay learnable.

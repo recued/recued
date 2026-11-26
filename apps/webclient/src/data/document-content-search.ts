@@ -102,9 +102,10 @@ export const createDocumentContentSearch = (callers: DocumentSearchCallers | und
   };
 };
 
-export const renderDocumentContentSearch = (state: DocumentSearchState | undefined, actionAttr: string): string => {
+export const renderDocumentContentSearch = (state: DocumentSearchState | undefined, actionAttr: string, compact = false): string => {
   if (!state?.query) return '';
   const button = (name: string, text: string) => `<button type="button" class="data-button" ${actionAttr}="${DOCUMENT_SEARCH_ACTION}${name}" ${DOCUMENT_SEARCH_FOCUS}="${name}">${e(text)}</button>`;
+  if (compact && state.phase === 'idle') return `<section class="rq-document-search rq-document-search-idle" aria-label="Document contents">${button('start', 'Search file contents')}</section>`;
   const result = state.result, c = result?.coverage;
   const pending = state.phase === 'searching';
   const skipped = c ? c.unreadable + c.missing_converter + c.too_large + c.empty_extraction + c.unsupported_encoding : 0;

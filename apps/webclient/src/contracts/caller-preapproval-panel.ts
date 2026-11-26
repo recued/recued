@@ -107,6 +107,7 @@ export const mountCallerPreapprovalPanel = (options: {
   readonly intro?: string;
   /** Told after each end that ended something, so its page can refresh what else it shows. */
   readonly onEnded?: (ended: StopAllowingResult) => void;
+  readonly onVisibilityChange?: (visible: boolean) => void;
   /** D-402 slice F5 — live updates: a caller's pre-approval granted, used or ended anywhere (another
    *  device, a run, the chat) reads the list again. */
   readonly subscribe?: BroadcastSubscriber['on'];
@@ -145,6 +146,11 @@ export const mountCallerPreapprovalPanel = (options: {
     for (const stop of stopListening.splice(0)) stop();
     if (liveTimer !== undefined) clearTimeout(liveTimer);
     liveTimer = undefined;
+  };
+  const setVisible = (visible: boolean): void => {
+    if (host.hidden === !visible) return;
+    host.hidden = !visible;
+    options.onVisibilityChange?.(visible);
   };
 
   const el = (tag: string, className?: string, text?: string): HTMLElement => {
@@ -297,7 +303,7 @@ export const mountCallerPreapprovalPanel = (options: {
     const shown = groups ?? [];
     // Nothing to list (yet), nothing just said: the section stays out of the way. Most recipes have
     // nothing here, so a page never flashes "Loading…" for it.
-    host.hidden = listError === null && actionError === null && note === null && shown.length === 0;
+    setVisible(listError !== null || actionError !== null || note !== null || shown.length > 0);
     if (host.hidden) return;
     if (options.heading !== undefined) {
       root.appendChild(el(`h${String(options.headingLevel ?? 3)}`, options.headingClassName ?? 'cpa-title', options.heading));
@@ -354,7 +360,7 @@ export const mountCallerPreapprovalPanel = (options: {
         if (disposed || mine !== generation) return;
         // A server from before these: the section goes, rather than saying it could not load.
         if (groups === undefined && classifyRpcError(error).code === 'unknown_method') {
-          host.hidden = true;
+          setVisible(false);
           root.remove();
           disposed = true;
           stopLive();

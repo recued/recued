@@ -1573,14 +1573,53 @@ describe('composeExecutorConfig kernel dynamic imports', () => {
       { registry: deps.collectionRegistry },
       { slug: 'work', record_id: 'm1' },
     );
+    // The third argument is the guard checked just before the provider send (a conditional follow-up or a quote
+    // reminder, through `dispatchMailWithReplyWatch`); a plain send has none.
     expect(mocks.handleCollectionMailSend).toHaveBeenCalledWith(
       { registry: deps.collectionRegistry },
       expect.objectContaining({ instance: 'work', subject: 'Hello' }),
+      undefined,
     );
     expect(mocks.handleNotificationSend).toHaveBeenCalledWith(
       { dispatchers: deps.notificationChannelDispatchers },
       { channels: ['slack'], text: 'Heads up' },
     );
+  });
+
+  it('awaits the compose watch receipt before and after the native send and reuses its confirmed result on a replay', async () => {
+    const { compose, mocks } = await importComposerWithKernelMocks();
+    const receipt = { source_id: 'provider-1', message_id: 'provider-1', sent_at: 1700000000000, _id: null, _collection: 'data.mail' as const };
+    let enter!: () => void;
+    const beforeSend = vi.fn().mockImplementationOnce(() => new Promise(resolve => { enter = () => resolve({ id: 'watch-1' }); }))
+      .mockResolvedValueOnce({ id: 'watch-1', cached: receipt });
+    const afterSend = vi.fn(async () => {});
+    mocks.handleCollectionMailSend.mockResolvedValueOnce(receipt);
+    const config = await compose(buildDeps({ getExecuteDeps: () => ({ mailFollowUpSend: { beforeSend, afterSend } as never }) }));
+    const input = { instance: 'work', to: ['alex@example.test'], subject: 'Watched send', body_text: 'Please reply.', run_id: 'run-native' };
+    const sending = kernelOf(config).mailSend!(input);
+    await vi.waitFor(() => expect(enter).toBeTypeOf('function'));
+    expect(mocks.handleCollectionMailSend).not.toHaveBeenCalled(); enter();
+    expect(await sending).toEqual(receipt);
+    // No scheduled review on a direct send: `beforeSend`'s second argument is the reviewed schedule, absent here.
+    expect(beforeSend).toHaveBeenCalledWith(input, undefined); expect(afterSend).toHaveBeenCalledWith('watch-1', receipt);
+    expect(await kernelOf(config).mailSend!(input)).toEqual(receipt);
+    expect(mocks.handleCollectionMailSend).toHaveBeenCalledTimes(1); expect(afterSend).toHaveBeenCalledTimes(1);
+  });
+
+  it('passes the private scheduled review to the watch observer and refuses to silently drop it when unwired', async () => {
+    const { compose, mocks } = await importComposerWithKernelMocks();
+    const { withPreapprovalIo } = await import('../preapproval-io-context.js');
+    const scheduled = { plan: {} as never, future_execution_ref: 'paf-reviewed' };
+    const beforeSend = vi.fn(async () => undefined);
+    let service = { beforeSend } as never;
+    const config = await compose(buildDeps({ getExecuteDeps: () => ({ mailFollowUpSend: service }) }));
+    const input = { instance: 'work', to: ['alex@example.test'], subject: 'Scheduled', body_text: 'Please reply.', run_id: 'reviewed-run' };
+    const io = { scheduledMailFollowUp: () => scheduled } as never;
+    await withPreapprovalIo(io, () => kernelOf(config).mailSend!(input));
+    expect(beforeSend).toHaveBeenCalledWith(input, scheduled); expect(mocks.handleCollectionMailSend).toHaveBeenCalledTimes(1);
+    service = undefined as never;
+    await expect(withPreapprovalIo(io, () => kernelOf(config).mailSend!(input))).rejects.toMatchObject({ code: 'not_configured' });
+    expect(mocks.handleCollectionMailSend).toHaveBeenCalledTimes(1);
   });
 
   it('a fenced send that ends without an outcome asks the owner "Did this email go out?"', async () => {

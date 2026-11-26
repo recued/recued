@@ -1,3 +1,9 @@
+import type { SettingsSearchResults } from '../settings/settings-search.js';
+import { renderSettingsSearch } from '../settings/settings-search-view.js';
+import { savedViewSearchUncertain, type SavedViewSearchState } from './saved-view-search.js';
+import { renderSavedViewSearch } from './saved-view-search-view.js';
+import { connectionSearchUncertain, type ConnectionSearchState } from '../connections/connection-search.js';
+import { renderConnectionSearch } from '../connections/connection-search-view.js';
 /** Universal search over saved contacts, work, collections and installed
  *  capabilities. Work is grouped by kind, collections by source.
  *
@@ -35,15 +41,19 @@ import type {
   UniversalSearchResultType,
   ReminderSearchStatus,
 } from '@recued/contracts';
-import { filterUniversalSearch, renderSearchTypeFilter, searchTypeCounts, SEARCH_TYPE_LABELS } from './universal-search-filter.js';
+import { filterUniversalSearch, renderSearchTypeFilter, searchTypeCounts, SEARCH_CLEAR_TYPE_ACTION, SEARCH_TYPE_LABELS } from './universal-search-filter.js';
 
 import type { AssetSearchState } from './asset-search.js';
 import type { ChatSearchState } from './chat-search.js';
 import type { ReminderSearchState } from '../reminders/reminder-search.js';
 import type { PromptSearchState } from '../automation/prompt-search.js';
 import { renderPromptSearch } from '../automation/prompt-search-view.js';
+import { renderFollowUpSearch } from '../mail/mail-follow-up-search-view.js';
+import type { MailFollowUpSearchState } from '../mail/mail-follow-up-search.js';
 import { renderDecisionSearch } from '../approvals/decision-search-view.js';
 import type { PendingDecisionSearchState } from '../approvals/pending-decision-search.js';
+import { renderRunSearch } from '../logs/run-search-view.js';
+import type { RunSearchState } from '../logs/run-search.js';
 import { renderReminderSearch, type ReminderSearchTriageView } from '../reminders/reminder-search-view.js';
 import { serializeChatAnswerAddress } from '../shell/route.js';
 import { mailDraftRecipients, type MailDraftSearchState } from '../mail/mail-draft-search.js';
@@ -146,6 +156,7 @@ export interface UniversalSearchProps {
   /** What the owner typed. */
   query: string;
   resultType?: UniversalSearchResultType;
+  sourcesOpen?: boolean;
   debouncing?: boolean;
   recordSearchAvailable?: boolean;
   workSearchAvailable?: boolean;
@@ -173,7 +184,19 @@ export interface UniversalSearchProps {
   reminderTriage?: ReminderSearchTriageView;
   searchWriting?: boolean;
   promptSearch?: PromptSearchState;
+  followUpSearch?: MailFollowUpSearchState;
   decisionSearch?: PendingDecisionSearchState;
+  settingsSearch?: SettingsSearchResults;
+  savedViewSearch?: SavedViewSearchState;
+  savedViewOpening?: string;
+  savedViewOpenError?: string;
+  currentSavedViewId?: string;
+  connectionSearch?: ConnectionSearchState;
+  connectionOpening?: string;
+  connectionOpenError?: string;
+  runSearch?: RunSearchState;
+  runOpening?: string;
+  runOpenError?: string;
   decisionOpening?: string;
   decisionOpenError?: string;
   promptOpening?: string;
@@ -587,7 +610,29 @@ export const renderUniversalSearch = (
   }
   const selectedType = props.resultType ?? 'all';
   const typeCounts = searchTypeCounts(props)[selectedType];
-  const typeControls = renderSearchTypeFilter(props);
+  const typeControls = renderSearchTypeFilter(props, true);
+  const counts = searchTypeCounts(props);
+  // Missing optional host seams are not failed reads. Report only sources this
+  // host actually supplied, and keep partial/failing reads visible in the summary.
+  const availableTypes = [
+    ...(props.groups !== undefined || props.recordSearchAvailable !== undefined || props.loading || props.error ? ['mail', 'calendar', 'file'] as const : []),
+    ...(props.workGroups !== undefined || props.workSearchAvailable !== undefined || props.workLoading || props.workError || props.workUnsupported ? ['task', 'note', 'project', 'commitment', 'booking'] as const : []),
+    ...(props.contactSearch ? ['contact'] as const : []), ...(props.assetSearch ? ['asset'] as const : []),
+    ...(props.draftSearch || props.recoveryDraftSearch ? ['draft'] as const : []), ...(props.chatSearch ? ['chat'] as const : []),
+    ...(props.reminderSearch ? ['reminder'] as const : []), ...(props.promptSearch ? ['scheduled_prompt'] as const : []), ...(props.followUpSearch ? ['follow_up'] as const : []),
+    ...(props.decisionSearch ? ['decision'] as const : []), ...(props.runSearch ? ['run'] as const : []),
+    ...(props.connectionSearch ? ['connection'] as const : []), ...(props.savedViewSearch ? ['saved_view'] as const : []),
+    ...(props.settingsSearch ? ['setting'] as const : []),
+    ...(props.recipes !== undefined || props.packs !== undefined || props.capabilitiesLoading || props.capabilitiesError ? ['capability'] as const : []),
+  ];
+  const sourceCounts = availableTypes.filter(type => selectedType === 'all' || type === selectedType).map(type => counts[type]);
+  const sourcePending = props.debouncing || sourceCounts.some(value => value.pending);
+  const sourceUnavailable = sourceCounts.some(value => value.unavailable);
+  const sourceStale = (selectedType === 'all' || selectedType === 'run') && props.runSearch?.stale
+    || (selectedType === 'all' || selectedType === 'connection') && props.connectionSearch?.stale
+    || (selectedType === 'all' || selectedType === 'saved_view') && props.savedViewSearch?.stale;
+  const sourceMore = sourceCounts.some(value => value.more);
+  const sourceStatus = !props.query.trim() ? 'Search sources' : [sourcePending ? 'Searching…' : '', sourceUnavailable ? 'Some sources unavailable' : '', sourceStale ? 'Refresh available' : '', sourceMore ? 'More available' : ''].filter(Boolean).join(' · ') || 'Checked sources';
   props = filterUniversalSearch(props, selectedType);
   const typeUncertain = selectedType !== 'all' && (typeCounts.pending || typeCounts.unavailable || typeCounts.more);
   const typeFeedback = selectedType === 'all' ? '' : typeCounts.pending
@@ -607,15 +652,25 @@ export const renderUniversalSearch = (
   if (props.draftSearch && !props.draftSearch.unsupported) scope = `Saved mail drafts, ${scope.charAt(0).toLowerCase()}${scope.slice(1)}`;
   if (props.recoveryDraftSearch?.available) scope = `Drafts kept in this tab, ${scope.charAt(0).toLowerCase()}${scope.slice(1)}`;
   if (props.reminderSearch && !props.reminderSearch.unsupported) scope = `Reminders, ${scope.charAt(0).toLowerCase()}${scope.slice(1)}`;
+  if (props.followUpSearch && !props.followUpSearch.unsupported) scope = `Reply watches, ${scope.charAt(0).toLowerCase()}${scope.slice(1)}`;
   if (props.promptSearch && !props.promptSearch.unsupported) scope = `Scheduled prompts, ${scope.charAt(0).toLowerCase()}${scope.slice(1)}`;
+  if (props.settingsSearch) scope = `Settings, ${scope.charAt(0).toLowerCase()}${scope.slice(1)}`;
+  if (props.savedViewSearch) scope = `Saved views, ${scope.charAt(0).toLowerCase()}${scope.slice(1)}`;
+  if (props.connectionSearch) scope = `Connections, ${scope.charAt(0).toLowerCase()}${scope.slice(1)}`;
+  if (props.runSearch) scope = `Run history, ${scope.charAt(0).toLowerCase()}${scope.slice(1)}`;
   if (props.decisionSearch) scope = `Pending decisions, ${scope.charAt(0).toLowerCase()}${scope.slice(1)}`;
   if (props.chatSearch && !props.chatSearch.unsupported) scope = `Chat messages, ${scope.charAt(0).toLowerCase()}${scope.slice(1)}`;
   if (selectedType !== 'all') scope = `Showing only ${SEARCH_TYPE_LABELS[selectedType]} results.`;
-  const box = `<div class="rq-search-tools">${input}
-${typeControls}</div><p id="rq-search-scope" class="rq-subtle"${selectedType !== 'all' ? ' role="status"' : ''}>${scope}${contactScope}${props.documentSearch ? ' Document contents are searched separately when you choose Search file contents.' : ''}</p>${renderDocumentContentSearch(props.documentSearch, props.actionAttr)}`;
+  const box = `<div class="rq-search-tools">${input}${typeControls}</div><p id="rq-search-scope" class="rq-search-scope">${selectedType === 'all' ? 'Search saved work on this server.' : `Showing only ${e(SEARCH_TYPE_LABELS[selectedType])} results.`}</p>`;
+  const documents = renderDocumentContentSearch(props.documentSearch, props.actionAttr, true);
+  const sourceDetails = (content: string, total?: string): string => `<div class="rq-source-bar"><details class="rq-sources"${props.sourcesOpen ? ' open' : ''}>
+    <summary data-search-sources-focus>${total ? `<span>${total}</span> · ` : ''}<span role="status">${e(sourceStatus)}</span><span class="rq-source-details-label"> · Details</span></summary>
+    <div class="rq-source-body"><p class="rq-subtle">${scope}${contactScope}${props.documentSearch ? ' Document contents are searched separately when you choose Search file contents.' : ''}</p><p class="rq-subtle" id="rq-type-counts">Counts show loaded results. + means more may be available.</p>${content}</div>
+  </details>${selectedType !== 'all' ? `<button type="button" class="rq-retry" ${props.actionAttr}="${SEARCH_CLEAR_TYPE_ACTION}"${props.searchWriting || props.reminderTriage?.writing ? ' disabled' : ''}>Clear type filter</button>` : ''}</div>`;
   if (q === '') {
-    return `<div class="rq-search">${box}
-${selectedType === 'draft' ? renderRecoveryDraftGroup(props) : selectedType === 'scheduled_prompt' ? renderPromptSearch(props.promptSearch, props.actionAttr, props.promptOpening, props.promptOpenError, props.debouncing, props.searchWriting) : selectedType === 'decision' ? renderDecisionSearch(props.decisionSearch, props.actionAttr, props.decisionOpening, props.decisionOpenError, props.debouncing, props.searchWriting) : selectedType === 'reminder' ? renderReminderSearch(props.reminderSearch, props.actionAttr, props.reminderStatus, props.reminderDatesHtml, props.reminderTriage) : ''}
+    return `<div class="rq-search">${box}${sourceDetails('')}
+${selectedType === 'follow_up' ? renderFollowUpSearch(props.followUpSearch, props.actionAttr, true, props.debouncing, props.searchWriting) : selectedType === 'setting' ? renderSettingsSearch(props.settingsSearch, props.query, props.actionAttr, props.debouncing, props.searchWriting) : selectedType === 'saved_view' ? renderSavedViewSearch(props.savedViewSearch, props.actionAttr, props.savedViewOpening, props.savedViewOpenError, props.debouncing, props.searchWriting, props.currentSavedViewId) : selectedType === 'connection' ? renderConnectionSearch(props.connectionSearch, props.actionAttr, props.connectionOpening, props.connectionOpenError, props.debouncing, props.searchWriting) : selectedType === 'run' ? renderRunSearch(props.runSearch, props.actionAttr, props.runOpening, props.runOpenError, props.debouncing, props.searchWriting) : selectedType === 'draft' ? renderRecoveryDraftGroup(props) : selectedType === 'scheduled_prompt' ? renderPromptSearch(props.promptSearch, props.actionAttr, props.promptOpening, props.promptOpenError, props.debouncing, props.searchWriting) : selectedType === 'decision' ? renderDecisionSearch(props.decisionSearch, props.actionAttr, props.decisionOpening, props.decisionOpenError, props.debouncing, props.searchWriting) : selectedType === 'reminder' ? renderReminderSearch(props.reminderSearch, props.actionAttr, props.reminderStatus, props.reminderDatesHtml, props.reminderTriage) : ''}
+${documents}
 ${props.recentWorkHtml ?? ''}
 ${props.recentSearches?.length ? `<section class="rq-recent" aria-labelledby="rq-recent-title">
   <div class="rq-recent-head"><h2 id="rq-recent-title">Recent searches</h2><button type="button" class="rq-recent-clear" ${props.actionAttr}="${SEARCH_RECENT_CLEAR_ACTION}" ${SEARCH_RECENT_FOCUS_ATTR}="clear">Clear history</button></div>
@@ -635,14 +690,32 @@ ${props.recentSearchNotice ? `<p class="${props.recentSearchNotice.error ? 'rq-e
   const workGroups = props.workGroups ?? [];
   const visibleWork = workGroups.filter(group => group.matches.length > 0 || group.error);
   const workCount = workGroups.reduce((count, group) => count + group.matches.length, 0);
+  const followUpCount = props.followUpSearch?.matches.length ?? 0;
+  const followUpGroup = renderFollowUpSearch(props.followUpSearch, props.actionAttr, selectedType === 'follow_up', props.debouncing, props.searchWriting);
+  // ⛔ Reply watches on a server without them (`unsupported`) are certainly empty, not uncertain: a server not yet
+  // updated has none. Counted as uncertain, they took "No matches", "Did you mean" and the marketplace offer away
+  // from every search there (found at the 26.11.26 cut). Runs and chats differ: such a server HAS them and
+  // cannot search them, so they stay uncertain and the owner is asked to update.
+  const followUpsUncertain = props.followUpSearch && !props.followUpSearch.unsupported && (!props.followUpSearch.loaded || props.followUpSearch.loading || props.followUpSearch.error || props.followUpSearch.next_cursor);
   const promptCount = props.promptSearch?.matches.length ?? 0;
   const decisionCount = props.decisionSearch?.matches.length ?? 0;
+  const settingCount = props.settingsSearch?.matches.length ?? 0;
+  const settingGroup = renderSettingsSearch(props.settingsSearch, props.query, props.actionAttr, props.debouncing, props.searchWriting);
+  const savedViewCount = props.savedViewSearch?.matches.length ?? 0;
+  const savedViewGroup = renderSavedViewSearch(props.savedViewSearch, props.actionAttr, props.savedViewOpening, props.savedViewOpenError, props.debouncing, props.searchWriting, props.currentSavedViewId);
+  const savedViewsUncertain = savedViewSearchUncertain(props.savedViewSearch) || !!props.savedViewOpenError;
+  const connectionCount = props.connectionSearch?.matches.length ?? 0;
+  const connectionGroup = renderConnectionSearch(props.connectionSearch, props.actionAttr, props.connectionOpening, props.connectionOpenError, props.debouncing, props.searchWriting);
+  const connectionsUncertain = connectionSearchUncertain(props.connectionSearch) || !!props.connectionOpenError;
+  const runCount = props.runSearch?.matches.length ?? 0;
+  const runGroup = renderRunSearch(props.runSearch, props.actionAttr, props.runOpening, props.runOpenError, props.debouncing, props.searchWriting, selectedType === 'run');
+  const runsUncertain = props.runSearch && (!props.runSearch.loaded || props.runSearch.loading || props.runSearch.error || props.runSearch.unsupported || props.runSearch.stale || props.runSearch.next_cursor) || props.runOpenError;
   const decisionGroup = renderDecisionSearch(props.decisionSearch, props.actionAttr, props.decisionOpening, props.decisionOpenError, props.debouncing, props.searchWriting);
   const decisionsUncertain = props.decisionSearch && (!props.decisionSearch.loaded || props.decisionSearch.loading || props.decisionSearch.incomplete) || props.decisionOpenError;
   const promptGroup = renderPromptSearch(props.promptSearch, props.actionAttr, props.promptOpening, props.promptOpenError, props.debouncing, props.searchWriting);
   const promptsUncertain = props.promptSearch?.loading || props.promptSearch?.error || props.promptSearch?.unsupported || props.promptOpenError;
   const reminderCount = props.reminderSearch?.matches.length ?? 0;
-  const reminderGroup = renderReminderSearch(props.reminderSearch, props.actionAttr, props.reminderStatus, props.reminderDatesHtml, props.reminderTriage);
+  const reminderGroup = renderReminderSearch(props.reminderSearch, props.actionAttr, props.reminderStatus, props.reminderDatesHtml, props.reminderTriage, selectedType === 'reminder');
   const remindersUncertain = props.reminderSearch?.loading || props.reminderSearch?.error || props.reminderSearch?.unsupported || props.reminderSearch?.next_cursor;
   const chatCount = props.chatSearch?.matches.length ?? 0;
   const chatGroup = renderChatGroup(props);
@@ -665,60 +738,63 @@ ${props.recentSearchNotice ? `<p class="${props.recentSearchNotice.error ? 'rq-e
   const progress = pending || props.workLoading || props.contactSearch?.loading ? `<p class="rq-hint" role="status">${pending || (props.workLoading ? 'Searching tasks, notes, projects, commitments and bookings…' : 'Searching contacts…')}</p>` : '';
   const failed = props.error !== undefined || props.workError !== undefined
     || props.capabilitiesError !== undefined || props.contactSearch?.error !== undefined || props.assetSearch?.error !== undefined || props.draftSearch?.error !== undefined || props.chatSearch?.error !== undefined || props.reminderSearch?.error !== undefined || workGroups.some(group => group.error)
-    || !!props.recoveryDraftSearch?.issues.length || props.recoveryDraftError !== undefined || !!promptsUncertain || !!decisionsUncertain;
+    || !!props.recoveryDraftSearch?.issues.length || props.recoveryDraftError !== undefined || !!promptsUncertain || !!decisionsUncertain && !runsUncertain;
   const searchErrors = [props.error ? `Mail, calendar and files: ${props.error}` : undefined,
     props.workError, props.capabilitiesError].filter((error): error is string => error !== undefined);
   const errors = searchErrors.map(error => `<p class="rq-error" role="alert">${e(error)}</p>`).join('')
     + (searchErrors.length > 0 ? `<button type="button" class="rq-retry" ${e(props.actionAttr)}="${SEARCH_RETRY_ACTION}">Try again</button>` : '');
   const didYouMean = props.didYouMean !== undefined
     && !documentActive
-    && decisionCount === 0 && !decisionsUncertain && promptCount === 0 && !promptsUncertain && reminderCount === 0 && !remindersUncertain && workCount === 0 && chatCount === 0 && !chatsUncertain && draftCount === 0 && !draftsUncertain && assetCount === 0 && !assetsUncertain && contactCount === 0 && !props.contactSearch?.loading && !props.contactSearch?.error && !props.contactSearch?.unsupported ? renderDidYouMean(props.didYouMean, props.actionAttr)
+    && followUpCount === 0 && !followUpsUncertain && settingCount === 0 && savedViewCount === 0 && !savedViewsUncertain && connectionCount === 0 && !connectionsUncertain && runCount === 0 && decisionCount === 0 && !decisionsUncertain && !runsUncertain && promptCount === 0 && !promptsUncertain && reminderCount === 0 && !remindersUncertain && workCount === 0 && chatCount === 0 && !chatsUncertain && draftCount === 0 && !draftsUncertain && assetCount === 0 && !assetsUncertain && contactCount === 0 && !props.contactSearch?.loading && !props.contactSearch?.error && !props.contactSearch?.unsupported ? renderDidYouMean(props.didYouMean, props.actionAttr)
     : '';
-  if (groups.length === 0 && decisionCount === 0 && promptCount === 0 && reminderCount === 0 && workCount === 0 && chatCount === 0 && draftCount === 0 && assetCount === 0 && contactCount === 0 && documentCount === 0 && recipes.length === 0 && packs.length === 0) {
+  // Saved work and records lead; each source keeps its own result order.
+  const sourceGroups = [
+    ...visibleWork.map(group => ({ count: group.matches.length, html: renderWorkGroup(group, props.actionAttr, props.workLoadingKinds?.has(group.kind) === true, props.query) })),
+    ...groups.map(group => ({ count: group.matches.length, html: renderGroup(group, props.actionAttr, now, q) })),
+    { count: settingCount, html: settingGroup }, { count: savedViewCount, html: savedViewGroup },
+    { count: connectionCount, html: connectionGroup }, { count: runCount, html: runGroup },
+    { count: followUpCount, html: followUpGroup }, { count: decisionCount, html: decisionGroup }, { count: promptCount, html: promptGroup },
+    { count: reminderCount, html: reminderGroup }, { count: chatCount, html: chatGroup },
+    { count: draftCount, html: draftGroup }, { count: assetCount, html: assetGroup },
+    { count: contactCount, html: contactGroup },
+    { count: packs.length, html: packs.length ? renderPackGroup(packs, props.actionAttr) : '' },
+    { count: recipes.length, html: recipes.length ? renderRecipeGroup(recipes, props.actionAttr) : '' },
+  ];
+  const matchingGroups = sourceGroups.filter(group => group.count > 0 || selectedType !== 'all').map(group => group.html).join('');
+  const emptySources = selectedType === 'all' ? sourceGroups.filter(group => group.count === 0).map(group => group.html).join('') : '';
+  const diagnostics = errors + progress + typeFeedback + emptySources;
+  if (groups.length === 0 && followUpCount === 0 && settingCount === 0 && savedViewCount === 0 && connectionCount === 0 && runCount === 0 && decisionCount === 0 && promptCount === 0 && reminderCount === 0 && workCount === 0 && chatCount === 0 && draftCount === 0 && assetCount === 0 && contactCount === 0 && documentCount === 0 && recipes.length === 0 && packs.length === 0) {
     // An unfinished local read cannot establish an empty result or justify
-    // offering a cloud search. Completed groups remain usable while it runs.
-    if (progress || failed || typeUncertain || decisionsUncertain || promptsUncertain || remindersUncertain || props.assetSearch?.loading || props.draftSearch?.loading || props.chatSearch?.loading || props.chatSearch?.next_cursor || props.chatSearch?.incomplete || documentUncertain) return `<div class="rq-search">${box}${errors}${didYouMean}${progress}${typeFeedback}${decisionGroup}${promptGroup}${reminderGroup}${chatGroup}${draftGroup}${assetGroup}${contactGroup}
-      ${visibleWork.map(group => renderWorkGroup(group, props.actionAttr, props.workLoadingKinds?.has(group.kind) === true, props.query)).join('')}</div>`;
-    // ⛔ NAMES THE SCOPE IT SEARCHED. "No results" alone cannot be told apart
-    // from "the search did not run", and an owner reading the shorter sentence
-    // concludes their data is not there when it may simply not be synced.
-    return `<div class="rq-search">${box}
-${didYouMean}
-${decisionGroup}${promptGroup}${reminderGroup}${chatGroup}${draftGroup}${assetGroup}
-${contactGroup}
-<p class="rq-empty">${selectedType === 'all' ? `No matches in the searched sources for “${e(q)}”. Sources still syncing will not appear yet.` : `No ${e(SEARCH_TYPE_LABELS[selectedType])} results loaded for “${e(q)}”.`}</p>
-${props.marketplaceError !== undefined
+    // offering a cloud search. Details retain source-specific retry actions.
+    const uncertain = progress || failed || followUpsUncertain || savedViewsUncertain || connectionsUncertain || typeUncertain || decisionsUncertain || runsUncertain || promptsUncertain || remindersUncertain || assetsUncertain || draftsUncertain || chatsUncertain || documentUncertain;
+    return `<div class="rq-search">${box}${sourceDetails(diagnostics, '0 loaded')}${matchingGroups}${didYouMean}
+      ${uncertain ? '' : `<p class="rq-empty">${selectedType === 'all' ? `No matches in the searched sources for “${e(q)}”. Sources still syncing will not appear yet.` : `No ${e(SEARCH_TYPE_LABELS[selectedType])} results loaded for “${e(q)}”.`}</p>`}
+      ${documents}
+      ${uncertain ? '' : `${props.marketplaceError !== undefined
   ? `<p class="rq-error" role="alert">${e(props.marketplaceError)}</p>`
   : ''}
 ${market.length > 0 ? renderMarketGroup(market, props.actionAttr) : ''}
-${market.length === 0 && props.marketplaceOffered === true && !props.contactSearch?.unsupported && !decisionsUncertain && !promptsUncertain && !remindersUncertain && !assetsUncertain && !draftsUncertain && !chatsUncertain
+${market.length === 0 && props.marketplaceOffered === true && !props.contactSearch?.unsupported && !savedViewsUncertain && !connectionsUncertain && !decisionsUncertain && !runsUncertain && !followUpsUncertain && !promptsUncertain && !remindersUncertain && !assetsUncertain && !draftsUncertain && !chatsUncertain
   ? renderMarketOffer(q, props.actionAttr, props.marketplaceLoading === true)
-  : ''}</div>`;
+  : ''}`}</div>`;
   }
   const total = groups.reduce((n, g) => n + g.matches.length, 0);
-  const places = Number(decisionCount > 0) + Number(promptCount > 0) + Number(reminderCount > 0) + groups.length + workGroups.filter(group => group.matches.length > 0).length
+  const places = Number(followUpCount > 0) + Number(settingCount > 0) + Number(savedViewCount > 0) + Number(connectionCount > 0) + Number(runCount > 0) + Number(decisionCount > 0) + Number(promptCount > 0) + Number(reminderCount > 0) + groups.length + workGroups.filter(group => group.matches.length > 0).length
     + (chatCount > 0 ? 1 : 0) + (props.draftSearch?.matches.length ? 1 : 0) + (props.recoveryDraftSearch?.matches.length ? 1 : 0) + (assetCount > 0 ? 1 : 0) + (contactCount > 0 ? 1 : 0) + (documentCount > 0 ? 1 : 0) + (recipes.length > 0 ? 1 : 0) + (packs.length > 0 ? 1 : 0);
-  const absent = groups.length > 0 && decisionCount === 0 && !decisionsUncertain && promptCount === 0 && !promptsUncertain && reminderCount === 0 && !remindersUncertain && chatCount === 0 && !chatsUncertain && draftCount === 0 && !draftsUncertain && assetCount === 0 && !assetsUncertain && contactCount === 0 && props.absentWords !== undefined && props.absentWords.length > 0
+  const absent = groups.length > 0 && followUpCount === 0 && !followUpsUncertain && settingCount === 0 && savedViewCount === 0 && !savedViewsUncertain && connectionCount === 0 && !connectionsUncertain && runCount === 0 && decisionCount === 0 && !decisionsUncertain && !runsUncertain && promptCount === 0 && !promptsUncertain && reminderCount === 0 && !remindersUncertain && chatCount === 0 && !chatsUncertain && draftCount === 0 && !draftsUncertain && assetCount === 0 && !assetsUncertain && contactCount === 0 && props.absentWords !== undefined && props.absentWords.length > 0
     && !documentActive
     ? renderAbsentWords(props.absentWords)
     : '';
   return `<div class="rq-search">${box}
-${errors}
-${absent}
-${didYouMean}
-<p class="rq-summary" role="status">${total + decisionCount + promptCount + reminderCount + workCount + chatCount + draftCount + assetCount + contactCount + documentCount + recipes.length + packs.length}${groups.some((g) => g.more) || workGroups.some(group => group.more) || props.contactSearch?.more || props.assetSearch?.more || props.draftSearch?.next_cursor || props.chatSearch?.next_cursor || props.chatSearch?.incomplete || props.reminderSearch?.next_cursor || props.documentSearch?.result?.next_cursor || props.documentSearch?.result?.next_offset !== undefined ? '+' : ''} in ${places} ${places === 1 ? 'place' : 'places'}</p>
-${progress}
-${decisionGroup}${promptGroup}${reminderGroup}${chatGroup}${draftGroup}${assetGroup}
-${contactGroup}
-${visibleWork.map(group => renderWorkGroup(group, props.actionAttr, props.workLoadingKinds?.has(group.kind) === true, props.query)).join('')}
-${groups.map((g) => renderGroup(g, props.actionAttr, now, q)).join('')}
-${packs.length > 0 ? renderPackGroup(packs, props.actionAttr) : ''}
-${recipes.length > 0 ? renderRecipeGroup(recipes, props.actionAttr) : ''}
+${absent}${didYouMean}
+${sourceDetails(diagnostics, `${total + followUpCount + settingCount + savedViewCount + connectionCount + runCount + decisionCount + promptCount + reminderCount + workCount + chatCount + draftCount + assetCount + contactCount + documentCount + recipes.length + packs.length}${props.followUpSearch?.next_cursor || props.runSearch?.next_cursor || groups.some((g) => g.more) || workGroups.some(group => group.more) || props.contactSearch?.more || props.assetSearch?.more || props.draftSearch?.next_cursor || props.chatSearch?.next_cursor || props.chatSearch?.incomplete || props.reminderSearch?.next_cursor || props.documentSearch?.result?.next_cursor || props.documentSearch?.result?.next_offset !== undefined ? '+' : ''} in ${places} ${places === 1 ? 'place' : 'places'}`)}
+${matchingGroups}
+${documents}
 </div>`;
 };
 
 export const UNIVERSAL_SEARCH_STYLES = `
-.rq-search { display: flex; flex-direction: column; gap: 0.75rem; min-width:0; }
+.rq-search { position:relative; display: flex; flex-direction: column; gap: 0.75rem; min-width:0; }
 .rq-search [data-search-prompt-bulk-slot]:empty, .rq-search [data-search-prompt-select-slot]:empty { display:none; }
 .rq-search .prompt-bulk-toolbar { display:grid; gap:12px; padding:16px; margin:12px 0; border:1px solid var(--border); border-radius:10px; min-width:0; }
 .rq-search .prompt-bulk-toolbar :is(p,h3) { margin:0; overflow-wrap:anywhere; }
@@ -742,13 +818,24 @@ export const UNIVERSAL_SEARCH_STYLES = `
 .rq-search .reminders-triage :is(.reminders-error,[data-outcome="failed"],[data-outcome="needs_review"]) { color:var(--danger); }
 .rq-search .reminders-triage-select { display:flex; align-items:center; gap:8px; min-height:44px; cursor:pointer; }
 .rq-search .reminders-triage-select input { width:20px; height:20px; margin:0; }
-.rq-search-tools { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,20rem); align-items:start; gap:12px; min-width:0; }
+.rq-search-tools { display:grid; grid-template-columns:minmax(0,1fr) 12rem; align-items:start; gap:12px; min-width:0; }
+.rq-search-scope { position:absolute; left:0; top:0; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip-path:inset(50%); white-space:nowrap; }
+.rq-source-bar { display:flex; flex-wrap:wrap; align-items:start; gap:8px; min-width:0; }
+.rq-sources { flex:1; min-width:0; }
+.rq-sources summary { min-height:44px; box-sizing:border-box; padding:10px 0; cursor:pointer; font-size:13px; overflow-wrap:anywhere; }
+.rq-source-body { display:grid; gap:12px; padding:12px; border:1px solid var(--border); border-radius:var(--wc-radius,9px); }
+.rq-source-body > p { margin:0; }
+.rq-document-search-idle { border:0; padding:0; margin:0; }
 .rq-query-field { display:grid; gap:6px; min-width:0; }
 .rq-type-controls { display:grid; grid-template-columns:minmax(0,1fr) auto; align-items:end; gap:6px 8px; min-width:0; }
 .rq-type-controls label { grid-column:1 / -1; }
 .rq-search-label, .rq-type-controls label { font-size:12px; font-weight:600; line-height:1.4; color:var(--fg-muted); }
 .rq-type-controls select { box-sizing:border-box; width:100%; min-width:0; max-width:100%; min-height:var(--wc-control-h,44px); padding:0 10px; font:inherit; color:var(--fg); background:var(--surface); border:1px solid var(--border-strong); border-radius:var(--wc-radius,9px); }
 .rq-type-controls .rq-retry { align-self:stretch; min-height:var(--wc-control-h,44px); padding:0 12px; border-radius:var(--wc-radius,9px); font-weight:600; }
+.rq-run-filters { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px 12px; min-width:0; margin:12px 0; padding:0; border:0; }
+.rq-run-filters > .rq-type-controls { grid-template-columns:minmax(0,1fr); }
+.rq-run-filters > p, .rq-run-filters > button { grid-column:1 / -1; margin:0; }
+.rq-run-filters > button { justify-self:start; }
 .rq-reminder-dates { display:grid; gap:10px; min-width:0; margin:12px 0; }
 .rq-reminder-date-controls { display:grid; gap:10px; min-width:0; margin:0; padding:0; border:0; }
 .rq-reminder-date-fields { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; }
@@ -756,9 +843,13 @@ export const UNIVERSAL_SEARCH_STYLES = `
 .rq-reminder-date-fields input { box-sizing:border-box; width:100%; min-width:0; max-width:100%; min-height:var(--wc-control-h,44px); padding:0 8px; font:inherit; color:var(--fg); background:var(--surface); border:1px solid var(--border-strong); border-radius:var(--wc-radius,9px); }
 .rq-reminder-date-actions { display:flex; flex-wrap:wrap; gap:8px; }
 .rq-reminder-date-actions .rq-retry { min-height:var(--wc-control-h,44px); }
-.rq-search-tools > #rq-type-counts { grid-column:1 / -1; }
-@media (max-width:800px) { .rq-search-tools { grid-template-columns:minmax(0,1fr); } }
+/* Safari's native select can overflow a narrow grid track. */
+.rq-search-tools > .rq-type-controls { position:relative; }
+.rq-search-tools > .rq-type-controls select { appearance:none; padding-right:32px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.rq-search-tools > .rq-type-controls::after { content:''; position:absolute; pointer-events:none; right:14px; bottom:calc(var(--wc-control-h,44px) / 2 - 2px); width:6px; height:6px; border-right:1.5px solid var(--fg-muted); border-bottom:1.5px solid var(--fg-muted); transform:rotate(45deg); }
+@media (max-width:540px) { .rq-search-tools { grid-template-columns:minmax(0,1fr) 9rem; gap:8px; } }
 @media (max-width:600px) {
+  .rq-run-filters { grid-template-columns:minmax(0,1fr); }
   .rq-type-controls { grid-template-columns:minmax(0,1fr); }
   .rq-type-controls .rq-retry { width:100%; }
 }

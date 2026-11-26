@@ -1,13 +1,18 @@
-import { expect, test } from '@playwright/test';
+import { expect, test, type Page } from '@playwright/test';
 import { HARNESS_URL, installFullAppHooks } from './helpers/full-app.js';
 
 /** Shared Run modal and config editor journeys across Recipes and Automation. */
 installFullAppHooks();
 
-test('the shared Run modal leaves composing Escape to its config editor', async ({ page }) => {
-  await page.goto(`${HARNESS_URL}?recipes=installed`);
+const openDesktopRecipePreview = async (page: Page): Promise<void> => {
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await page.goto(`${HARNESS_URL}?recipes=installed#recipes`);
   await page.waitForFunction(() => window.__app?.ready === true);
-  await page.evaluate(() => window.__app.setHash('#recipes'));
+  await page.locator('[data-recued-recipes-card="autorun-live-1"]').click();
+};
+
+test('the shared Run modal leaves composing Escape to its config editor', async ({ page }) => {
+  await openDesktopRecipePreview(page);
 
   const opener = page.locator('[data-recued-recipes-run-button]').first();
   await opener.click();
@@ -40,9 +45,7 @@ test('the shared Run modal leaves composing Escape to its config editor', async 
 });
 
 test('the shared Run modal preserves focus across execution repaints', async ({ page }) => {
-  await page.goto(`${HARNESS_URL}?recipes=installed`);
-  await page.waitForFunction(() => window.__app?.ready === true);
-  await page.evaluate(() => window.__app.setHash('#recipes'));
+  await openDesktopRecipePreview(page);
 
   const opener = page.locator('[data-recued-recipes-run-button]').first();
   await opener.click();
@@ -88,9 +91,7 @@ test('the shared Run modal preserves focus across execution repaints', async ({ 
 });
 
 test('the shared Run modal retains execution ownership across route leave', async ({ page }) => {
-  await page.goto(`${HARNESS_URL}?recipes=installed`);
-  await page.waitForFunction(() => window.__app?.ready === true);
-  await page.evaluate(() => window.__app.setHash('#recipes'));
+  await openDesktopRecipePreview(page);
 
   await page.locator('[data-recued-recipes-run-button]').first().click();
   const dialog = page.getByRole('dialog', { name: 'Run a Recipe' });
@@ -181,9 +182,7 @@ test('the shared config editor keeps usable mobile targets', async ({ page }) =>
 });
 
 test('the shared Run modal tabs form one arrow-key keyboard stop', async ({ page }) => {
-  await page.goto(`${HARNESS_URL}?recipes=installed`);
-  await page.waitForFunction(() => window.__app?.ready === true);
-  await page.evaluate(() => window.__app.setHash('#recipes'));
+  await openDesktopRecipePreview(page);
   await page.locator('[data-recued-recipes-run-button]').first().click();
 
   const dialog = page.getByRole('dialog', { name: 'Run a Recipe' });
@@ -268,9 +267,7 @@ test('the shared Run modal stays contained with usable mobile targets', async ({
 });
 
 test('the shared Run modal preserves Repeat focus while cadence controls swap', async ({ page }) => {
-  await page.goto(`${HARNESS_URL}?recipes=installed`);
-  await page.waitForFunction(() => window.__app?.ready === true);
-  await page.evaluate(() => window.__app.setHash('#recipes'));
+  await openDesktopRecipePreview(page);
   await page.locator('[data-recued-recipes-run-button]').first().click();
 
   const dialog = page.getByRole('dialog', { name: 'Run a Recipe' });
@@ -291,9 +288,7 @@ test('the shared Run modal preserves Repeat focus while cadence controls swap', 
 });
 
 test('the shared Run modal preserves Schedule once validation focus', async ({ page }) => {
-  await page.goto(`${HARNESS_URL}?recipes=installed`);
-  await page.waitForFunction(() => window.__app?.ready === true);
-  await page.evaluate(() => window.__app.setHash('#recipes'));
+  await openDesktopRecipePreview(page);
   await page.locator('[data-recued-recipes-run-button]').first().click();
 
   const dialog = page.getByRole('dialog', { name: 'Run a Recipe' });
@@ -313,9 +308,7 @@ test('the shared Run modal preserves Schedule once validation focus', async ({ p
 });
 
 test('the shared Run modal keeps Add schedule focused while creating', async ({ page }) => {
-  await page.goto(`${HARNESS_URL}?recipes=installed`);
-  await page.waitForFunction(() => window.__app?.ready === true);
-  await page.evaluate(() => window.__app.setHash('#recipes'));
+  await openDesktopRecipePreview(page);
   await page.locator('[data-recued-recipes-run-button]').first().click();
 
   const dialog = page.getByRole('dialog', { name: 'Run a Recipe' });
@@ -334,9 +327,7 @@ test('the shared Run modal keeps Add schedule focused while creating', async ({ 
 });
 
 test('the shared Run modal distinguishes repeated schedule actions', async ({ page }) => {
-  await page.goto(`${HARNESS_URL}?recipes=installed`);
-  await page.waitForFunction(() => window.__app?.ready === true);
-  await page.evaluate(() => window.__app.setHash('#recipes'));
+  await openDesktopRecipePreview(page);
   await page.locator('[data-recued-recipes-run-button]').first().click();
 
   const dialog = page.getByRole('dialog', { name: 'Run a Recipe' });
@@ -378,9 +369,7 @@ test('the shared Run modal distinguishes repeated schedule actions', async ({ pa
 });
 
 test('the shared Run modal preserves schedule row action ownership', async ({ page }) => {
-  await page.goto(`${HARNESS_URL}?recipes=installed`);
-  await page.waitForFunction(() => window.__app?.ready === true);
-  await page.evaluate(() => window.__app.setHash('#recipes'));
+  await openDesktopRecipePreview(page);
   await page.locator('[data-recued-recipes-run-button]').first().click();
 
   const dialog = page.getByRole('dialog', { name: 'Run a Recipe' });

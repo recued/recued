@@ -10,8 +10,10 @@ import {
   BRIDGE_INSPECT_MAX_CHARS,
   BRIDGE_INSPECT_MAX_VALUE_CHARS,
   BRIDGE_TABLE_MAX_ROWS,
+  isBridgeTableSort,
   isPatternWithinGrantedOrigins,
   type BridgeErrorCode,
+  type BridgeTableSort,
 } from '@recued/contracts';
 
 import type { ActionExecutorOutcome } from '../queue/dispatcher.js';
@@ -30,8 +32,24 @@ export const PAGE_TABLE_LIMITS: PageTableLimits = {
   max_value_chars: BRIDGE_INSPECT_MAX_VALUE_CHARS,
 };
 
+export interface PageTableWalk {
+  scroll_scope: PageInspectScope;
+  enclosing: number;
+  advance?: { table_id: number; scroll_id: number; position: number };
+}
+
+interface PageTableWindow {
+  table_id: number;
+  scroll_id: number;
+  first: number;
+  total: number;
+  position: number;
+  limit: number;
+}
+
 export type PageTableAnswer =
-  | { outputs: { url: string; title: string; columns: string[]; rows: string[][]; truncated: boolean } }
+  | { outputs: { url: string; title: string; columns: string[]; rows: string[][]; truncated: boolean;
+      sort?: BridgeTableSort; table_window?: PageTableWindow } }
   | { missing: true }
   | { invalid: true }
   | { stale: true }
@@ -50,7 +68,8 @@ export type PageTableAnswer =
  *  - At most `max_rows` rows and `max_chars` characters, `truncated` when cut;
  *    one cell at most `max_value_chars`, then an ellipsis.
  *  Injected, so self-contained. */
-export const readPageTable = (scope: PageInspectScope, limits: PageTableLimits, expectedUrl?: string): PageTableAnswer => {
+export const readPageTable = (scope: PageInspectScope, limits: PageTableLimits, expectedUrl?: string,
+  walk?: PageTableWalk): PageTableAnswer => {
   // Chrome passes arguments as JSON, so an absent one can arrive as null.
   if (document.documentElement.hasAttribute('data-recued-owner-surface')
     || (expectedUrl != null && location.href !== expectedUrl)) return { blocked: true };
@@ -107,6 +126,48 @@ export const readPageTable = (scope: PageInspectScope, limits: PageTableLimits, 
     }
     return field.value ?? '';
   };
+
+  // The injected reader follows what a component renders, like inspectPage.
+  const shadowOf = (element: Element): ShadowRoot | null => {
+    try {
+      const dom = (globalThis as typeof globalThis & {
+        chrome?: { dom?: { openOrClosedShadowRoot?: (host: Element) => ShadowRoot | null | undefined } } }).chrome?.dom;
+      return dom?.openOrClosedShadowRoot?.(element) ?? element.shadowRoot;
+    } catch {
+      return element.shadowRoot;
+    }
+  };
+  const childrenOf = (element: Element): Iterable<Node> => {
+    if (element.localName === 'slot') {
+      // Walk each slot in turn so its own visibility applies to its contents.
+      const assigned = (element as HTMLSlotElement).assignedNodes();
+      return assigned.length ? assigned : element.childNodes;
+    }
+    return (shadowOf(element) ?? element).childNodes;
+  };
+
+  // Chrome serializes this reader without its module scope. Keep the CSSOM string decoder local.
+  const generatedText = (element: Element, pseudo: '::before' | '::after'): string => {
+    const view = element.ownerDocument?.defaultView;
+    const style = view?.getComputedStyle(element, pseudo) ?? getComputedStyle(element, pseudo);
+    const content = style.content;
+    if (!content?.startsWith('"') || style.display === 'none' || style.visibility !== 'visible'
+      || style.opacity === '0' || style.contentVisibility === 'hidden' || style.fontSize === '0px') return '';
+    if (!element.checkVisibility({ checkOpacity: true })
+      && (view?.getComputedStyle(element) ?? getComputedStyle(element)).display !== 'contents') return '';
+
+    // CSSOM serializes visible strings before any accessibility alternative after "/".
+    let text = '';
+    let end = 0;
+    for (const match of content.matchAll(/ *"((?:[^"\\]|\\.)*)"/gy)) {
+      text += match[1]!.replace(/\\(?:([\da-f]{1,6}) ?|(.))/gi,
+        (_, hex: string | undefined, escaped: string) => hex === undefined ? escaped : String.fromCodePoint(parseInt(hex, 16)));
+      end = match.index + match[0].length;
+    }
+    if (end !== content.length && !content.startsWith(' / ', end)) return '';
+    return text && !style.display.startsWith('inline') && style.display !== 'contents' ? ' ' + text + ' ' : text;
+  };
+
   // The text a person sees in a node: a hidden element adds nothing, a field
   // its value, a picture its alt text, and a box that is not inline a space.
   const textOf = (node: Node): string => {
@@ -118,8 +179,9 @@ export const readPageTable = (scope: PageInspectScope, limits: PageTableLimits, 
     if (tag === 'br') return ' ';
     if (tag === 'input' || tag === 'select' || tag === 'textarea') return ` ${fieldText(element)} `;
     if (tag === 'img') return ` ${element.getAttribute('alt') ?? ''} `;
-    let text = '';
-    for (const child of [...element.childNodes]) text += textOf(child);
+    let text = generatedText(element, '::before');
+    for (const child of childrenOf(element)) text += textOf(child);
+    text += generatedText(element, '::after');
     return getComputedStyle(element).display.startsWith('inline') ? text : ` ${text} `;
   };
   const cut = (text: string) => text.length > limits.max_value_chars ? `${text.slice(0, limits.max_value_chars)}…` : text;
@@ -141,6 +203,7 @@ export const readPageTable = (scope: PageInspectScope, limits: PageTableLimits, 
 
   // Lay rows out on a grid: a cell spanning rows carries into the rows below.
   const carried: Array<{ text: string; rows: number } | undefined> = [];
+  const sortHeaders: BridgeTableSort[] = [];
   const layout = (cells: Element[]): string[] => {
     const out: string[] = [];
     let column = 0;
@@ -154,6 +217,12 @@ export const readPageTable = (scope: PageInspectScope, limits: PageTableLimits, 
     for (const cell of cells) {
       fillCarried();
       const text = cellText(cell);
+      const direction = cell.getAttribute('aria-sort')?.trim().toLowerCase();
+      if (sortHeaders.length < 2 && (direction === 'ascending' || direction === 'descending' || direction === 'other')
+        && (isHeaderCell(cell) || roleOf(cell) === 'rowheader') && shown(cell)) {
+        const header = text || cut(cell.getAttribute('aria-label')?.trim() ?? '');
+        sortHeaders.push({ header, direction });
+      }
       const across = span(cell, 'colspan', 100);
       const down = span(cell, 'rowspan', limits.max_rows);
       for (let i = 0; i < across; i++) {
@@ -180,6 +249,7 @@ export const readPageTable = (scope: PageInspectScope, limits: PageTableLimits, 
   let length = 0;
   let truncated = false;
   const body: string[][] = [];
+  const bodyNodes: Element[] = [];
   for (const row of rows.slice(first)) {
     const cells = layout(cellsOf(row));
     if (cells.every(text => text === '')) continue;
@@ -189,6 +259,7 @@ export const readPageTable = (scope: PageInspectScope, limits: PageTableLimits, 
       break;
     }
     body.push(cells);
+    if (walk) bodyNodes.push(row);
     length += size;
   }
 
@@ -228,14 +299,82 @@ export const readPageTable = (scope: PageInspectScope, limits: PageTableLimits, 
     }
   }
   const title = document.title.length > 200 ? `${document.title.slice(0, 200)}…` : document.title;
+  const sort = sortHeaders.length === 1 ? sortHeaders[0] : undefined;
+  const outputs = { url: location.href, title, columns, rows: keptRows, truncated,
+    ...(sort?.header && chars + sort.header.length + sort.direction.length <= limits.max_chars ? { sort } : {}) };
+  if (!walk || truncated || !keptRows.length || !table.parentNode)
+    return walk?.advance ? { stale: true } : { outputs };
+
+  const headerCount = rows.slice(0, first).every((row, i) => row.getAttribute('aria-rowindex') === String(i + 1)) ? first : 0;
+  const indices = bodyNodes.map(row => Number(row.getAttribute('aria-rowindex')));
+  const ariaTotal = Number(table.getAttribute('aria-rowcount')) - headerCount;
+  let rowStart = indices[0]! - headerCount, total = ariaTotal;
+  if (rowStart < 1 || !indices.every((index, i) => index === indices[0]! + i)
+    || !Number.isSafeInteger(total) || total < rowStart + indices.length - 1) {
+    // A visible range can stand in for row indices on an otherwise ordinary
+    // table. Bind it to one table and one unambiguous status in the surface.
+    const surface = table.closest('main,[role="main"]') ?? document.body;
+    const tables = [...surface.querySelectorAll(TABLES)].filter(element => isTable(element) && shown(element));
+    const ranges = tables.length === 1 && tables[0] === table
+      ? [...surface.querySelectorAll('[role="status"]')].filter(shown).flatMap(element => {
+        const match = /^showing\s+(?:rows\s+)?(\d+)\s*[-–—]\s*(\d+)\s+of\s+(\d+)\b/i.exec(element.textContent?.trim().slice(0, 140) ?? '');
+        return match ? [match.slice(1).map(Number)] : [];
+      }) : [];
+    const range = ranges.length === 1 ? ranges[0] : undefined;
+    if (!range || range[1]! - range[0]! + 1 !== keptRows.length)
+      return walk.advance ? { stale: true } : { outputs };
+    rowStart = range[0]!;
+    total = range[2]!;
+  }
+  if (!Number.isSafeInteger(rowStart) || rowStart < 1 || !Number.isSafeInteger(total) || total > limits.max_rows
+    || rowStart + keptRows.length - 1 > total) return walk.advance ? { stale: true } : { outputs };
+
+  const parent = (node: Element): Element | null =>
+    node.assignedSlot ?? node.parentElement ?? (node.getRootNode() as ShadowRoot).host ?? null;
+  const scrolls = (node: Element): boolean => node.clientHeight > 0 && node.scrollHeight > node.clientHeight + 1
+    && (node === document.scrollingElement
+      ? !/^(hidden|clip)$/.test(getComputedStyle(node).overflowY)
+      : /^(auto|scroll|overlay)$/.test(getComputedStyle(node).overflowY));
+  let explicit: Element | null = null;
+  const target = walk.scroll_scope;
+  if (target.ref) {
+    const marked = (globalThis as typeof globalThis & { recuedPageRefs?: { byRef: Map<string, Element> } }).recuedPageRefs;
+    explicit = marked?.byRef.get(target.ref) ?? null;
+  } else if (target.selector) {
+    try { explicit = document.querySelector(target.selector); } catch { return { invalid: true }; }
+  }
+  if ((target.ref || target.selector) && !explicit?.isConnected) return { stale: true };
+  const candidates: Element[] = [];
+  for (let node: Element | null = table; node; node = parent(node)) {
+    if (scrolls(node) && (!explicit || explicit === node)) candidates.push(node);
+  }
+  const panel = candidates[walk.enclosing];
+  if (!panel) return walk.advance ? { stale: true } : { outputs };
+
+  // The table's slot survives a window render that replaces its markup.
+  // The slot's parent and chosen scroller have live document-local identities.
+  type Bindings = { nodes: WeakMap<Node, Map<string, number>>; serial: number };
+  const state = globalThis as typeof globalThis & { recuedTableWalk?: Bindings };
+  const bindings = state.recuedTableWalk ??= { nodes: new WeakMap(), serial: 0 };
+  const id = (node: Node, slot: string): number => {
+    let slots = bindings.nodes.get(node);
+    if (!slots) bindings.nodes.set(node, slots = new Map());
+    let identity = slots.get(slot);
+    if (identity === undefined) slots.set(slot, identity = ++bindings.serial);
+    return identity;
+  };
+  const place = Array.from(table.parentNode.children).indexOf(table);
+  const tableId = id(table.parentNode, `${table.localName}:${roleOf(table)}:${place}`);
+  const scrollId = id(panel, '');
+  const position = Math.max(0, panel.scrollTop);
+  const limit = panel.scrollHeight - panel.clientHeight;
+  if (walk.advance) {
+    if (walk.advance.table_id !== tableId || walk.advance.scroll_id !== scrollId
+      || Math.abs(walk.advance.position - position) > 1) return { stale: true };
+    panel.scrollTo({ top: Math.min(limit, position + Math.max(1, Math.floor(panel.clientHeight * 0.875))), behavior: 'instant' });
+  }
   return {
-    outputs: {
-      url: location.href,
-      title,
-      columns,
-      rows: keptRows,
-      truncated,
-    },
+    outputs: { ...outputs, table_window: { table_id: tableId, scroll_id: scrollId, first: rowStart, total, position, limit } },
   };
 };
 
@@ -245,7 +384,7 @@ export const readPageTable = (scope: PageInspectScope, limits: PageTableLimits, 
 export const tableOutcome = (
   answer: unknown,
   document: { tab_id: number; document_id: string },
-  options: { pattern?: string },
+  options: { pattern?: string; window?: boolean; sort?: boolean },
 ): ActionExecutorOutcome => {
   const error = (code: BridgeErrorCode, message: string): ActionExecutorOutcome =>
     ({ status: 'error', error: { code, message } });
@@ -259,11 +398,13 @@ export const tableOutcome = (
   const outputs = reply.outputs as Record<string, unknown> | undefined;
   const texts = (value: unknown) => Array.isArray(value) && value.every(item => typeof item === 'string');
   if (!outputs || typeof outputs !== 'object' || Array.isArray(outputs)
-    || Object.keys(outputs).sort().join() !== 'columns,rows,title,truncated,url'
+    || Object.keys(outputs).filter(key => key !== 'sort' && !(options.window && key === 'table_window')).sort().join() !== 'columns,rows,title,truncated,url'
+    || Object.hasOwn(outputs, 'sort') && !isBridgeTableSort(outputs.sort)
     || typeof outputs.url !== 'string' || typeof outputs.title !== 'string' || typeof outputs.truncated !== 'boolean'
     || !texts(outputs.columns) || !Array.isArray(outputs.rows) || !outputs.rows.every(texts)) return unproven;
   if (options.pattern !== undefined && !isPatternWithinGrantedOrigins(outputs.url as string, [options.pattern])) {
     return error('tab_navigation_blocked', 'The page is no longer on a site this step may read.');
   }
-  return { status: 'ok', outputs: { page: formatPageHandle(document), ...outputs } };
+  const { sort, ...values } = outputs;
+  return { status: 'ok', outputs: { page: formatPageHandle(document), ...values, ...(options.sort && sort ? { sort } : {}) } };
 };

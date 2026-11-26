@@ -30,6 +30,7 @@ import { chatHintUntilText } from '../chat/chat-hints.js';
 import type { BroadcastSubscriber } from '../realtime/subscriber.js';
 import { serializeShellRoute } from '../shell/route.js';
 import { watchPackNeeds, type PackNeedsReads, type PackNeedsView } from './setup-pack-needs.js';
+import { FOCUS_BLOCK_SETUP_STYLES, mountFocusBlockSetup, type FocusBlockSetupCallers } from './focus-block-setup.js';
 
 /** Marks the page's root. */
 export const SETUP_ROUTE_ATTR = 'data-recued-setup-route';
@@ -45,6 +46,7 @@ export const SETUP_SUMMARY_ATTR = 'data-setup-summary';
 export const SETUP_RESTORE_ATTR = 'data-setup-restore';
 
 const STYLES_MARKER = 'data-recued-setup-route-styles';
+const SETUP_DESKTOP_MEDIA = '(min-width: 1280px) and (hover: hover) and (pointer: fine)';
 
 /** What the page reads. Each one it is not handed is a line saying so, never a line saying "done". */
 export interface SetupRouteCallers {
@@ -54,6 +56,7 @@ export interface SetupRouteCallers {
   readonly chatReady?: () => Promise<boolean>;
   /** Whether any recipe is installed. */
   readonly anyRecipe?: () => Promise<boolean>;
+  readonly focusBlocks?: FocusBlockSetupCallers;
   /** The Packs page's reads, for what each installed pack still needs. */
   readonly packs?: PackNeedsReads;
   /** `chat.hints.list` and `chat.hints.restore`: the hints set aside, and "Show it again". */
@@ -101,9 +104,13 @@ const FEATURE_NAME: Readonly<Record<ChatSetupFeature, string>> = { mail: 'mail',
 export const SETUP_ROUTE_STYLES = `
 [${SETUP_ROUTE_ATTR}] { box-sizing: border-box; max-width: 760px; margin: 0 auto; padding: 24px 16px 48px; color: var(--fg);
   display: grid; gap: 20px; min-width: 0; }
+[${SETUP_ROUTE_ATTR}][data-setup-desktop] { max-width: var(--wc-content-max, 1160px); padding-inline: 24px;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); align-items: start; column-gap: var(--wc-space-lg, 24px); }
+[${SETUP_ROUTE_ATTR}][data-setup-desktop] > header { grid-column: 1 / -1; }
 [${SETUP_ROUTE_ATTR}] h1 { margin: 0; font-size: 22px; line-height: 1.3; }
 [${SETUP_ROUTE_ATTR}] .setup-intro { margin: 4px 0 0; color: var(--muted); font-size: 14px; }
 [${SETUP_ROUTE_ATTR}] [${SETUP_SUMMARY_ATTR}] { margin: 8px 0 0; font-size: 14px; font-weight: 600; }
+.setup-checklist { display:grid; gap:20px; min-width:0; }
 .setup-section { display: grid; gap: 8px; min-width: 0; }
 .setup-section h2 { margin: 0; font-size: 15px; }
 .setup-rows { display: grid; gap: 0; margin: 0; padding: 0; list-style: none; border: 1px solid var(--border);
@@ -133,7 +140,7 @@ export const bootstrapSetupRoute = (opts: BootstrapSetupRouteOptions): SetupRout
   if (doc.head?.querySelector?.(`style[${STYLES_MARKER}]`) == null) {
     const style = doc.createElement('style');
     style.setAttribute(STYLES_MARKER, '');
-    style.textContent = SETUP_ROUTE_STYLES;
+    style.textContent = SETUP_ROUTE_STYLES + FOCUS_BLOCK_SETUP_STYLES;
     doc.head?.appendChild?.(style);
   }
   // ⛔ The page owns its root and removes it on dispose: the shell never clears its container.
@@ -283,35 +290,52 @@ export const bootstrapSetupRoute = (opts: BootstrapSetupRouteOptions): SetupRout
     || (features.state === 'ready' && (features.value.length < 3 || features.value.some((entry) => entry.connected === null)))
     || opts.callers.packs === undefined || packs.state === 'failed' || recipes.state === 'failed';
 
+  const header = el('header');
+  const title = el('h1', undefined, 'Set up');
+  title.setAttribute(SETUP_ROUTE_HEADING_ATTR, '');
+  title.setAttribute('tabindex', '-1');
+  header.appendChild(title);
+  header.appendChild(el('p', 'setup-intro', 'What Recued can reach, and what is still missing. Each step opens the page that does it.'));
+  const summary = el('p');
+  summary.setAttribute(SETUP_SUMMARY_ATTR, '');
+  summary.setAttribute('role', 'status');
+  header.appendChild(summary);
+  root.appendChild(header);
+  const focusBlocks = opts.callers.focusBlocks ? mountFocusBlockSetup(doc, opts.callers.focusBlocks) : null;
+  if (focusBlocks) root.appendChild(focusBlocks.element);
+  const checklist = el('div', 'setup-checklist');
+  root.appendChild(checklist);
+  const desktop = focusBlocks ? doc.defaultView?.matchMedia?.(SETUP_DESKTOP_MEDIA) : undefined;
+  const placeSections = (): void => {
+    if (!focusBlocks || !desktop) return;
+    root.toggleAttribute('data-setup-desktop', desktop.matches);
+    const [first, second] = desktop.matches ? [checklist, focusBlocks.element] : [focusBlocks.element, checklist];
+    if (first.nextElementSibling === second) return;
+    // Keep DOM order aligned with the layout. Move the sibling outside keyboard focus.
+    if (first.contains(doc.activeElement)) root.appendChild(second);
+    else root.insertBefore(first, second);
+  };
+  placeSections();
+  desktop?.addEventListener('change', placeSections);
+
   const paint = (): void => {
     if (disposed) return;
     // D-405 slice 9 — the line focus was on, and whether on its step, so a page drawn again keeps it.
     const active = doc.activeElement as HTMLElement | null | undefined;
-    const focusedInside = active !== null && active !== undefined && active !== root && root.contains?.(active) === true;
+    const focusedInside = active !== null && active !== undefined && checklist.contains?.(active) === true;
     const focusedRow = focusedInside ? active.closest?.(`[${SETUP_ROW_ATTR}]`)?.getAttribute(SETUP_ROW_ATTR) ?? null : null;
-    while (root.firstChild) root.removeChild(root.firstChild);
-    const header = el('header');
-    const title = el('h1', undefined, 'Set up');
-    title.setAttribute(SETUP_ROUTE_HEADING_ATTR, '');
-    title.setAttribute('tabindex', '-1');
-    header.appendChild(title);
-    header.appendChild(el('p', 'setup-intro', 'What Recued can reach, and what is still missing. Each step opens the page that does it.'));
-    const summary = el('p');
-    summary.setAttribute(SETUP_SUMMARY_ATTR, '');
-    summary.setAttribute('role', 'status');
+    while (checklist.firstChild) checklist.removeChild(checklist.firstChild);
     const left = outstanding();
     summary.textContent = left === null ? 'Checking…'
       : left > 0 ? `${String(left)} ${left === 1 ? 'thing' : 'things'} to set up.`
         : anyUnknown() ? 'Nothing else to set up that Recued could check.' : 'Everything here is set up.';
-    header.appendChild(summary);
-    root.appendChild(header);
-    root.appendChild(section('chat', 'Chat', chatRows()));
-    root.appendChild(section('features', 'Mail, calendar and files', featureRows()));
-    root.appendChild(section('packs', 'Packs', packRows()));
+    checklist.appendChild(section('chat', 'Chat', chatRows()));
+    checklist.appendChild(section('features', 'Mail, calendar and files', featureRows()));
+    checklist.appendChild(section('packs', 'Packs', packRows()));
     const recipeLines = recipeRows();
-    if (recipeLines.length > 0) root.appendChild(section('recipes', 'Recipes', recipeLines));
+    if (recipeLines.length > 0) checklist.appendChild(section('recipes', 'Recipes', recipeLines));
     const hintLines = hintRows();
-    if (hintLines.length > 0) root.appendChild(section('hints', 'Hints you set aside', hintLines));
+    if (hintLines.length > 0) checklist.appendChild(section('hints', 'Hints you set aside', hintLines));
     if (focusedInside) {
       // The same line's step, else the heading: never lost to the page's body.
       const again = focusedRow === null ? null
@@ -437,7 +461,9 @@ export const bootstrapSetupRoute = (opts: BootstrapSetupRouteOptions): SetupRout
       if (timer !== undefined) clearTimeout(timer);
       for (const stop of stops) stop();
       doc.removeEventListener?.('visibilitychange', onShown);
+      desktop?.removeEventListener('change', placeSections);
       stopPacks?.();
+      focusBlocks?.dispose();
       root.remove?.();
     },
   };

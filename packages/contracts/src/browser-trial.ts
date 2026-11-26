@@ -22,8 +22,10 @@ export const BROWSER_TRIAL_WAIT_MS = 5 * 60_000;
 export const BROWSER_TRIAL_MAX_TEXT_CHARS = 4_000;
 
 /** What a change does, as its ask names it. */
+import { BRIDGE_UPLOAD_MAX_FILES } from './bridge.js';
+
 export type BrowserTrialAction =
-  | 'type' | 'pick' | 'click' | 'press' | 'submit' | 'upload' | 'go' | 'back' | 'reload' | 'close' | 'open' | 'collect';
+  | 'type' | 'pick' | 'click' | 'drag' | 'press' | 'seek' | 'submit' | 'upload' | 'back' | 'reload' | 'close';
 
 /** What a trial's ask asks about, as the card shows it. Never a secret: a password step's ask says
  *  which kind of secret it types, not the secret. */
@@ -31,7 +33,7 @@ export interface BrowserTrialPrompt {
   readonly action: BrowserTrialAction;
   /** The site, as the owner reads it: `en.wikipedia.org`. */
   readonly site: string;
-  /** The page it happens on, or (`open`, `go`) the address it goes to. */
+  /** The page it happens on. */
   readonly url: string;
   /** The element, as the page names it at that moment. Absent for a step that names none. */
   readonly element?: { readonly role: string; readonly label: string };
@@ -41,6 +43,17 @@ export interface BrowserTrialPrompt {
   readonly secret?: string;
   /** The file an upload puts into the page, by its name. */
   readonly file?: string;
+  readonly files?: readonly string[];
+  /** An explicit paste event or delivery to a drop area. */
+  readonly delivery?: 'drop' | 'paste';
+  /** The live label of a drag's destination. */
+  readonly destination?: string;
+  /** The click step sends a double-click gesture. */
+  readonly click_count?: 2;
+  /** Playback timestamp for a native media seek. */
+  readonly at_seconds?: number;
+  /** Seconds to observe the page for one generated file after the click. */
+  readonly download_wait?: number;
   /** The typing sends the form it is in as well. */
   readonly submits?: true;
   /** The step's place in its batch: 2 of 5. */
@@ -50,8 +63,10 @@ export interface BrowserTrialPrompt {
   readonly expires_at: number;
 }
 
-const ACTIONS: ReadonlySet<string> = new Set(['type', 'pick', 'click', 'press', 'submit', 'upload', 'go', 'back', 'reload',
-  'close', 'open', 'collect']);
+// 2026-11-23 (the owner: "ditch that ask for try it") — opening a page, going to an address and a collect turning pages
+//   are reads, so a trial asks before none of them: they left this list, and its sentences.
+const ACTIONS: ReadonlySet<string> = new Set(['type', 'pick', 'click', 'drag', 'press', 'seek', 'submit', 'upload', 'back', 'reload',
+  'close']);
 
 /** A trial prompt read back from an ask's handler payload, or undefined for anything else. */
 export const readBrowserTrialPrompt = (payload: unknown): BrowserTrialPrompt | undefined => {
@@ -59,14 +74,25 @@ export const readBrowserTrialPrompt = (payload: unknown): BrowserTrialPrompt | u
   const p = payload as Record<string, unknown>;
   if (typeof p.action !== 'string' || !ACTIONS.has(p.action) || typeof p.site !== 'string' || typeof p.url !== 'string'
     || typeof p.step !== 'number' || typeof p.of !== 'number' || typeof p.expires_at !== 'number') return undefined;
+  const at = p.at_seconds;
+  if (p.action === 'seek' && (typeof at !== 'number' || !Number.isFinite(at) || at < 0)) return undefined;
   const element = p.element !== null && typeof p.element === 'object' && !Array.isArray(p.element)
     && typeof (p.element as Record<string, unknown>).role === 'string' && typeof (p.element as Record<string, unknown>).label === 'string'
     ? { role: (p.element as { role: string }).role, label: (p.element as { label: string }).label } : undefined;
   return { action: p.action as BrowserTrialAction, site: p.site, url: p.url, step: p.step, of: p.of, expires_at: p.expires_at,
+    ...(p.action === 'seek' && typeof at === 'number' ? { at_seconds: at } : {}),
     ...(element !== undefined ? { element } : {}),
     ...(typeof p.text === 'string' ? { text: p.text } : {}),
     ...(typeof p.secret === 'string' ? { secret: p.secret } : {}),
     ...(typeof p.file === 'string' ? { file: p.file } : {}),
+    ...(Array.isArray(p.files) && p.files.length <= BRIDGE_UPLOAD_MAX_FILES
+      && p.files.every(file => typeof file === 'string') ? { files: p.files } : {}),
+    ...(p.action === 'upload' && p.delivery === 'drop' ? { delivery: 'drop' as const } : {}),
+    ...(p.action === 'type' && p.delivery === 'paste' ? { delivery: 'paste' as const } : {}),
+    ...(typeof p.destination === 'string' ? { destination: p.destination } : {}),
+    ...(p.action === 'click' && p.click_count === 2 ? { click_count: 2 as const } : {}),
+    ...(p.action === 'click' && typeof p.download_wait === 'number' && Number.isFinite(p.download_wait) && p.download_wait > 0
+      ? { download_wait: p.download_wait } : {}),
     ...(p.submits === true ? { submits: true as const } : {}) };
 };
 
@@ -79,18 +105,25 @@ export const browserTrialSentence = (prompt: BrowserTrialPrompt): string => {
   switch (prompt.action) {
     case 'type': return prompt.secret !== undefined
       ? `Type your ${prompt.secret} into ${element}${sends}${where}.`
-      : `Type “${prompt.text ?? ''}” into ${element}${sends}${where}.`;
+      : `${prompt.delivery === 'paste' ? 'Paste' : 'Type'} “${prompt.text ?? ''}” into ${element}${sends}${where}.`;
     case 'pick': return `Type “${prompt.text ?? ''}” into ${element} and pick its suggestion${sends}${where}.`;
-    case 'click': return `Click ${element}${where}.`;
+    case 'click': {
+      const verb = prompt.click_count === 2 ? 'Double-click' : 'Click';
+      return prompt.download_wait === undefined ? `${verb} ${element}${where}.`
+        : `${verb} ${element}${where} and wait up to ${prompt.download_wait} seconds to save its generated download.`;
+    }
+    case 'drag': return `Drag ${element} onto ${prompt.destination ?? 'the drop target'}${where}.`;
     case 'press': return `Press ${prompt.text ?? 'a key'} in ${element}${where}.`;
+    case 'seek': return `Seek ${element} to ${prompt.at_seconds} seconds${where}.`;
     case 'submit': return `Send the form through ${element}${where}.`;
-    case 'upload': return `Put your file${prompt.file !== undefined ? ` “${prompt.file}”` : ''} into ${element}${where}.`;
-    case 'go': return `Go to ${prompt.url}.`;
+    case 'upload': {
+      const files = prompt.files !== undefined ? `files ${prompt.files.map(name => `“${name}”`).join(', ')}`
+        : `file${prompt.file !== undefined ? ` “${prompt.file}”` : ''}`;
+      return prompt.delivery === 'drop' ? `Drop your ${files} onto ${element}${where}.` : `Put your ${files} into ${element}${where}.`;
+    }
     case 'back': return `Go back from ${prompt.url}.`;
     case 'reload': return `Reload ${prompt.url}.`;
     case 'close': return `Close the tab showing ${prompt.url}.`;
-    case 'open': return `Open ${prompt.url} in a new tab.`;
-    case 'collect': return `Turn the pages of ${prompt.url}, following ${element}, to collect what they list.`;
   }
 };
 

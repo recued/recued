@@ -1,4 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
+import type { Asset } from '@recued/contracts';
 import { HARNESS_URL, installFullAppHooks, CHAT_INPUT, CHAT_SEND } from './helpers/full-app.js';
 import { installTaskNoteSourceFixture } from './helpers/task-note-source-fixture.js';
 import { openChatHistory } from './helpers/chat-history.js';
@@ -41,7 +42,22 @@ const boot = async (page: Page, initial = 'a', pin = false, journey = 'verificat
   const sessions = new Map(['a', 'b'].map(id => [id, { id, title: 'Conversation ' + id, created_at: 1, last_active_at: 2, archived: false,
     picker_state: { current: 'self' }, model_routing: { current: 'byok', provider: 'openai', model_id: 'fixture' } }]));
   let loseReply = false;
+  const yoursAsset: Asset = {
+    id: 'fixture-calibration-kit', name: 'Private calibration kit', class_id: 'equipment', status: 'active',
+    serial_number: 'Private fixture serial', source_id: 'recued.asset', sync_state: 'live',
+    last_seen_at: 1, conflict_policy: 'recued_wins',
+    dates: {}, readings: {}, observations: {}, values: [], anchors: [], attributes: {}, settings: {},
+    rules: [], field_sources: {}, retirement: 'part', created_at: 1, updated_at: 1,
+  };
+  const yoursReads: Record<string, unknown>[] = [];
   const f = await installTaskNoteSourceFixture(page, { searchable: true, caller: async (method, args) => {
+    if (method === 'yours.read' && (typeof args.search === 'string' || typeof args.asset_id === 'string')) {
+      yoursReads.push(structuredClone(args));
+      const match = typeof args.asset_id === 'string' ? args.asset_id === yoursAsset.id
+        : yoursAsset.name.toLowerCase().includes(String(args.search).toLowerCase());
+      return { result: { assets: match ? [structuredClone(yoursAsset)] : [], total_assets: match ? 1 : 0,
+        classes: [{ id: 'equipment', name: 'Equipment' }] } };
+    }
     if (method === 'chat.sessions.list') return { result: { sessions: [...sessions.values()].map(session => ({ ...session, message_count: 1 })) } };
     if (method === 'chat.session.get') return { result: { ...sessions.get(String(args.session_id)), plans: [], quoted_replies_available: true,
       messages: [...Array.from({ length: history }, (_, i) => ({ id: 'earlier-' + i, session_id: args.session_id, role: 'assistant', content: 'Earlier answer ' + i + '. ' + 'Saved conversation context. '.repeat(20), ts: 1, target_server: 'self', picker_at_send: { display_name: 'Self' }, model_used: { provider: 'openai', model_id: 'fixture' } })), ...[...accepted.values()].filter(row => row.session_id === args.session_id).map((row, i) => ({ id: 'user-' + i, session_id: args.session_id,
@@ -61,7 +77,8 @@ const boot = async (page: Page, initial = 'a', pin = false, journey = 'verificat
   const goto = async (hash: string) => { await page.goto(HARNESS_URL + '?journey=' + journey + '&server_profiles=multiple&settle_reads=1' + hash); await page.waitForFunction(() => window.__app?.ready === true); };
   if (pin) { await goto(serializeSourceRecordAddress(f.source('calendar'))); await page.locator('.calendar-event [data-record-pin-key]').click(); }
   await goto(initial === 'new' ? '#chat/new' : '#chat/session/' + initial); await expect(input(page)).toBeVisible();
-  return { ...f, sends, accepted, loseNextReply: () => { loseReply = true; } };
+  return { ...f, sends, accepted, loseNextReply: () => { loseReply = true; },
+    yoursAsset, yoursReads, replaceYoursAsset: () => { yoursAsset.created_at++; } };
 };
 
 for (const width of [1280, 390]) test(`attachment choices stay reachable with a tall selected-record draft at ${width}px`, async ({ page }, info) => {
@@ -460,6 +477,7 @@ test('a record selection edited during a later file check cancels that admission
 test('new Chat collects all record types, previews contents on demand, and sends exact references only on Send', async ({ page }, info) => {
   const f = await boot(page, 'new');
   try {
+    await expect(input(page)).toBeFocused();
     await input(page).fill('Compare these records.'); await input(page).evaluate((node: HTMLTextAreaElement) => node.setSelectionRange(3, 7, 'backward'));
     await page.getByRole('button', { name: 'Add records', exact: true }).click();
     await expect(picker(page).getByRole('heading', { name: 'Add records to Chat', exact: true })).toBeVisible();
@@ -493,6 +511,70 @@ test('new Chat collects all record types, previews contents on demand, and sends
     expect(sent).not.toContain('Private selected note body.'); expect(sent).not.toContain('Exact work email body.'); expect(sent).not.toContain('Meeting room 2'); expect(sent).not.toContain('pair=');
     await switchTo(page, 'b'); await switchTo(page, 'created'); await expect(page.locator('[data-chat-records-question]')).toContainText('Compare these records.');
     await expect(page.locator('[data-chat-records-question]').getByRole('list').getByRole('link')).toHaveCount(6);
+  } finally { f.dispose(); }
+});
+
+
+test('searches and attaches a Yours asset with other records and checks its identity again before Send', async ({ page }) => {
+  const f = await boot(page);
+  try {
+    await input(page).fill('Review these records together.');
+    await addNote(page);
+    const title = f.yoursAsset.name;
+    const openAssets = async () => {
+      await page.getByRole('button', { name: 'Add records', exact: true }).click();
+      await picker(page).getByRole('combobox', { name: 'Record type', exact: true }).selectOption({ label: 'Yours assets' });
+      await query(page).fill('calibration');
+      await query(page).press('Enter');
+    };
+    const assetResult = () => picker(page).getByRole('region', { name: 'Yours assets', exact: true });
+    const chooseAsset = async () => {
+      await assetResult().getByRole('button', { name: 'Select link to ' + title, exact: true }).click();
+      await expect(use(page, 2)).toBeEnabled();
+      await use(page, 2).click();
+      await expect(picker(page)).toHaveCount(0);
+      await expect(chip(page, title).getByRole('link')).toHaveAttribute('href', '#yours/asset/' + f.yoursAsset.id);
+    };
+
+    await openAssets();
+    await expect(assetResult()).toContainText(title);
+    await expect(assetResult()).toContainText('Equipment');
+    await assetResult().getByRole('button', { name: 'Preview ' + title, exact: true }).click();
+    const preview = picker(page).getByRole('region', { name: 'Record preview', exact: true });
+    await expect(preview).toContainText('Status: active');
+    await preview.getByRole('button', { name: 'Close preview', exact: true }).click();
+    expect(f.yoursReads).toContainEqual({ search: 'calibration', offset: 0, limit: 20, pursuits: 'exclude', mark_shown: false });
+    await chooseAsset();
+    await expect(input(page)).toBeFocused();
+    await expect(input(page)).toHaveValue('Review these records together.');
+
+    f.replaceYoursAsset();
+    await send(page).click();
+    await expect(chip(page, title)).toContainText('removed or replaced');
+    expect(f.sends).toEqual([]);
+    await chip(page, title).getByRole('button', { name: 'Remove ' + title + ' from chat', exact: true }).click();
+    await openAssets();
+    await chooseAsset();
+    await send(page).click();
+    await expect.poll(() => f.sends.length).toBe(1);
+
+    const message = String(f.sends[0]!.message);
+    const parsed = readRecordChatMessage(message)!;
+    expect(parsed.question).toBe('Review these records together.');
+    expect(selectedRecordsOf(parsed.context).map(row => row.reference.target.tab)).toEqual(['note', 'asset']);
+    expect(message).toContain(JSON.stringify({ kind: 'asset', id: f.yoursAsset.id, created_at: f.yoursAsset.created_at }));
+    expect(message).toContain('use work.read');
+    expect(message).not.toContain(title);
+    expect(message).not.toContain(f.yoursAsset.serial_number);
+    const exactReads = f.yoursReads.filter(read => read.asset_id === f.yoursAsset.id);
+    expect(exactReads.length).toBeGreaterThan(0);
+    expect(exactReads.every(read => read.mark_shown === false)).toBe(true);
+    await switchTo(page, 'b');
+    await switchTo(page, 'a');
+    const sentAsset = page.locator('[data-chat-records-question]').getByRole('link', { name: 'Selected asset', exact: true });
+    await expect(sentAsset).toHaveAttribute('href', '#yours/asset/' + f.yoursAsset.id);
+    expect(f.writes).toEqual([]);
+    expect(f.mutations).toEqual([]);
   } finally { f.dispose(); }
 });
 

@@ -22,9 +22,11 @@ const runClick = async (mode: Mode) => {
     getBoundingClientRect: () => ({ width: 0, height: 0 }),
     click() { clicks++; },
   };
-  const doc = { title: 'Form', documentElement: { hasAttribute: () => false }, defaultView: {},
-    querySelectorAll: () => [], querySelector: () => button, getElementById: () => null };
+  const doc = Object.assign(new EventTarget(), { title: 'Form', documentElement: { hasAttribute: () => false },
+    defaultView: { getComputedStyle: () => ({ getPropertyValue: () => '' }) },
+    querySelectorAll: () => [], querySelector: () => button, getElementById: () => null });
   vi.stubGlobal('document', doc); vi.stubGlobal('location', { href: url });
+  vi.stubGlobal('recuedInertOf', undefined); vi.stubGlobal('recuedValidation', undefined);
   vi.stubGlobal('recuedPageRefs', { next: 3, byRef: new Map([['e2', button]]), byElement: new WeakMap([[button, 'e2']]) });
   const api: BridgeBrowserApi = {
     async findTabByUrlPattern() { return null; }, async executeScript() { return null; },

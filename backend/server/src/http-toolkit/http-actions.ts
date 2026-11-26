@@ -21,6 +21,10 @@ export const GET_TEXT_CHARS = 40_000;
 export const READ_PART_CHARS = 40_000;
 const PAGE_TIMEOUT_MS = 45_000;
 const DOWNLOAD_TIMEOUT_MS = 120_000;
+/** 2026-11-23 — how long a download waits with nothing new from the site, however long it may take in all: a site that
+ *  stalled is let go in 20 s, not held to the end of its two minutes, while a large file still arriving keeps its time
+ *  (`publicFetch`'s `idleTimeoutMs`; the owner, after task L's fix: "Same idle limit for the HTTP Toolkit's own download"). */
+export const DOWNLOAD_IDLE_MS = 20_000;
 
 /** What every action is given besides its input: tests stand a local server in for a site. */
 export interface HttpActionDeps {
@@ -173,8 +177,14 @@ export type PublicFileOutcome =
   | { readonly kind: 'refused'; readonly reason: string };
 export type PublicFileFetch = (address: string) => Promise<PublicFileOutcome>;
 
-/** How long a step that saves a file waits for the server's own fetch before the Bridge fetches it. */
-export const SERVER_FIRST_TIMEOUT_MS = 60_000;
+/** How long a step that saves a file waits, in all, for the server's own fetch before the Bridge fetches it. 120 s since
+ *  2026-11-23, as the HTTP Toolkit's own download, where it was 60 s: task L's 12.5 MB file took 12 to 17 s on the owner's
+ *  network, and a machine under load gave it up at 60 s while it was still arriving, leaving it to a Bridge that hands
+ *  over 2.5 MB at most. */
+export const SERVER_FIRST_TIMEOUT_MS = 120_000;
+/** 2026-11-23 — and how long with nothing new from the site, as the HTTP Toolkit's own download: a fetch that stalled
+ *  still falls to the Bridge quickly. */
+export const SERVER_FIRST_IDLE_MS = DOWNLOAD_IDLE_MS;
 
 /** D-345 slice E — the server's fetch of a file at a public address, for a step that saves one: the
  *  file, up to {@link DOWNLOAD_MAX_BYTES}, or why the Bridge should fetch it instead. Nothing of the
@@ -183,7 +193,7 @@ export const createPublicFileFetch = (fetchOptions: HttpActionDeps['fetchOptions
   let fetched: PublicFetchResult;
   try {
     fetched = await publicFetch(address, { ...fetchOptions, maxBytes: DOWNLOAD_MAX_BYTES, overflow: 'fail',
-      timeoutMs: SERVER_FIRST_TIMEOUT_MS });
+      timeoutMs: SERVER_FIRST_TIMEOUT_MS, idleTimeoutMs: SERVER_FIRST_IDLE_MS });
   } catch (error) {
     return { kind: 'refused', reason: error instanceof Error ? error.message : String(error) };
   }
@@ -201,7 +211,7 @@ export const httpDownload = async (deps: HttpDownloadDeps, input: { address?: un
   step: { run_id?: string; step_id?: string } = {}) => {
   const address = addressOf(input);
   const result = await fetching(address, { ...deps.fetchOptions, maxBytes: DOWNLOAD_MAX_BYTES, overflow: 'fail',
-    timeoutMs: DOWNLOAD_TIMEOUT_MS });
+    timeoutMs: DOWNLOAD_TIMEOUT_MS, idleTimeoutMs: DOWNLOAD_IDLE_MS });
   if (result.status < 200 || result.status >= 300) {
     throw new HttpActionError('FETCH_FAILED', `${result.url} answered ${String(result.status)}${result.status_text ? ` ${result.status_text}` : ''}: `
       + 'nothing was kept.');

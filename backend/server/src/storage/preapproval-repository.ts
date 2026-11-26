@@ -4,11 +4,11 @@
 import { randomBytes, randomUUID } from 'node:crypto';
 import type Database from 'better-sqlite3';
 import {
-  PREAPPROVAL_LIMITS, RpcError,
+  PREAPPROVAL_LIMITS, RpcError, readReminderMailReference,
   type Checkpoint, type PreparePreapproval, type PreapprovalContinuationRequest,
   type PreapprovalDecisionReceipt, type PreapprovalDecisionRequest,
   type PreapprovalExecutionStatus, type PreapprovalGrantStatus,
-  type PreapprovalInspection, type PreapprovalMemberOutcome, type PreapprovalMemberStatus,
+  type PreapprovalInspection, type PreapprovalMailFollowUpStop, type PreapprovalMemberOutcome, type PreapprovalMemberStatus,
   type PreapprovalProposalStatus, type PreapprovalResult, type PreapprovalReview,
   type PreapprovalSelection,
 } from '@recued/contracts';
@@ -1758,7 +1758,8 @@ export class PreapprovalRepository {
   }
 
   async settleMember(claim: PreapprovalMemberClaim,
-    outcome: { status: 'succeeded' | 'failed' | 'in_doubt'; message: string; result: unknown }): Promise<void> {
+    outcome: { status: 'succeeded' | 'failed' | 'in_doubt'; message: string; result: unknown;
+      mail_follow_up_stop?: PreapprovalMailFollowUpStop }): Promise<void> {
     const ciphertext = await this.codec.seal(outcome);
     const loaded = await this.load(this.execution(claim.future_execution_ref).proposal_id);
     this.db.transaction(() => {
@@ -2265,9 +2266,16 @@ export class PreapprovalRepository {
       if (!selectedIds(proposal).includes(member.member_id)) continue;
       const row = rows.find(value => value.member_id === member.member_id);
       let message: string | null = null;
+      let mailStop: PreapprovalMailFollowUpStop | undefined;
       if (row?.result_ciphertext) {
-        const result = await this.codec.open(row.result_ciphertext) as { message?: unknown };
+        const result = await this.codec.open(row.result_ciphertext) as { message?: unknown; mail_follow_up_stop?: PreapprovalMailFollowUpStop };
         if (typeof result.message === 'string') message = result.message;
+        if (loaded.plan.mail_condition && member.op_id === 'core.mail.send' && row.state === 'failed') {
+          const stop = result.mail_follow_up_stop;
+          const reply = stop?.kind === 'reply' ? readReminderMailReference(stop.reply_ref) : null;
+          if (reply) mailStop = { kind: 'reply', reply_ref: reply };
+          else if (stop?.kind === 'review') mailStop = { kind: 'review' };
+        }
       }
       const evidence = row?.attempt_id ? (this.reconciliationStatement ??= this.db.prepare(`SELECT outcome FROM preapproval_reconciliations
         WHERE attempt_id = ? ORDER BY observed_at DESC, evidence_id DESC LIMIT 1`)).get(row.attempt_id) as { outcome: 'succeeded' | 'failed' } | undefined : undefined;
@@ -2279,6 +2287,7 @@ export class PreapprovalRepository {
           future_execution_ref: execution.future_ref, member_id: member.member_id, attempt_id: row.attempt_id, action_ref: row.action_ref }));
       members.push({ ...(local ? { local_receipt: { receipt_id: local.receipt_id, kind: local.kind, committed_at: local.committed_at } } : {}),
         ...(verifyMail ? { provider_verification: 'mail' as const } : {}),
+        ...(mailStop ? { mail_follow_up_stop: mailStop } : {}),
         member_id: member.member_id, parent_member_id: member.parent_member_id,
         op_id: member.op_id, label: member.review.label, status: row?.state ?? 'available',
         action_ref: row?.action_ref ?? null, commit_id: row?.commit_id ?? null, run_id: row?.actual_run_id ?? null,

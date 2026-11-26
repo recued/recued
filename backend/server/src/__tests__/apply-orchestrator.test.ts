@@ -18,8 +18,10 @@ import {
   type ApplyContext,
   type ApplyOrchestratorPorts,
 } from '../update/apply-orchestrator.js';
-import type { VerifyArtifactResult } from '../update/binary-apply-executor.js';
-import { updateRevertReason } from '../update/revert-reason.js';
+import {
+  UpdateDownloadStalledError, UpdateDownloadTooSlowError, type VerifyArtifactResult,
+} from '../update/binary-apply-executor.js';
+import { downloadRevertReason, updateRevertReason } from '../update/revert-reason.js';
 import { DatabaseStillOpenError } from '../database-still-open-error.js';
 
 const tmp = (): string => mkdtempSync(join(tmpdir(), 'recued-orch-'));
@@ -1441,6 +1443,37 @@ describe('revert_reason — why an update was reverted, as a closed code', () =>
     await applyAndCommit(held, ctx({ migration: true }));
     expect(terminalReason(held)).toBe('database_in_use');
     expect(held.preserveAndSwap).not.toHaveBeenCalled();
+  });
+
+  // 2026-11-22 — the download's two limits are told apart from any other download
+  // failure, on the binary and on its native addon: the page gives each its own
+  // advice (a connection that stopped, a connection too slow for 6 hours).
+  it.each([
+    ['download_stalled', new UpdateDownloadStalledError(60_000, 32_000_000, 150_000_000)],
+    ['download_too_slow', new UpdateDownloadTooSlowError(6 * 3_600_000, 120_000_000, 150_000_000)],
+  ] as const)('a download stopped by its limit records %s, on the binary and on its addon', async (reason, error) => {
+    const exe = makePorts({ download: vi.fn(async () => { throw error; }) });
+    expect((await runApply(exe, ctx())).status).toBe('download-failed');
+    expect(terminalReason(exe)).toBe(reason);
+    expect(exe.ledger.readAll().find((e) => e.kind === 'apply_reverted')?.detail).toBe(`download: ${error.message}`);
+
+    // The addon downloads second, so the exe's succeeds and the addon's carries the limit.
+    let calls = 0;
+    const base = makePorts({ download: vi.fn(async () => { calls += 1; if (calls === 2) throw error; }) });
+    const addon = { ...base, stagedLibPath: `${base.stagedPath}.lib` };
+    const result = await runApply(addon, ctx({ libArtifact: { url: 'https://x/lib.node', sha256: 'bb', sig: 'libsig' } }));
+    expect(calls).toBe(2);
+    expect(result.status).toBe('download-failed');
+    expect(terminalReason(addon)).toBe(reason);
+    expect(addon.ledger.readAll().find((e) => e.kind === 'apply_reverted')?.detail)
+      .toBe(`download (native addon): ${error.message}`);
+  });
+
+  it('a Node system error is a plain download failure, though it has a code', () => {
+    const reset = Object.assign(new Error('read ECONNRESET'), { code: 'ECONNRESET' });
+    expect(downloadRevertReason(reset)).toBe('download_failed');
+    expect(downloadRevertReason(new UpdateDownloadStalledError(60_000, 0))).toBe('download_stalled');
+    expect(downloadRevertReason('not an error')).toBe('download_failed');
   });
 
   it('the typed field wins over the prose, and a code this binary does not know reads as other', () => {

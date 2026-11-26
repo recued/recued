@@ -13,9 +13,11 @@ const LOGS_AFFECTED_ITEMS = 'data-recued-logs-affected-items';
 
 installFullAppHooks();
 
-test('copyable run results stay usable across Packs and Recipes', async ({ page }) => {
+test('copyable run results stay usable across Packs and Recipes', async ({ page, browserName }) => {
+  // WebKit authorizes clipboard writes through the keyboard gesture below.
+  const permissions = browserName === 'webkit' ? ['clipboard-read'] : ['clipboard-read', 'clipboard-write'];
   await page.context().grantPermissions(
-    ['clipboard-read', 'clipboard-write'],
+    permissions,
     { origin: new URL(HARNESS_URL).origin },
   );
   await page.setViewportSize({ width: 1280, height: 900 });
@@ -72,9 +74,7 @@ test('copyable run results stay usable across Packs and Recipes', async ({ page 
       + '&recipe_result=copyable#recipes',
   );
   await page.waitForFunction(() => window.__app?.ready === true);
-  await page.locator('[data-recued-recipes-card="autorun-live-1"]')
-    .getByRole('button', { name: /Open .+ details/ })
-    .click();
+  await page.locator('[data-recued-recipes-card="autorun-live-1"]').press('Enter');
   const detail = page.locator(
     '[data-recued-recipes-detail="autorun-live-1"]',
   );
@@ -148,9 +148,7 @@ test('JSON run results stay operable and contained across Packs and Recipes', as
       + '&recipe_result=json#recipes',
   );
   await page.waitForFunction(() => window.__app?.ready === true);
-  await page.locator('[data-recued-recipes-card="autorun-live-1"]')
-    .getByRole('button', { name: /Open .+ details/ })
-    .click();
+  await page.locator('[data-recued-recipes-card="autorun-live-1"]').press('Enter');
   const detail = page.locator(
     '[data-recued-recipes-detail="autorun-live-1"]',
   );
@@ -248,9 +246,7 @@ test('record-field run results stay readable and contained across Packs and Reci
       + '&recipe_result=record-fields#recipes',
   );
   await page.waitForFunction(() => window.__app?.ready === true);
-  await page.locator('[data-recued-recipes-card="autorun-live-1"]')
-    .getByRole('button', { name: /Open .+ details/ })
-    .click();
+  await page.locator('[data-recued-recipes-card="autorun-live-1"]').press('Enter');
   const detail = page.locator(
     '[data-recued-recipes-detail="autorun-live-1"]',
   );
@@ -359,9 +355,7 @@ test('AI-analysis run results stay structured and contained across Packs and Rec
       + '&recipe_result=ai-analysis#recipes',
   );
   await page.waitForFunction(() => window.__app?.ready === true);
-  await page.locator('[data-recued-recipes-card="autorun-live-1"]')
-    .getByRole('button', { name: /Open .+ details/ })
-    .click();
+  await page.locator('[data-recued-recipes-card="autorun-live-1"]').press('Enter');
   const detail = page.locator(
     '[data-recued-recipes-detail="autorun-live-1"]',
   );
@@ -469,9 +463,7 @@ test('link-button run results stay safe and usable across Packs and Recipes', as
       + '&recipe_result=link-buttons#recipes',
   );
   await page.waitForFunction(() => window.__app?.ready === true);
-  await page.locator('[data-recued-recipes-card="autorun-live-1"]')
-    .getByRole('button', { name: /Open .+ details/ })
-    .click();
+  await page.locator('[data-recued-recipes-card="autorun-live-1"]').press('Enter');
   const detail = page.locator(
     '[data-recued-recipes-detail="autorun-live-1"]',
   );
@@ -584,9 +576,7 @@ test('file-artifact run results keep exact identity contained across Packs and R
       + '&recipe_result=file-artifact#recipes',
   );
   await page.waitForFunction(() => window.__app?.ready === true);
-  await page.locator('[data-recued-recipes-card="autorun-live-1"]')
-    .getByRole('button', { name: /Open .+ details/ })
-    .click();
+  await page.locator('[data-recued-recipes-card="autorun-live-1"]').press('Enter');
   const detail = page.locator(
     '[data-recued-recipes-detail="autorun-live-1"]',
   );

@@ -743,3 +743,32 @@ describe('D-325 reminder toasts', () => {
     expect(fake.calls.every(call => call.unsubscribe.mock.calls.length === 1)).toBe(true);
   });
 });
+
+
+describe('durable notification identity', () => {
+  const link = '#mail/reply-watch/mfw_00000000-0000-4000-8000-000000000001/draft/mad_00000000-0000-4000-8000-000000000002';
+  it('updates a ready alert in place without detaching its focused link or repeating a dismissed notice', () => {
+    const document = makeFakeDocument(); const f = mount({ document: document as unknown as Document });
+    const emit = notifyListener(f.fake);
+    const ready = { ...notifyEvent('Open this draft for review.', 'Follow-up draft ready'), activity_id: 'watch-ready', link_url: link };
+    emit(ready); const card = findAllByAttr(f.host, NOTIFY_TOAST_ATTR)[0]!;
+    const open = findAllByAttr(card, 'href')[0]!; open.focus!();
+    emit({ ...ready, title: 'Follow-up no longer needed', text: 'A recipient replied.', replace_existing: true });
+    expect(findAllByAttr(f.host, NOTIFY_TOAST_ATTR)).toEqual([card]);
+    expect(document.activeElement).toBe(open); expect(open.getAttribute('href')).toBe(link);
+    expect(textOf(card)).toContain('A recipient replied.'); expect(textOf(card)).not.toContain('Open this draft for review.');
+    emit(ready); expect(f.toasts.getToasts()).toHaveLength(1);
+    f.toasts.dismiss(f.toasts.getToasts()[0]!.id); emit({ ...ready, replace_existing: true }); emit(ready);
+    expect(f.toasts.getToasts()).toEqual([]);
+  });
+
+  it('can update a caught-up card by the same history id and ignores an update for a card that is not present', () => {
+    const f = mount(), emit = notifyListener(f.fake);
+    emit({ ...notifyEvent('A recipient replied.'), activity_id: 'unknown', replace_existing: true });
+    expect(f.toasts.getToasts()).toEqual([]);
+    f.toasts.push({ activity_id: 'missed-watch', title: 'Follow-up draft ready', text: 'Ready while away.', sticky: true, link_url: link });
+    emit({ ...notifyEvent('Watch cancelled.', 'Follow-up no longer needed'), activity_id: 'missed-watch', link_url: link, replace_existing: true });
+    expect(f.toasts.getToasts()).toEqual([expect.objectContaining({ text: 'Watch cancelled.', link_url: link })]);
+    expect(f.timers.pending().length).toBe(0);
+  });
+});

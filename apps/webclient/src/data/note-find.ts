@@ -63,10 +63,14 @@ export const createNoteFind = (deps: { root: HTMLElement; render: () => void; on
     if (jump) {
       const mark = groups[active]?.[0], content = host.querySelector<HTMLElement>(`.work-entity-${kind}-content`);
       if (mark && content && content.contains(mark)) {
-        const at = mark.getBoundingClientRect(), bounds = content.getBoundingClientRect();
-        if (at.top < bounds.top + 12 || at.bottom > bounds.bottom - 12) content.scrollTop += at.top - bounds.top - 16;
-        const code = mark.closest('pre');
-        if (code) { const box = code.getBoundingClientRect(); if (at.left < box.left || at.right > box.right) code.scrollLeft += at.left - box.left - 12; }
+        if (host.classList?.contains('work-entity-reader--inline') && content.scrollHeight <= content.clientHeight) {
+          mark.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+        } else {
+          const at = mark.getBoundingClientRect(), bounds = content.getBoundingClientRect();
+          if (at.top < bounds.top + 12 || at.bottom > bounds.bottom - 12) content.scrollTop += at.top - bounds.top - 16;
+          const code = mark.closest('pre');
+          if (code) { const box = code.getBoundingClientRect(); if (at.left < box.left || at.right > box.right) code.scrollLeft += at.left - box.left - 12; }
+        }
         deps.onReveal?.();
       }
       jump = false;

@@ -1,3 +1,4 @@
+import { makeMailFollowUpHandlers, type MailFollowUpRpcDeps } from './mail-follow-up-rpc-handler.js';
 import { makeKitchenDraftHandlers } from './kitchen-draft-handler.js';
 import type { KitchenDraftStore } from './kitchen-draft-store.js';
 import { makeAutomationRehearsalHandlers, type AutomationRehearsalDeps } from './automation-rehearsal-handler.js';
@@ -1468,6 +1469,7 @@ export interface AttachWebSocketOptions {
    *  MCP-reserved. */
   mailFactRpcDeps?: MailFactRpcDeps;
   mailWorkService?: MailWorkService;
+  mailFollowUpDeps?: MailFollowUpRpcDeps;
   /** D-221 owner-only `records.*` explorer/lifecycle control plane. */
   recordsRpcDeps?: RecordsRpcDeps;
   /** D-403 — what takes space, by kind, and the owner's purge. Absent ⇒ `not_configured`. */
@@ -1668,7 +1670,7 @@ const buildWsBinding = (
     workEntityCrudDeps,
     formResponseDeps,
     mailFactRpcDeps,
-    mailWorkService,
+    mailWorkService, mailFollowUpDeps,
     recordsRpcDeps,
     ownerStorageRpcDeps,
     savedDataViewStore,
@@ -1823,7 +1825,7 @@ const buildWsBinding = (
     ...(packUpdateDeps ? { packUpdateStore: packUpdateDeps.store } : {}),
   } : undefined;
   const { handlers, wiredMethods } = composeHandlers<ServerRpcRegistry, WsClient>([
-    makeExecuteHandlers(executeDeps),
+    makeExecuteHandlers(executeDeps, mailFollowUpDeps),
     makeRecipeRunCaptureHandlers(recipeRunCaptureDeps,executeDeps),
     // D-402 slice C — "Try it": a draft run once, every change asked about first.
     makeRecipeTryHandlers(recipeRunCaptureDeps === undefined ? undefined : { clientTokens: recipeRunCaptureDeps.clientTokens, captures: recipeRunCaptureDeps.store },executeDeps),
@@ -2304,6 +2306,7 @@ const buildWsBinding = (
     // only, MCP-reserved.
     makeMailFactRpcHandlers(mailFactRpcDeps),
     makeMailWorkRpcHandlers(mailWorkService),
+    makeMailFollowUpHandlers(mailFollowUpDeps),
     // D-221 — full-ref Records explorer and lifecycle controls. Every arrow
     // enforces a registered paired client and `records.` is MCP-reserved.
     makeRecordsRpcHandlers(recordsRpcDeps),

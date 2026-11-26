@@ -1,5 +1,5 @@
 import type { BrowserExtractionTargets } from '@recued/contracts';
-import { parseInspectHtml, type OutlineElement } from './page-outline.js';
+import { capturedLinkUrl, parseInspectHtml, type OutlineElement } from './page-outline.js';
 import { browserCollectHint } from './browser-collect.js';
 import { browserTableHeaders } from './browser-table-headers.js';
 
@@ -21,18 +21,18 @@ export const browserExtractionTargets = (html: string, input: {
     const id = node.attrs.id;
     if (typeof id === 'string') ids.set(id, (ids.get(id) ?? 0) + 1);
     if (node.structuralOnly) continue;
-    if (node.tag === 'a' && typeof node.attrs.ref === 'string' && /^e[1-9]\d{0,8}$/.test(node.attrs.ref) && typeof node.attrs.href === 'string') {
-      try {
-        const address = new URL(node.attrs.href, input.url);
-        if (['http:', 'https:'].includes(address.protocol) && !address.username && !address.password
-          && (Object.hasOwn(node.attrs, 'data-recued-download') || /\.(?:zip|pdf|csv|xlsx?|docx?|pptx?|tar|gz|tgz|exe|msi|dmg|pkg|deb|rpm|apk|json|txt)$/i.test(address.pathname))) {
-          const parts: string[] = [], children = [...node.children].reverse();
-          while (children.length) { const child = children.pop()!; if (child.kind === 'text') parts.push(child.text);
-            else if (!child.structuralOnly && !['input', 'textarea', 'select', 'iframe', 'frame'].includes(child.tag)) children.push(...[...child.children].reverse()); }
-          const label = (typeof node.attrs['aria-label'] === 'string' ? node.attrs['aria-label'] : parts.join('')).replace(/\s+/g, ' ').trim();
-          files.push({ step: { do: 'download', ref: node.attrs.ref }, ...(label ? { label: label.slice(0, 80), ...(label.length > 80 ? { label_truncated: true as const } : {}) } : {}) });
-        }
-      } catch { /* Invalid or active-scheme links never acquire a save example. */ }
+    if ((node.tag === 'a' || node.tag === 'area') && typeof node.attrs.ref === 'string' && /^e[1-9]\d{0,8}$/.test(node.attrs.ref)) {
+      const address = capturedLinkUrl(node, input.url);
+      if (address && (Object.hasOwn(node.attrs, 'data-recued-download')
+        || /\.(?:zip|pdf|csv|xlsx?|docx?|pptx?|tar|gz|tgz|exe|msi|dmg|pkg|deb|rpm|apk|json|txt)$/i.test(address.pathname))) {
+        const parts: string[] = [], children = [...node.children].reverse();
+        while (children.length) { const child = children.pop()!; if (child.kind === 'text') parts.push(child.text);
+          else if (!child.structuralOnly && !['input', 'textarea', 'select', 'iframe', 'frame'].includes(child.tag)) children.push(...[...child.children].reverse()); }
+        const name = node.attrs['data-recued-labelledby-name'] ?? node.attrs['aria-label']
+          ?? (node.tag === 'area' ? node.attrs.alt : undefined);
+        const label = (typeof name === 'string' ? name : parts.join('')).replace(/\s+/g, ' ').trim();
+        files.push({ step: { do: 'download', ref: node.attrs.ref }, ...(label ? { label: label.slice(0, 80), ...(label.length > 80 ? { label_truncated: true as const } : {}) } : {}) });
+      }
     }
     const role = typeof node.attrs.role === 'string' ? node.attrs.role.trim().split(/\s+/)[0] : '';
     if (node.tag === 'table' ? !['presentation', 'none'].includes(role ?? '') : ['table', 'grid', 'treegrid'].includes(role ?? '')) tables.push(node);

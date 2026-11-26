@@ -507,6 +507,14 @@ const REVERT_REASON_COPY: Readonly<
   download_failed: (current, target) =>
     `The server is still on ${current}. The update to ${target} did not take effect: the server `
     + 'could not download it. Check that the server can reach the internet, then try the update again.',
+  download_stalled: (current, target) =>
+    `The server is still on ${current}. The update to ${target} did not take effect: the download `
+    + "stopped, because no data arrived for a minute. Check the server's internet connection, then "
+    + 'try the update again.',
+  download_too_slow: (current, target) =>
+    `The server is still on ${current}. The update to ${target} did not take effect: the download was `
+    + "still going after 6 hours, so the server gave up. Its connection is too slow for an update: try "
+    + 'again on a faster one.',
   verify_failed: (current, target) =>
     `The server is still on ${current}. The update to ${target} did not take effect: the server `
     + 'could not check who signed the download, so it did not install it. Try the update again later.',
@@ -534,6 +542,19 @@ const REVERT_REASON_COPY: Readonly<
     + 'start. Try the update again.',
 };
 
+/** Terminal statuses that leave the server on its version with the reason in its
+ *  ledger (`apply_reverted` and its `revert_reason`), found before any restart. */
+const REVERTED_BEFORE_RESTART: ReadonlySet<string> = new Set(['download-failed', 'verify-failed', 'stage-failed']);
+
+/** Their line until the reason is read, and for good when it cannot be: the
+ *  server's own words in brackets. Not `updateDidNotTakeEffectCopy`, whose advice
+ *  about AI apps holding the restart open is for a run that reached the restart. */
+const revertedBeforeRestartCopy = (current: string, target: string, detail: string | undefined): string =>
+  `The server is still on ${current}. The update to ${target} did not take effect`
+  + (detail !== undefined && detail.length > 0 ? ` (${detail})` : '')
+  + '. Try the update again. If it still does not take effect, run recued stop, then recued update apply, '
+  + 'which says what went wrong, then start the server again.';
+
 /** The line for a code, or null for `other` and for a code this page does not
  *  know (a newer server's): the version-only line stays true for both. */
 const revertReasonCopy = (reason: string, current: string, target: string): string | null =>
@@ -542,7 +563,8 @@ const revertReasonCopy = (reason: string, current: string, target: string): stri
     : null;
 
 const APPLY_STATUS_COPY: Readonly<Record<UpdateApplyResponse['status'], string>> = {
-  applying: 'Downloading and verifying the update — this takes a few minutes. You can leave this page.',
+  applying: 'Downloading and verifying the update. This takes a few minutes, longer on a slow connection. '
+    + 'You can leave this page.',
   restarting: 'Updating now. The server will restart and be away for a moment.',
   // ⚠ Not "busy": the server defers for several reasons (no supervisor to bring it
   // back, a mismatched installed executable, waiting for idle), and names the one
@@ -2890,7 +2912,21 @@ export const mountUpdatesPage = (opts: MountUpdatesPageOptions): UpdatesPageMoun
       ...(event.to_version === undefined ? {} : { to_version: event.to_version }),
       ...(event.operation_id === undefined ? {} : { operation_id: event.operation_id }),
     } as typeof state.applyResult;
-    if (event.detail !== undefined && event.status !== 'restarting') {
+    // ⛔ A FAILURE BEFORE THE RESTART USED TO SHOW ONLY THE SERVER'S OWN TEXT. A
+    // download the server's 10-minute cap cut off read "This operation was
+    // aborted" under the button, twice, on the owner's Mac (2026-11-22). These three
+    // statuses leave the server on its version with a typed reason in its ledger, so
+    // they get the restart path's line and its `explainRevert`.
+    const target = event.to_version ?? applyingToVersion;
+    const current = state.check?.current_version;
+    if (
+      REVERTED_BEFORE_RESTART.has(event.status) && event.operation_id !== undefined
+      && target !== null && current !== undefined
+    ) {
+      state.applyResult = null;
+      state.updateOutcome = revertedBeforeRestartCopy(current, target, event.detail);
+      void explainRevert(event.operation_id, current, target);
+    } else if (event.detail !== undefined && event.status !== 'restarting') {
       state.applyError = event.detail;
     }
     state.applying = false;

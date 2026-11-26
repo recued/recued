@@ -350,6 +350,11 @@ export type MailMessageDirection = (typeof MAIL_MESSAGE_DIRECTIONS)[number];
  *  native message object into this before handing off to the outer
  *  `MailCollection`. */
 export interface CanonicalMessage {
+  /** Computed from the complete source header list before duplicate headers are
+   * collapsed. Optional for legacy and external adapters: absence is unknown. */
+  delivery_report_unverified?: boolean;
+  delivery_report?: import('./delivery-report.js').MailDeliveryReport;
+  reply_automation?: import('./reply-automation.js').MailReplyAutomation;
   /** Stable identifier within this provider/account. IMAP uses
    *  `UID@folder`; Gmail uses its `id`; Graph uses the message id.
    *  `MailCollection` hashes it into the row-level `record_id`. */

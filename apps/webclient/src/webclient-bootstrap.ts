@@ -1,12 +1,20 @@
+import { parseMailFollowUpAddress, mailFollowUpHref } from '@recued/contracts';
+import { SETTINGS_FINDER_TARGETS, settingsFinderHash } from './settings/settings-finder-targets.js';
+import { readSettingsSearchVisit } from './settings/settings-search.js';
+import { readSavedViewSearchVisit, savedViewSearchHref } from './data/saved-view-search.js';
+import { SEARCH_OPEN_CONNECTION } from './connections/connection-search.js';
+import { SEARCH_CONNECTION_KEY } from './connections/connection-search-view.js';
 import { renderActionIcon, type IconName } from '@recued/ui-shared';
 import { trackSearchAssetRoute } from './shell/search-asset-return.js';
 import { createBodyChat, type BodyChatCall } from './yours/body-chat.js';
 import { createBodyMeasure } from './yours/body-measure.js';
 import { createAppleHealthConnect } from './yours/body-apple-health.js';
 import type { CallerPreapprovalPanelCallers } from './contracts/caller-preapproval-panel.js';
-import { trackSearchNavigationRoute, readSearchNavigationReturn } from './shell/search-navigation-return.js';
+import { trackSearchNavigationRoute, readSearchNavigationReturn, saveSearchNavigationReturn, clearSearchNavigationReturn } from './shell/search-navigation-return.js';
 import { SEARCH_OPEN_PROMPT } from './automation/prompt-search-view.js';
 import { SEARCH_OPEN_DECISION } from './approvals/decision-search-view.js';
+import { runSearchHref } from './logs/run-search.js';
+import { readRunSearchReview } from './logs/run-search-review.js';
 import { decisionSearchHref, readDecisionSearchKey } from './approvals/decision-search-record.js';
 import type { PendingDecisionSearchCallers } from './approvals/pending-decision-search.js';
 import { SEARCH_OPEN_RECOVERY_DRAFT } from './data/recovery-draft-search.js';
@@ -552,6 +560,7 @@ import {
 // D-250 § D7 — the owner's own metrics surface.
 import { bootstrapStatsRoute } from './stats/bootstrap-stats-route.js';
 import { bootstrapSetupRoute } from './setup/bootstrap-setup-route.js';
+import { FOCUS_BLOCK_RECIPE_ID } from '@recued/contracts';
 import { isAnyAiSourceConfigured } from './settings/llm-availability.js';
 import { hasAnyRecipe } from './shell/paged-lists.js';
 import {
@@ -649,6 +658,7 @@ import {
   serializeChatSessionAddress,
   parseChatCarryOnAddress,
   parseDataEntityVerificationAddress,
+  parseFileSourceSlug,
   parseLogsRunAddress,
   parseRouteFromHash,
   parseShellRoute,
@@ -736,6 +746,7 @@ import {
   type ApprovalAttentionPopoverMount,
 } from './attention/approval-attention-popover.js';
 import { bootstrapTodayRoute } from './today/bootstrap-today-route.js';
+import type { CustomerDecisionWatchCallers } from './data/customer-decision-watch.js';
 import { createTodayReminderNavigation } from './today/reminder-navigation.js';
 import { createTaskBlockerNavigation } from './data/task-blocker-navigation.js';
 import { bootstrapYoursRoute } from './yours/bootstrap-yours-route.js';
@@ -1044,11 +1055,8 @@ export const WEBCLIENT_SHELL_CONNECTION_HOST_ATTR =
   'data-recued-webclient-connection-host';
 export const WEBCLIENT_SHELL_RUN_HOST_ATTR =
   'data-recued-webclient-run-host';
-// §D.L2 — the navigation drawer hooks (rev R7). Replaces the flat
-// `…-rail` chrome: `…-drawer` is the off-canvas panel, `…-toggle` the
-// top-bar ☰ that opens it, `…-backdrop` the click-to-close scrim, and
-// `…-open` the boolean state attribute the shell host carries while open
-// (CSS keys the slide-in + the scrim off it).
+// §D.L2 — one primary navigation element. The host marks the transient
+// drawer and the desktop sidebar separately so only the drawer has a scrim.
 export const WEBCLIENT_SHELL_DRAWER_ATTR = 'data-recued-webclient-drawer';
 export const WEBCLIENT_SHELL_DRAWER_LINK_ATTR =
   'data-recued-webclient-drawer-link';
@@ -1060,6 +1068,9 @@ export const WEBCLIENT_SHELL_DRAWER_BACKDROP_ATTR =
   'data-recued-webclient-drawer-backdrop';
 export const WEBCLIENT_SHELL_DRAWER_OPEN_ATTR =
   'data-recued-webclient-drawer-open';
+const WEBCLIENT_SHELL_NAV_PINNED_ATTR = 'data-recued-webclient-navigation-pinned';
+const NAVIGATION_PIN_MEDIA = '(min-width: 1536px) and (hover: hover) and (pointer: fine)';
+const NAVIGATION_PIN_STORAGE_KEY = 'recued.navigation-pinned';
 /** D-282 slice C — the owner's pinned apps section, and one seat inside it
  *  (value = the pack slug). Exported so a test pins the SEATS rather than the
  *  copy around them. */
@@ -1470,8 +1481,7 @@ export const WEBCLIENT_SHELL_STYLES = `
   outline: 2px solid var(--accent);
   outline-offset: 1px;
 }
-/* Body — the content fills the row; the drawer overlays it off-canvas, so the
-   body is a single column with no rail gutter. */
+/* Main content fills the available workspace in either navigation mode. */
 [${WEBCLIENT_SHELL_HOST_ATTR}] .webclient-shell-body {
   min-width: 0;
   min-height: 0;
@@ -1577,6 +1587,71 @@ export const WEBCLIENT_SHELL_STYLES = `
 [${WEBCLIENT_SHELL_DRAWER_ATTR}] .webclient-shell-drawer-close:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: -1px;
+}
+[${WEBCLIENT_SHELL_DRAWER_ATTR}] .webclient-shell-drawer-pin {
+  margin-inline-start: auto;
+  min-height: 36px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--wc-radius, 9px);
+  background: var(--surface);
+  color: var(--fg);
+  font: inherit;
+  font-size: var(--wc-font-small, 12px);
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+}
+[${WEBCLIENT_SHELL_DRAWER_ATTR}] .webclient-shell-drawer-pin:hover {
+  background: var(--surface-sunk);
+  border-color: var(--border-strong);
+}
+[${WEBCLIENT_SHELL_DRAWER_ATTR}] .webclient-shell-drawer-pin:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+/* At the first eligible width, 224px leaves 1312px for the workspace. */
+[${WEBCLIENT_SHELL_HOST_ATTR}][${WEBCLIENT_SHELL_NAV_PINNED_ATTR}] {
+  grid-template-columns: 224px minmax(0, 1fr);
+}
+[${WEBCLIENT_SHELL_NAV_PINNED_ATTR}] > [${WEBCLIENT_SHELL_TOPBAR_ATTR}] {
+  grid-column: 1 / -1;
+}
+[${WEBCLIENT_SHELL_NAV_PINNED_ATTR}] > .webclient-shell-body {
+  grid-area: 2 / 2;
+}
+[${WEBCLIENT_SHELL_NAV_PINNED_ATTR}] > [${WEBCLIENT_SHELL_DRAWER_BACKDROP_ATTR}] {
+  display: none;
+}
+[${WEBCLIENT_SHELL_NAV_PINNED_ATTR}] > [${WEBCLIENT_SHELL_DRAWER_ATTR}] {
+  grid-area: 2 / 1;
+  position: static;
+  z-index: auto;
+  width: auto;
+  height: auto;
+  min-height: 0;
+  padding: 0 8px 12px;
+  scroll-padding-block-start: 3.5rem;
+  visibility: visible;
+  transform: none;
+  transition: none;
+  box-shadow: none;
+}
+[${WEBCLIENT_SHELL_NAV_PINNED_ATTR}] .webclient-shell-drawer-head {
+  position: sticky;
+  inset-block-start: 0;
+  z-index: 1;
+  padding: 8px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+}
+[${WEBCLIENT_SHELL_NAV_PINNED_ATTR}] :is([${WEBCLIENT_SHELL_DRAWER_LINK_ATTR}], [${WEBCLIENT_SHELL_DRAWER_ACTION_ATTR}]) {
+  min-height: 36px;
+  padding: 6px 10px;
+  overflow-wrap: anywhere;
+}
+[${WEBCLIENT_SHELL_NAV_PINNED_ATTR}] .webclient-shell-drawer-close {
+  display: none;
 }
 /* One section = a group of seats; dividers fall between sections. */
 [${WEBCLIENT_SHELL_DRAWER_ATTR}] .webclient-shell-drawer-section {
@@ -1776,12 +1851,13 @@ interface WebclientShell {
   readonly setPinnedApps: (
     apps: ReadonlyArray<{ readonly slug: string; readonly name: string }>,
   ) => void;
-  /** Close transient navigation before a global modal captures focus. */
+  /** Prepare a visible return target before a global modal captures focus. */
   readonly closeDrawer: () => void;
   readonly dispose: () => void;
 }
 
 const WEBCLIENT_SHELL_DRAWER_ID = 'webclient-shell-drawer';
+type PrimaryNavigationMode = 'closed' | 'drawer' | 'sidebar';
 /** D-282 slice C — how many pinned seats the drawer will draw.
  *
  *  ⚠ A SECOND CEILING, BELOW THE PREF'S OWN. `ui.pinned_apps` caps STORAGE at
@@ -1904,7 +1980,7 @@ const createWebclientShell = (opts: {
   topbar.appendChild(utilities);
   shellRoot.appendChild(topbar);
 
-  // ── Body: just the content mount (the drawer overlays it off-canvas) ──
+  // The content mount stays in place when navigation changes modes.
   const body = doc.createElement('div');
   body.className = 'webclient-shell-body';
   const contentRoot = doc.createElement('main');
@@ -1913,7 +1989,6 @@ const createWebclientShell = (opts: {
   // back to the mounted work area without guessing at a route-owned control.
   contentRoot.setAttribute('tabindex', '-1');
   body.appendChild(contentRoot);
-  shellRoot.appendChild(body);
 
   // ── §D.L2 drawer: backdrop + off-canvas side menu ───────────────────
   const backdrop = doc.createElement('div');
@@ -1932,12 +2007,16 @@ const createWebclientShell = (opts: {
   const title = doc.createElement('span');
   title.className = 'webclient-shell-drawer-title';
   title.textContent = 'Navigate';
+  const pinBtn = doc.createElement('button');
+  pinBtn.setAttribute('type', 'button');
+  pinBtn.className = 'webclient-shell-drawer-pin';
   const closeBtn = doc.createElement('button');
   closeBtn.setAttribute('type', 'button');
   closeBtn.className = 'webclient-shell-drawer-close';
   closeBtn.setAttribute('aria-label', 'Close navigation');
   closeBtn.innerHTML = renderActionIcon('close');
   head.appendChild(title);
+  head.appendChild(pinBtn);
   head.appendChild(closeBtn);
   drawer.appendChild(head);
   drawer.appendChild(runPaletteHost);
@@ -1962,52 +2041,68 @@ const createWebclientShell = (opts: {
     readonly link: HTMLElement;
   }> = [];
 
-  // ── Open / close state (declared before the render loop so each seat's
-  //    close-on-navigate handler can close it) ─────────────────────────
-  let drawerOpen = false;
+  const pinMedia = doc.defaultView?.matchMedia?.(NAVIGATION_PIN_MEDIA);
+  const canPin = (): boolean => pinMedia?.matches === true;
+  let prefersPinnedNavigation = false;
+  try {
+    prefersPinnedNavigation = doc.defaultView?.localStorage.getItem(NAVIGATION_PIN_STORAGE_KEY) === '1';
+  } catch {
+    // Browsers that restrict storage can still pin for the current page.
+  }
+  let navigationMode: PrimaryNavigationMode = 'closed';
   let activeDrawerLink: HTMLElement | null = null;
-  const setDrawerOpen = (
-    open: boolean,
-    behavior?: { readonly returnFocus?: boolean },
-  ): void => {
-    drawerOpen = open;
-    if (open) {
+  const renderNavigation = (mode: PrimaryNavigationMode): void => {
+    navigationMode = mode;
+    const modal = mode === 'drawer';
+    const pinned = mode === 'sidebar';
+    const visible = mode !== 'closed';
+    if (modal) {
       shellRoot.setAttribute(WEBCLIENT_SHELL_DRAWER_OPEN_ATTR, '');
     } else {
       shellRoot.removeAttribute(WEBCLIENT_SHELL_DRAWER_OPEN_ATTR);
     }
-    toggleBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
-    toggleBtn.setAttribute(
-      'aria-label',
-      open ? 'Close navigation' : 'Open navigation',
-    );
-    drawer.setAttribute('aria-hidden', open ? 'false' : 'true');
-    // The drawer behaves as a modal overlay. Native `inert` removes the
-    // obscured app chrome + route from keyboard and accessibility traversal;
-    // the document-level Tab loop below keeps focus contained as a fallback.
-    if (open) {
+    if (pinned) shellRoot.setAttribute(WEBCLIENT_SHELL_NAV_PINNED_ATTR, '');
+    else shellRoot.removeAttribute(WEBCLIENT_SHELL_NAV_PINNED_ATTR);
+    toggleBtn.setAttribute('aria-expanded', String(visible));
+    toggleBtn.setAttribute('aria-label', pinned ? 'Hide navigation' : modal ? 'Close navigation' : 'Open navigation');
+    drawer.setAttribute('aria-hidden', String(!visible));
+    if (visible) drawer.removeAttribute('inert');
+    else drawer.setAttribute('inert', '');
+    pinBtn.textContent = pinned ? 'Unpin' : 'Pin navigation';
+    pinBtn.setAttribute('aria-label', pinned ? 'Unpin navigation' : 'Pin navigation');
+    if (canPin()) pinBtn.removeAttribute('hidden');
+    else pinBtn.setAttribute('hidden', '');
+    // Only the overlay owns keyboard focus and blocks the workspace.
+    if (modal) {
       topbar.setAttribute('inert', '');
       body.setAttribute('inert', '');
     } else {
       topbar.removeAttribute('inert');
       body.removeAttribute('inert');
     }
-    if (open) {
-      // Start at the current destination so opening navigation does not make
-      // keyboard users traverse the whole menu again. Routes without a drawer
-      // seat retain the stable first-link fallback.
-      focusShellElement(
-        activeDrawerLink
-          ?? destinationLinks.find((item) => item.fallback)?.link
-          ?? closeBtn,
-      );
-    } else if (behavior?.returnFocus === true) {
-      // Closed via ✕ / Escape / backdrop / nav-link — hand focus back to the
-      // ☰ trigger (a stable, visible landing). A closed drawer's seats go
-      // untabbable and routes don't claim focus, so without this focus would
-      // drop to <body>.
+  };
+  const closeDrawer = (returnFocus = true): void => {
+    if (navigationMode !== 'drawer') return;
+    renderNavigation('closed');
+    if (returnFocus) focusShellElement(toggleBtn);
+  };
+  const prepareNavigationModal = (fromNavigation = false): void => {
+    closeDrawer();
+    // The top-bar opener stays available if the window narrows during a modal
+    // opened from the sidebar. Let the modal capture that as its return target.
+    if (navigationMode === 'sidebar' && (fromNavigation || drawer.contains?.(doc.activeElement))) {
       focusShellElement(toggleBtn);
     }
+  };
+  const syncNavigationSize = (): void => {
+    const focused = doc.activeElement;
+    const nextMode = canPin() && prefersPinnedNavigation ? 'sidebar'
+      : navigationMode === 'sidebar' ? 'closed' : navigationMode;
+    const losingSidebarFocus = navigationMode === 'sidebar' && nextMode === 'closed' && drawer.contains?.(focused);
+    renderNavigation(nextMode);
+    if (losingSidebarFocus) focusShellElement(toggleBtn);
+    else if (nextMode === 'drawer' && !canPin() && focused === pinBtn) focusShellElement(closeBtn);
+    else if (nextMode === 'sidebar' && focused === closeBtn) focusShellElement(pinBtn);
   };
 
   /** D-282 slice C — the owner's pinned apps.
@@ -2056,8 +2151,7 @@ const createWebclientShell = (opts: {
       link.setAttribute(WEBCLIENT_SHELL_DRAWER_LINK_ATTR, `app:${app.slug}`);
       link.setAttribute(WEBCLIENT_SHELL_DRAWER_APP_ATTR, app.slug);
       link.setAttribute('href', serializeShellRoute('packs', app.slug));
-      link.addEventListener('click', () =>
-        setDrawerOpen(false, { returnFocus: false }));
+      link.addEventListener('click', () => closeDrawer(false));
       const labelEl = doc.createElement('span');
       labelEl.className = 'webclient-shell-drawer-label';
       labelEl.textContent = app.name;
@@ -2085,14 +2179,13 @@ const createWebclientShell = (opts: {
       if (item.action === 'create') {
         // An ACTION seat (Create) — a button that opens the shared Create
         // overlay instead of navigating. Checked BEFORE the stub branch because
-        // an action seat also carries `route: null`. Close onto the stable ☰
-        // trigger BEFORE opening the portal: its focus trap captures that visible
-        // opener, so closing Create cannot restore focus to an off-canvas seat.
+        // an action seat also carries `route: null`. Give the portal a visible
+        // return target before it takes focus.
         const button = doc.createElement('button');
         button.setAttribute('type', 'button');
         button.setAttribute(WEBCLIENT_SHELL_DRAWER_ACTION_ATTR, item.id);
         button.addEventListener('click', () => {
-          setDrawerOpen(false, { returnFocus: true });
+          prepareNavigationModal(true);
           opts.onCreateSeat?.();
         });
         if (item.icon !== undefined) {
@@ -2142,9 +2235,7 @@ const createWebclientShell = (opts: {
       // visibility:hidden with the closing drawer (dropping focus to <body>),
       // and the route mount doesn't claim focus, so the toggle is the stable
       // landing a keyboard user continues tabbing from.
-      link.addEventListener('click', () =>
-        setDrawerOpen(false, { returnFocus: true }),
-      );
+      link.addEventListener('click', () => closeDrawer());
       if (item.icon !== undefined) {
         const glyph = doc.createElement('span');
         glyph.className = 'webclient-shell-drawer-glyph';
@@ -2183,16 +2274,38 @@ const createWebclientShell = (opts: {
     }
   });
   shellRoot.appendChild(drawer);
+  shellRoot.appendChild(body);
   opts.root.appendChild(shellRoot);
+  syncNavigationSize();
+  pinMedia?.addEventListener?.('change', syncNavigationSize);
 
   // ── Wire the open/close triggers ────────────────────────────────────
-  toggleBtn.addEventListener('click', () => setDrawerOpen(!drawerOpen));
-  closeBtn.addEventListener('click', () =>
-    setDrawerOpen(false, { returnFocus: true }),
-  );
-  backdrop.addEventListener('click', () =>
-    setDrawerOpen(false, { returnFocus: true }),
-  );
+  toggleBtn.addEventListener('click', () => {
+    if (navigationMode !== 'closed') {
+      renderNavigation('closed');
+      focusShellElement(toggleBtn);
+      return;
+    }
+    const mode = prefersPinnedNavigation && canPin() ? 'sidebar' : 'drawer';
+    renderNavigation(mode);
+    focusShellElement(activeDrawerLink ?? destinationLinks.find((item) => item.fallback)?.link
+      ?? (mode === 'sidebar' ? pinBtn : closeBtn));
+  });
+  pinBtn.addEventListener('click', () => {
+    if (!canPin() || navigationMode === 'closed') return;
+    prefersPinnedNavigation = navigationMode === 'drawer';
+    try {
+      const storage = doc.defaultView?.localStorage;
+      if (prefersPinnedNavigation) storage?.setItem(NAVIGATION_PIN_STORAGE_KEY, '1');
+      else storage?.removeItem(NAVIGATION_PIN_STORAGE_KEY);
+    } catch {
+      // The layout still updates when storage is unavailable.
+    }
+    renderNavigation(prefersPinnedNavigation ? 'sidebar' : 'closed');
+    focusShellElement(prefersPinnedNavigation ? pinBtn : toggleBtn);
+  });
+  closeBtn.addEventListener('click', () => closeDrawer());
+  backdrop.addEventListener('click', () => closeDrawer());
 
   // Escape closes the drawer. Attached at the document so it fires regardless
   // of where focus sits; guarded because the fake-DOM document used in tests
@@ -2202,10 +2315,10 @@ const createWebclientShell = (opts: {
     removeEventListener?: (type: string, fn: (event: Event) => void) => void;
   };
   const onDocKeydown = (event: Event): void => {
-    if (!drawerOpen) return;
+    if (navigationMode !== 'drawer') return;
     const keyEvent = event as KeyboardEvent;
     if (keyEvent.key === 'Escape') {
-      setDrawerOpen(false, { returnFocus: true });
+      closeDrawer();
       return;
     }
     if (keyEvent.key === 'Tab') {
@@ -2213,7 +2326,7 @@ const createWebclientShell = (opts: {
       // controls so keyboard navigation follows the drawer's current DOM order.
       const focusables = Array.from(
         drawer.querySelectorAll<HTMLElement>('button, a[href]'),
-      );
+      ).filter(control => !control.hasAttribute('hidden'));
       const active = doc.activeElement as HTMLElement | null;
       const activeIndex = active === null ? -1 : focusables.indexOf(active);
       const nextIndex = keyEvent.shiftKey
@@ -2272,8 +2385,9 @@ const createWebclientShell = (opts: {
     accountHost,
     setActiveRoute,
     setPinnedApps,
-    closeDrawer: () => setDrawerOpen(false, { returnFocus: drawerOpen }),
+    closeDrawer: () => prepareNavigationModal(),
     dispose: () => {
+      pinMedia?.removeEventListener?.('change', syncNavigationSize);
       docEvents.removeEventListener?.('keydown', onDocKeydown);
       try {
         opts.root.removeChild(shellRoot);
@@ -3767,6 +3881,18 @@ export const bootstrapWebclient = async (
       : options.reauthRecovery;
   let pendingChatRecovery = reauthRecovery;
   let pendingChatFile: { hash: string; file: import('@recued/contracts').FileAttachmentSelection } | undefined;
+  let pendingReplyMail: { hash: string; ref: import('@recued/contracts').ReminderMailReference } | undefined;
+  const openReceivedReply = (ref: import('@recued/contracts').ReminderMailReference): void => {
+    const hash = `#data/mail/record/${encodeURIComponent(ref.slug)}/${encodeURIComponent(ref.record_id)}`;
+    pendingReplyMail = { hash, ref };
+    const from = hashSource?.getHash(), returning = doc ? readSearchNavigationReturn(doc, rpcConn) : undefined;
+    if (doc && from?.startsWith('#mail/reply-watch/') && returning
+      && (returning.destinationHash === from || returning.destinationAliases?.includes(from)))
+      saveSearchNavigationReturn(doc, rpcConn, { ...returning, destinationAliases: [...new Set([...(returning.destinationAliases ?? []), hash])] });
+    const watchTarget = from?.startsWith('#mail/') ? parseMailFollowUpAddress(from.slice('#mail/'.length).split('/')) : null;
+    if (watchTarget?.open_reply || watchTarget?.open_report) navigateHashInPlace(hash);
+    else navigateHash(hash);
+  };
   /** A draft another surface hands to Chat, for the address it goes to: an asset's question, or
    *  D-343's reply to today's evening notice. Taken by the mount for that address only. */
   let pendingChatHandoff: { hash: string; draft: ChatRouteRecoveryDraft } | undefined;
@@ -8048,6 +8174,35 @@ export const bootstrapWebclient = async (
     rpcConn.call('memory.saves', args);
   // D-198 Slice 5 — the generic collection explorer reads (schema-driven
   // list→detail over the adapter-backed collections; mail / calendar tabs).
+  const mailFollowUpCallers: import('./mail/mail-follow-up-surface.js').MailFollowUpCallers = {
+    tasks: {
+      get: args => rpcConn.call('mail.follow_up.task.get', args),
+      set: switchWorkTracker.track(args => rpcConn.call('mail.follow_up.task.set', args)),
+      create: switchWorkTracker.track(args => rpcConn.call('mail.follow_up.task.create', args)),
+      list: args => rpcConn.call('mail.follow_up.task.list', args),
+      search: args => rpcConn.call('work_entity.search', args),
+    },
+    sends: {
+      get: args => rpcConn.call('mail.follow_up.send.get', args),
+      cancel: switchWorkTracker.track(args => rpcConn.call('mail.follow_up.send.cancel', args)),
+    },
+    get: args => rpcConn.call('mail.follow_up.get', args),
+    start: switchWorkTracker.track(args => rpcConn.call('mail.follow_up.start', args)),
+    check: switchWorkTracker.track(args => rpcConn.call('mail.follow_up.check', args)),
+    cancel: switchWorkTracker.track(args => rpcConn.call('mail.follow_up.cancel', args)),
+    reschedule: switchWorkTracker.track(args => rpcConn.call('mail.follow_up.reschedule', args)),
+    getReply: args => rpcConn.call('mail.follow_up.reply.get', args),
+    createReplacement: switchWorkTracker.track(args => rpcConn.call('mail.follow_up.replacement.create', args)),
+    getDeliveryReport: args => rpcConn.call('mail.follow_up.delivery_report.get', args),
+    setReplyNotification: switchWorkTracker.track(args => rpcConn.call('mail.follow_up.reply_notification.set', args)),
+    list: args => rpcConn.call('mail.follow_up.list', args),
+  };
+  const composeReplyWatch: NonNullable<import('./mail/mail-compose-host.js').MailComposeDeps['replyWatch']> = {
+    capabilities: () => rpcConn.call('mail.follow_up.send.capabilities', undefined),
+    taskContext: args => rpcConn.call('mail.follow_up.task.context', args),
+    prepared: intent => notifyToasts?.push({ title: intent.state === 'armed' ? 'Reply watch started' : 'Reply watch request',
+      text: intent.detail ?? 'Open Reply watches to check its status.', link_url: mailFollowUpHref(intent.id), sticky: intent.state === 'needs_attention' || intent.state === 'not_sent' }),
+  };
   const dataCollectionListInstancesCaller: DataCollectionListInstancesCaller = () =>
     rpcConn.call('collection.listInstances', {});
   const dataCollectionListCaller: DataCollectionListCaller = (args) =>
@@ -8097,6 +8252,12 @@ export const bootstrapWebclient = async (
   // D-221 — owner-pair Records explorer. This deliberately uses only the
   // MCP-reserved `records.*` control plane; recipes use stamped Tier-P ops and
   // never acquire a `data.records.*` resolver.
+  const customerDecisionWatches: CustomerDecisionWatchCallers = {
+    accounts: input => rpcConn.call('records.decision_watch.accounts', input),
+    read: input => rpcConn.call('records.decision_watch.read', input),
+    change: switchWorkTracker.track(input => rpcConn.call('records.decision_watch.change', input)),
+    reviews: () => rpcConn.call('records.decision_watch.reviews', undefined),
+  };
   const dataRecordsNamespaceListCaller: DataRecordsNamespaceListCaller = () =>
     rpcConn.call('records.namespace.list', undefined);
   const dataRecordsKindListCaller: DataRecordsKindListCaller = (args) =>
@@ -10937,6 +11098,13 @@ export const bootstrapWebclient = async (
         ? null
         : parseConnectionsAddress(connectionsAddress);
       const initialConnectionAccessReview = parseConnectionsReviewAccess(connectionsSegments);
+      const connectionSearchVisit = doc ? readSearchNavigationReturn(doc, rpcConn) : undefined;
+      const legacyViewSearchReturn = readSavedViewSearchVisit(doc, rpcConn, hashSource?.getHash() ?? '');
+      const connectionSearchReturn = connectionSearchVisit?.focus.action === SEARCH_OPEN_CONNECTION
+        && connectionSearchVisit.focus.attribute === SEARCH_CONNECTION_KEY
+        && connectionSearchVisit.destinationHash === (hashSource?.getHash() ?? '')
+        ? { hash: connectionSearchVisit.returnHash, destinationHash: connectionSearchVisit.destinationHash }
+        : legacyViewSearchReturn?.selection.definition.tab === 'webhook' ? legacyViewSearchReturn : undefined;
       const initialManageOAuthApps = parseConnectionsOAuthApps(connectionsSegments);
       const initialOAuthAppReview = parseConnectionsOAuthApp(connectionsSegments);
       const initialAccountAuthentication = parseConnectionsAccountAuthentication(connectionsSegments);
@@ -11039,7 +11207,8 @@ export const bootstrapWebclient = async (
         ...(initialConnectionsAddress !== null
           ? { initialAddress: initialConnectionsAddress }
           : {}),
-        ...(initialConnectionAccessReview !== null ? { initialConnectionAccessReview } : {}),
+        ...(initialConnectionAccessReview !== null ? { initialConnectionAccessReview: { ...initialConnectionAccessReview, ...(connectionSearchReturn ? { reviewOnly: true } : {}) } } : {}),
+        ...(connectionSearchReturn ? { searchReturn: { ...connectionSearchReturn, retire: () => { if (doc) clearSearchNavigationReturn(doc, rpcConn); } } } : {}),
         ...(initialManageOAuthApps ? { initialManageOAuthApps: true } : {}),
         ...(initialOAuthAppReview ? { initialOAuthAppReview } : {}),
         ...(initialAccountAuthentication ? { initialAccountAuthentication } : {}),
@@ -11071,7 +11240,7 @@ export const bootstrapWebclient = async (
             navigateHash(permissionRepair ? serializeShellRoute('packs', permissionRepair.resume.pack.slug) : serializeShellRoute('packs'));
           }
         } } : {}),
-        onHashSync: (hash) => { activeHash = hash; },
+        onHashSync: (hash) => { activeHash = hash; if (doc) trackSearchNavigationRoute(doc, rpcConn, hash); },
         ...(initialCredentialRotationServerUpdateRetry !== null
           ? {
               initialCredentialRotationServerUpdateRetry,
@@ -11949,9 +12118,12 @@ export const bootstrapWebclient = async (
     // give two compositions that must stay identical by hand.
     if (route === 'data' || route === 'views') {
       activeSettingsRoute = null;
+      const initialReplyMail = pendingReplyMail?.hash === (hashSource?.getHash() ?? activeHash) ? pendingReplyMail.ref : undefined;
+      pendingReplyMail = undefined;
       const parsedDataRoute = hashSource === null
         ? null
         : parseShellRoute(hashSource.getHash());
+      const fileSourceSlug = parsedDataRoute === null ? null : parseFileSourceSlug(parsedDataRoute);
       const sourceRecordAddress = parsedDataRoute === null
         ? null
         : parseSourceRecordAddress(parsedDataRoute);
@@ -11961,14 +12133,37 @@ export const bootstrapWebclient = async (
       const dataEntityVerificationAddress = parsedDataRoute === null
         ? null
         : parseDataEntityVerificationAddress(parsedDataRoute);
+      // Search the same static destinations as the native finder, excluding
+      // features whose caller group is intentionally absent in this client.
+      const settingsSections: Record<string, boolean> = {
+        account: !!(accountBindingStatusCaller && accountBindCaller && accountUnbindCaller && accountProConvenienceStatusCaller && accountBindingTokenMintCaller),
+        servers: options.profileStore !== undefined,
+        backup: !!(archiveExportCaller && archiveStatusCaller && archiveImportCaller),
+        'ai-models': options.enableAiModelsPage !== false,
+        updates: options.enableUpdatesPage !== false,
+        housekeeping: options.enableHousekeepingPanel !== false,
+        devices: !!(pairListCaller && pairRevokeCaller),
+        notifications: !!(notificationsDescribeCaller && notificationsSetChannelCaller),
+      };
+      const settingTargets: Record<string, boolean> = {
+        transparency: options.enableTransparencyPanel !== false,
+        hostnames: options.enableHostnamesPanel !== false, 'custom-domains': options.enableHostnamesPanel !== false,
+        exposure: options.enableExposurePanel !== false,
+        'key-health': !!(keyHealthLoader && keyRotateCaller),
+        certificates: !!(tlsRenewCaller || certPinWatcher || tlsDomainListCaller && tlsDomainUploadCaller && tlsDomainRemoveCaller),
+      };
+      const savedViewsListCaller = () => rpcConn.call('data_views.list', undefined);
+      const savedViewsGetCaller = (args: { id: string }) => rpcConn.call('data_views.get', args);
       return withTrackedServerSwitchWork(bootstrapSavedDataRoute({
+        openReceivedReply,
+        ...(initialReplyMail ? { initialMailReference: initialReplyMail } : {}),
         taskBlockerNavigation,
         todayReminderNavigation,
         // D-269 — the SERVER's zone for durable, server-evaluated stamps.
         serverTimeZone: getServerTimeZone,
         savedViews: {
-          list: () => rpcConn.call('data_views.list', undefined),
-          get: (args) => rpcConn.call('data_views.get', args),
+          list: savedViewsListCaller,
+          get: savedViewsGetCaller,
           create: switchWorkTracker.track((args) => rpcConn.call('data_views.create', args)),
           createOnce: switchWorkTracker.track((args) => rpcConn.call('data_views.create_once', args)),
           getCreation: args => rpcConn.call('data_views.creation.get', args),
@@ -11983,6 +12178,11 @@ export const bootstrapWebclient = async (
           ? { savedViewId: parsedDataRoute.segments[0] }
           : {}),
         chrome: route === 'views' ? 'views' : 'data',
+        viewSearchReturn: readSavedViewSearchVisit(doc, rpcConn, hashSource?.getHash() ?? ''),
+        savedViewSearchCallers: { list: savedViewsListCaller, get: savedViewsGetCaller,
+          observe: changed => reconnect(() => changed()),
+        },
+        openSavedView: id => navigateHash(savedViewSearchHref(id)),
         root: appShell.contentRoot,
         ...(options.document !== undefined ? { document: options.document } : {}),
         workEntitySourceListCaller: dataWorkEntitySourceListCaller,
@@ -11992,6 +12192,8 @@ export const bootstrapWebclient = async (
         assetSearchCaller: input => rpcConn.call('yours.read', input),
         chatSearchCaller: input => rpcConn.call('chat.messages.search', input),
         searchContinuityOwner: rpcConn,
+        settingsSearchTargets: SETTINGS_FINDER_TARGETS.filter(entry => settingsSections[entry.section] !== false && settingTargets[entry.id] !== false),
+        openSetting: entry => navigateHash(settingsFinderHash(entry)),
         recentSearches,
         recentWorkRecords,
         recentReferenceChoices,
@@ -12001,6 +12203,28 @@ export const bootstrapWebclient = async (
         workRecovery,
         calendarRecovery, calendarEditRecovery, reminderRecovery, promptRecovery,
         promptSchedulesCaller: () => rpcConn.call('chat.schedules.list', {}),
+        ...(connectionsMailLane || connectionsCalendarLane || connectionsFileLane || connectionsEnrollListCaller ? {
+          connectionSearchCallers: {
+            ...(connectionsMailLane ? { mail: () => connectionsMailLane.list() } : {}),
+            ...(connectionsCalendarLane ? { calendar: () => connectionsCalendarLane.list() } : {}),
+            ...(connectionsFileLane ? { file: () => connectionsFileLane.list() } : {}),
+            cloud: () => rpcConn.call('data.file.attachments.sources', undefined),
+            ...(connectionsEnrollListCaller ? { api: connectionsEnrollListCaller } : {}),
+            observe: changed => {
+              const offs = [subscriber.on('recipe_runnability_changed', () => changed()), reconnect(() => changed())];
+              return () => { for (const off of offs) off(); };
+            },
+          },
+          openConnection: href => navigateHash(href),
+        } : {}),
+        runSearchCallers: {
+          search: args => rpcConn.call('execution.search', args), get: runsGetCaller,
+          observe: changed => {
+            const offs = [subscriber.on('execution', () => changed()), reconnect(() => changed())];
+            return () => { for (const off of offs) off(); };
+          },
+        },
+        openRun: id => navigateHash(runSearchHref(id)),
         promptBulkCaller: rpcConn.call as import('./automation/prompt-bulk-controls.js').PromptBulkClient,
         ...(approvalListCaller && notificationAsksListCaller ? {
           decisionSearchCallers: ((): PendingDecisionSearchCallers => ({
@@ -12040,6 +12264,10 @@ export const bootstrapWebclient = async (
         workEntityUpsertCaller: dataWorkEntityUpsertCaller,
         taskMarkDoneCaller: dataTaskMarkDoneCaller,
         commitmentCloseCaller: dataCommitmentCloseCaller,
+        refundCreditCallers: {
+          read: args => rpcConn.call('work_entity.refund_credits.read', args),
+          change: switchWorkTracker.track(args => rpcConn.call('work_entity.refund_credits.change', args)),
+        },
         spheres: { read: ref => rpcConn.call('yours.sphere', { ref }),
           readMany: async refs => (await rpcConn.call('yours.spheres', { refs })).placements,
           change: switchWorkTracker.track(input => rpcConn.call('yours.change', input)) },
@@ -12122,6 +12350,7 @@ export const bootstrapWebclient = async (
           create: switchWorkTracker.track(args => rpcConn.call('collection.calendar.event.create', args)),
         },
         mailMessageCallers: {
+          followUps: mailFollowUpCallers,
           attachments: args => rpcConn.call('collection.mail.message.attachments', args),
           get: args => rpcConn.call('collection.mail.message.get', args),
           conversation: args => rpcConn.call('collection.mail.conversation.get', args),
@@ -12130,7 +12359,7 @@ export const bootstrapWebclient = async (
         mailCompose: {
           recovery: mailRecovery,
           serverTimeZone: getServerTimeZone,
-          drafts: mailDraftCallers,
+          drafts: mailDraftCallers, replyWatch: composeReplyWatch,
           listMailInstances: () => rpcConn.call('collection.mail.list', undefined),
           runExecute: args => rpcConn.call('execute', { ...args, trigger_source: 'manual' }, { timeout: WEBCLIENT_RUN_RPC_TIMEOUT_MS }),
           listFiles: () => listComposeFiles(dataMirrorSearchCaller),
@@ -12152,6 +12381,7 @@ export const bootstrapWebclient = async (
         sharedListCaller: dataSharedListCaller,
         ...(hashSource ? {initialRecordsTarget:parseRecordsRecordAddress(parseShellRoute(hashSource.getHash())) ?? undefined} : {}),
         recordsNamespaceListCaller: dataRecordsNamespaceListCaller,
+        customerDecisionWatches,
         recordsKindListCaller: dataRecordsKindListCaller,
         recordsSearchCaller: dataRecordsSearchCaller,
         recordsGetCaller: dataRecordsGetCaller,
@@ -12251,20 +12481,21 @@ export const bootstrapWebclient = async (
             : {}),
         ...(sourceRecordAddress !== null
           ? { initialCollectionSlug: sourceRecordAddress.collectionSlug }
-          : {}),
+          : fileSourceSlug !== null ? { initialCollectionSlug: fileSourceSlug } : {}),
         ...(sourceRecordAddress !== null
           ? { initialEntityId: sourceRecordAddress.recordId }
           : sourceRecordVerificationAddress !== null
             ? { initialEntityId: sourceRecordVerificationAddress.recordId }
             : dataEntityVerificationAddress !== null
               ? { initialEntityId: dataEntityVerificationAddress.entityId }
-          : deepLinkSegment('data', 1) !== undefined
+          : fileSourceSlug === null && deepLinkSegment('data', 1) !== undefined
             ? { initialEntityId: deepLinkSegment('data', 1) }
             : {}),
         // D-315 §6 — the third level of a tab that has one (Mail facts).
         ...(sourceRecordAddress === null
           && sourceRecordVerificationAddress === null
           && dataEntityVerificationAddress === null
+          && fileSourceSlug === null
           && deepLinkSegment('data', 2) !== undefined
           ? { initialDetailId: deepLinkSegment('data', 2) }
           : {}),
@@ -12501,11 +12732,16 @@ export const bootstrapWebclient = async (
     if (route === 'today') {
       activeSettingsRoute = null;
       // D-340 slice 2 — `#today/stream`, reached from Today itself, opens the streams' settings in place.
+      const todayViewSearchReturn = readSavedViewSearchVisit(doc, rpcConn, hashSource?.getHash() ?? '');
       const todayRoute = bootstrapTodayRoute({
+        customerDecisionWatches,
+        ...(todayViewSearchReturn?.selection.definition.tab === 'today' ? { searchReturnHash: todayViewSearchReturn.hash } : {}),
         taskBlockerNavigation,
         reminderNavigation: todayReminderNavigation,
         container: appShell.contentRoot,
         callers: {
+          followUpListCaller: mailFollowUpCallers.list,
+          taskReplyWatchListCaller: mailFollowUpCallers.tasks?.list,
           proactiveTodayCaller: input => rpcConn.call('yours.today', input),
           reminderCallers: dataReminderCallers,
           spheres: { read: ref => rpcConn.call('yours.sphere', { ref }), readMany: async refs => (await rpcConn.call('yours.spheres', { refs })).placements,
@@ -12576,6 +12812,16 @@ export const bootstrapWebclient = async (
           features: () => rpcConn.call('chat.setup.features', undefined),
           chatReady: async () => isAnyAiSourceConfigured((await rpcConn.call('server.getLLMConfig', undefined)).config),
           anyRecipe: () => hasAnyRecipe((request) => rpcConn.call('recipe.list', request)),
+          focusBlocks: {
+            recipe: () => rpcConn.call('recipe.get', { recipe_id: FOCUS_BLOCK_RECIPE_ID }),
+            calendars: () => rpcConn.call('collection.calendar.list', undefined),
+            preview: input => rpcConn.call('recipe.focus_blocks.preview', input, { timeout: WEBCLIENT_RUN_RPC_TIMEOUT_MS }),
+            dishes: () => rpcConn.call('dishes.list', { recipe_id: FOCUS_BLOCK_RECIPE_ID }),
+            createDish: switchWorkTracker.track(input => rpcConn.call('dishes.create', input)),
+            schedules: automationSchedulesListCaller,
+            createSchedule: switchWorkTracker.track(input => rpcConn.call('schedules.create', input)),
+            timeZone: getServerTimeZone,
+          },
           ...(packsListCaller !== undefined
             ? {
                 packs: {
@@ -12627,6 +12873,16 @@ export const bootstrapWebclient = async (
         root: appShell.contentRoot,
         ...(options.document !== undefined ? { document: options.document } : {}),
         listCaller: runsListCaller,
+        ...(() => {
+          if (!doc) return {};
+          return readRunSearchReview(doc, rpcConn, hashSource?.getHash() ?? activeHash, logsRunAddress?.runId, {
+            search: args => rpcConn.call('execution.search', args), get: runsGetCaller,
+            observe: changed => {
+              const offs = [subscriber.on('execution', () => changed()), reconnect(() => changed())];
+              return () => { for (const off of offs) off(); };
+            },
+          }) ?? {};
+        })(),
         getCaller: runsGetCaller,
         localUndo: {
           get: args => rpcConn.call('local_undo.get', args),
@@ -12831,8 +13087,14 @@ export const bootstrapWebclient = async (
         },
         recordLinks: {
           recent: recentWorkRecords, pinned: pinnedRecords,
-          search: { contacts: dataContactListCaller, work: dataWorkEntitySearchCaller, collections: dataCollectionSearchAllCaller },
-          readers: { contact: id => dataContactGetCaller({ email: id }), work: (kind, id) => dataWorkEntityGetCaller({ kind, id }), source: dataCollectionGetCaller },
+          search: { contacts: dataContactListCaller, work: dataWorkEntitySearchCaller, collections: dataCollectionSearchAllCaller,
+            assets: args => rpcConn.call('yours.read', args) },
+          readers: { contact: id => dataContactGetCaller({ email: id }), work: (kind, id) => dataWorkEntityGetCaller({ kind, id }),
+            source: dataCollectionGetCaller,
+            asset: async id => {
+              const result = await rpcConn.call('yours.read', { asset_id: id, mark_shown: false });
+              return result.assets.find(row => row.id === id) ?? null;
+            } },
           shortcutReaders: { mail: args => rpcConn.call('collection.mail.message.get', args), calendar: args => rpcConn.call('collection.calendar.event.get', args) },
         },
         fileListCaller: args => rpcConn.call('data.file.attachments.list', args),
@@ -12881,7 +13143,7 @@ export const bootstrapWebclient = async (
         // direct Connections handoff rather than opening a dead dialog.
         mailCompose: {
           recovery: mailRecovery,
-          drafts: mailDraftCallers,
+          drafts: mailDraftCallers, replyWatch: composeReplyWatch,
           listMailInstances: () =>
             rpcConn.call('collection.mail.list', undefined),
           runExecute: (args) =>
@@ -13085,6 +13347,10 @@ export const bootstrapWebclient = async (
             }
           };
       const settings = withTrackedServerSwitchWork(bootstrapSettingsRoute({
+        ...(() => {
+          const visit = readSettingsSearchVisit(doc, rpcConn, hashSource?.getHash() ?? '');
+          return visit ? { searchReturn: { ...visit, retire: () => { if (doc) clearSearchNavigationReturn(doc, rpcConn); } } } : {};
+        })(),
         root: appShell.contentRoot,
         localStore,
         // D-196 1d — the same generic runner the Recipes route uses; the Seller
@@ -14019,6 +14285,7 @@ export const bootstrapWebclient = async (
           'preapproval.continue', 'local_changes.prepare', 'local_undo.decide',
         ])),
         serverTimeZone: getServerTimeZone,
+        openReceivedReply,
         ...(options.document !== undefined ? { document: options.document } : {}),
         ...(deepLinkSegment('approvals', 1) !== undefined ? { proposalId: deepLinkSegment('approvals', 1) } : {}),
         ...(options.now !== undefined ? { now: options.now } : {}),
@@ -14070,18 +14337,20 @@ export const bootstrapWebclient = async (
           : {}),
         ...(() => {
           if (!doc) return {};
-          const visit = readSearchNavigationReturn(doc, rpcConn);
+          const visit = readSearchNavigationReturn<{ universalSearchQuery: string }>(doc, rpcConn);
           if (visit?.focus.action !== SEARCH_OPEN_DECISION || visit.destinationHash !== (hashSource?.getHash() ?? activeHash)) return {};
           const selected = readDecisionSearchKey(visit.focus.id);
           return selected && decisionSearchHref(selected.id) === visit.destinationHash
-            ? { searchReturnHash: visit.returnHash, initialDecisionKind: selected.kind } : {};
+            ? { searchReturnHash: visit.returnHash, initialDecisionKind: selected.kind, initialDecisionQuery: visit.state.universalSearchQuery } : {};
         })(),
         ...(options.now !== undefined ? { now: options.now } : {}),
       }));
     }
     if (route === 'mail') {
       const address = hashSource ? parseShellRoute(hashSource.getHash()) : null;
-      if (address && address.segments.length > 0) {
+      const replyWatchRoute = address?.segments[0] === 'reply-watch';
+      const replyWatchTarget = replyWatchRoute ? parseMailFollowUpAddress(address!.segments) : null;
+      if (address && address.segments.length > 0 && !replyWatchRoute) {
         activeSettingsRoute = null;
         return bootstrapMailWorkRoute({
           root: appShell.contentRoot, segments: address.segments,
@@ -14113,11 +14382,14 @@ export const bootstrapWebclient = async (
       // that resolves means the run was ACCEPTED, never that mail was sent.
       activeSettingsRoute = null;
       return bootstrapMailRoute({
+        ...(replyWatchTarget ? { followUpTarget: replyWatchTarget } : replyWatchRoute ? { invalidFollowUpTarget: true } : {}),
+        followUps: mailFollowUpCallers,
+        openReceivedReply,
         recovery: mailRecovery,
         // D-269 — the SERVER's zone for durable, server-evaluated stamps.
         serverTimeZone: getServerTimeZone,
         root: appShell.contentRoot,
-        drafts: mailDraftCallers,
+        drafts: mailDraftCallers, replyWatch: composeReplyWatch,
         ...(options.document !== undefined ? { document: options.document } : {}),
         listMailInstances: () => rpcConn.call('collection.mail.list', undefined),
         runExecute: (args) =>

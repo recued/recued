@@ -79,6 +79,19 @@ describe('actual entries in ordinary browser read responses', () => {
     expect(out.entry_view.groups[0].entries.map((row: { position: number }) => row.position)).toEqual([1, 2, 3]);
   });
 
+  it('presents rendered ranks together while preserving document positions and retained rows', async () => {
+    const h = fixture('<main><ul data-recued-display-order="top-to-bottom:3">'
+      + '<li data-recued-display-position="position-3">Alley</li><li data-recued-display-position="position-1">Bay</li>'
+      + '<li data-recued-display-position="position-2">Depot</li></ul></main>');
+    const out = await h.read();
+    expect(out.entry_view.groups[0].entries).toMatchObject([
+      { text: 'Bay', position: 2, displayed_position: 1, display_direction: 'top-to-bottom' },
+      { text: 'Depot', position: 3, displayed_position: 2 },
+      { text: 'Alley', position: 1, displayed_position: 3 },
+    ]);
+    expect(h.store.dataSnapshot(PAGE)?.entries?.rows.map(row => row.text)).toEqual(['Alley', 'Bay', 'Depot']);
+  });
+
   it('refreshes semantic boundaries even when rendered text has not changed', async () => {
     const h = fixture('<main><dl><dt>Alpha</dt><dt>Beta</dt></dl></main>');
     await h.read();

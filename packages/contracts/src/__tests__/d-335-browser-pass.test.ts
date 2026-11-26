@@ -6,7 +6,12 @@ import { describe, expect, it } from 'vitest';
 
 import {
   BROWSER_PASS_ALWAYS_OPTION_ID,
+  BROWSER_PASS_JOB_OPTION_ID,
   BROWSER_PASS_SESSION_OPTION_ID,
+  browserPassKindOfOption,
+  browserPassOffersJob,
+  browserPassOptions,
+  isBrowserPassOptionId,
   browserPassElementOf,
   browserPassKeyHash,
   browserPassOccasionOf,
@@ -56,7 +61,7 @@ describe('D-335 slice F — a pass key', () => {
   });
 
   it('keeps its answers\' ids within Telegram\'s callback room', () => {
-    for (const id of [BROWSER_PASS_SESSION_OPTION_ID, BROWSER_PASS_ALWAYS_OPTION_ID]) {
+    for (const id of [BROWSER_PASS_SESSION_OPTION_ID, BROWSER_PASS_ALWAYS_OPTION_ID, BROWSER_PASS_JOB_OPTION_ID]) {
       expect(new TextEncoder().encode(id).length).toBeLessThanOrEqual(23);
     }
   });
@@ -154,5 +159,37 @@ describe('D-335 slice F — a live pass', () => {
     const always = { ...base, kind: 'always' as const, channel_session_id: undefined, expires_at: undefined };
     expect(isBrowserPassLive(always, 1e15, 'chat:t')).toBe(true);
     expect(isBrowserPassLive({ ...always, revoked_at: 5 }, 6, 'chat:t')).toBe(false);
+  });
+});
+
+// D-402 (2026-11-23; the owner, on the job as the boundary for an approval: "yes go ahead") — an AI app's write in a job
+//   it started offers "Allow on <site> until this job ends": a session pass whose conversation is the job.
+describe('D-402 — "until this job ends", on an AI app\'s ask in a job', () => {
+  const APP_KEY: BrowserPassKey = { principal: { kind: 'ai_app', contract_id: 'ct-1' }, recipe: 'click-web-element', site: 'https://github.com' };
+  const JOB = { channel_session_id: 'job:j-1', expires_at: 3_600_000 };
+  const offer = { key: APP_KEY, host: 'github.com', channel_session_id: 'mcp:tok-1', job: JOB };
+
+  it('is offered first, narrowest, only when asked for, and answers "job"', () => {
+    expect(browserPassOptions('github.com', { job: true }).map((option) => option.id))
+      .toEqual([BROWSER_PASS_JOB_OPTION_ID, BROWSER_PASS_SESSION_OPTION_ID, BROWSER_PASS_ALWAYS_OPTION_ID]);
+    expect(browserPassOptions('github.com', { job: true })[0]!.label).toBe('Allow on github.com until this job ends');
+    expect(browserPassOptions('github.com').map((option) => option.id)).not.toContain(BROWSER_PASS_JOB_OPTION_ID);
+    expect(isBrowserPassOptionId(BROWSER_PASS_JOB_OPTION_ID)).toBe(true);
+    expect(browserPassKindOfOption(BROWSER_PASS_JOB_OPTION_ID)).toBe('job');
+  });
+
+  it('an offer keeps an AI app\'s job, never the owner\'s chats\', and drops one it cannot read, the rest standing', () => {
+    expect(readBrowserPassOffer(offer)).toEqual(offer);
+    expect(browserPassOffersJob(readBrowserPassOffer(offer)!)).toBe(true);
+    const chat = { key: KEY, host: 'github.com', channel_session_id: 'chat:s' };
+    expect(readBrowserPassOffer({ ...chat, job: JOB })).toEqual(chat);
+    // And one made in memory, never read back, offers no job for the owner's chats either.
+    expect(browserPassOffersJob({ ...chat, job: JOB })).toBe(false);
+    for (const job of [{ ...JOB, channel_session_id: 'mcp:tok-1' }, { ...JOB, channel_session_id: 'job:' },
+      { ...JOB, expires_at: Number.NaN }, { ...JOB, expires_at: '3600000' }, 'job:j-1', null]) {
+      const read = readBrowserPassOffer({ ...offer, job });
+      expect(read, JSON.stringify(job)).toEqual({ key: APP_KEY, host: 'github.com', channel_session_id: 'mcp:tok-1' });
+      expect(browserPassOffersJob(read!)).toBe(false);
+    }
   });
 });

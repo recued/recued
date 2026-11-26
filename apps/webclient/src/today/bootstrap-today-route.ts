@@ -29,6 +29,10 @@ import {
 import type { BroadcastSubscriber } from '../realtime/subscriber.js';
 import { createTodayReminders, TODAY_REMINDER_FOCUS } from './reminders.js';
 import type { TodayReminderNavigation } from './reminder-navigation.js';
+import { createTodayFollowUps } from './follow-ups.js';
+import { createTodayCustomerDecisionReviews } from './customer-decision-reviews.js';
+import { CUSTOMER_WATCH_STYLES, type CustomerDecisionWatchCallers } from '../data/customer-decision-watch.js';
+import { createTaskReplyWatchSlots } from '../mail/task-reply-watch.js';
 
 export const TODAY_ROUTE_HOST_ATTR = 'data-recued-today-route';
 export const TODAY_ROUTE_STYLES_MARKER = 'data-recued-today-route-styles';
@@ -44,6 +48,7 @@ const OCCASION_NEXT_FIELDS = ['data-today-occasion-next-on', 'data-today-occasio
 
 export interface BootstrapTodayRouteOptions {
   reminderNavigation?: TodayReminderNavigation;
+  customerDecisionWatches?: Pick<CustomerDecisionWatchCallers, 'reviews' | 'change'>;
   taskBlockerNavigation?: TaskBlockerNavigation;
   container: HTMLElement;
   callers: TodayCallers;
@@ -55,6 +60,7 @@ export interface BootstrapTodayRouteOptions {
   /** D-340 slice 2 — `#today/stream`: open the streams' settings once Today is up (the link the
    *  notifications page leaves where the Agenda's card was). */
   openStream?: boolean;
+  searchReturnHash?: string;
 }
 
 export interface TodayRoute {
@@ -88,17 +94,25 @@ export const bootstrapTodayRoute = (opts: BootstrapTodayRouteOptions): TodayRout
       style.textContent = `${TODAY_VIEW_STYLES}
         ${TASK_BLOCKERS_STYLES}
         ${STREAM_PANEL_STYLES}
+        ${CUSTOMER_WATCH_STYLES}
         [${TODAY_ROUTE_HOST_ATTR}] { max-width: var(--wc-content-max, 1080px); margin: 0 auto; padding: var(--wc-page-pad, 24px); }
         [${TODAY_ROUTE_HOST_ATTR}] .today-view { max-width: none; margin-top: 0; }
       `;
       doc?.head?.appendChild?.(style);
     }
   }
+  const searchBack = opts.searchReturnHash ? doc.createElement('a') : null;
+  if (searchBack) {
+    searchBack.href = opts.searchReturnHash!; searchBack.textContent = 'Back to search';
+    searchBack.className = 'rx-btn rx-btn-outline'; searchBack.setAttribute('data-search-saved-view-return', '');
+    opts.container.appendChild(searchBack);
+  }
   const root = doc.createElement('div');
   /** D-407 slice 2 — what the owner typed in "When is the next one?", by occasion id. */
   const occasionDrafts = new Map<string, { on: string; time: string }>();
   root.setAttribute(TODAY_ROUTE_HOST_ATTR, '');
   opts.container.appendChild(root);
+  const taskReplyWatches = createTaskReplyWatchSlots(opts.callers.taskReplyWatchListCaller, opts.now ?? Date.now);
 
   let generation = 0;
   let pending: Promise<void> = Promise.resolve();
@@ -123,6 +137,7 @@ export const bootstrapTodayRoute = (opts: BootstrapTodayRouteOptions): TodayRout
   const render = (): void => {
     if (disposed) return;
     const blockerFocus = taskBlockers.captureFocus();
+    const replyWatchFocus = taskReplyWatches.captureFocus();
     // Preserve the sources disclosure across a repaint — the snapshot changing
     // is not a reason to collapse something the owner opened.
     sourcesOpen = root.querySelector?.<HTMLDetailsElement>('.today-sources')?.open ?? sourcesOpen;
@@ -153,12 +168,17 @@ export const bootstrapTodayRoute = (opts: BootstrapTodayRouteOptions): TodayRout
     const heldNotice = held?.hasAttribute('data-today-task-notice') === true;
     const heldError = held?.hasAttribute('data-today-task-error') === true;
     const heldReminderKey = held?.getAttribute(TODAY_REMINDER_FOCUS);
+    const heldReview = held?.closest('[data-today-customer-review]')?.getAttribute('data-today-customer-review');
+    const expandedReviews = new Set(Array.from(root.querySelectorAll?.('[data-today-customer-review][open]') ?? [])
+      .map(row => row.getAttribute('data-today-customer-review') ?? ''));
+    const showCustomerReviews = sphereFilter === 'all' || sphereFilter === 'professional';
     const html = renderToday(
       controller.snapshot(),
       controller.refreshing(),
       TODAY_ROUTE_ACTION_ATTR,
       sourcesOpen,
-      opts.callers.openCreateOverlay !== undefined && reminders.canClaimEmpty(),
+      opts.callers.openCreateOverlay !== undefined && reminders.canClaimEmpty() && followUps.canClaimEmpty()
+        && (!showCustomerReviews || customerReviews.canClaimEmpty()),
       {
         canComplete: opts.callers.taskMarkDoneCaller !== undefined,
         canReschedule: opts.callers.workEntityUpsertCaller !== undefined,
@@ -176,7 +196,8 @@ export const bootstrapTodayRoute = (opts: BootstrapTodayRouteOptions): TodayRout
         canAnswerOccasionNext: opts.callers.occasionNextCaller !== undefined,
       },
       sphereFilter,
-      reminders.render(TODAY_ROUTE_ACTION_ATTR),
+      (showCustomerReviews ? customerReviews.render(TODAY_ROUTE_ACTION_ATTR, expandedReviews) : '')
+        + followUps.render(TODAY_ROUTE_ACTION_ATTR) + reminders.render(TODAY_ROUTE_ACTION_ATTR),
     );
     const due = root.querySelector<HTMLInputElement>(`[${TODAY_ROUTE_ACTION_ATTR}="today-task-due"]`);
     deferredViewPaint = false;
@@ -208,6 +229,8 @@ export const bootstrapTodayRoute = (opts: BootstrapTodayRouteOptions): TodayRout
       }
     } else root.innerHTML = html;
     taskBlockers.mount(root);
+    taskReplyWatches.mount(root);
+    if (taskReplyWatches.focus(replyWatchFocus)) return;
     if (blockerFocus) { taskBlockers.focus(blockerFocus); return; }
     if (reminders.restoreFocus(root, heldReminderKey)) return;
     if (reminderRestorePending && reminderOrigin && controller.snapshot()?.complete && reminders.current()) {
@@ -228,11 +251,19 @@ export const bootstrapTodayRoute = (opts: BootstrapTodayRouteOptions): TodayRout
       Array.from(root.querySelectorAll?.<HTMLElement>(selector) ?? []).find(match) ?? null;
     const refresh = (): HTMLElement | null =>
       root.querySelector?.<HTMLElement>('.today-refresh') ?? null;
-    if (held.hasAttribute('data-today-sphere')) {
+    if (heldReview) {
+      const review = find('[data-today-customer-review]', row => row.getAttribute('data-today-customer-review') === heldReview);
+      const target = heldAction === 'today-customer-review-done'
+        ? review?.querySelector<HTMLElement>('button:not(:disabled)') : heldHref ? review?.querySelector<HTMLElement>('a') : null;
+      (target ?? review?.querySelector<HTMLElement>('summary')
+        ?? root.querySelector<HTMLElement>('[data-today-customer-heading]') ?? refresh())?.focus({ preventScroll: true });
+    } else if (held.hasAttribute('data-today-sphere')) {
       root.querySelector<HTMLSelectElement>('[data-today-sphere]')?.focus();
     } else if (heldHref !== null && heldHref !== undefined) {
       (find('a', (el) => el.getAttribute('href') === heldHref) ?? refresh())
         ?.focus?.({ preventScroll: true });
+    } else if (heldAction === 'today-follow-ups-refresh') {
+      root.querySelector<HTMLElement>(`[${TODAY_ROUTE_ACTION_ATTR}="today-follow-ups-refresh"]`)?.focus({ preventScroll: true });
     } else if (heldRefresh || heldSources) {
       root.querySelector?.<HTMLElement>(heldRefresh ? '.today-refresh' : '.today-sources summary')
         ?.focus?.({ preventScroll: true });
@@ -269,13 +300,15 @@ export const bootstrapTodayRoute = (opts: BootstrapTodayRouteOptions): TodayRout
     now: opts.now ?? Date.now,
     changed: render, blocked: () => controller.edit() !== null || controller.busy(),
   });
+  const followUps = createTodayFollowUps({ list: opts.callers.followUpListCaller, now: opts.now ?? Date.now, changed: render });
+  const customerReviews = createTodayCustomerDecisionReviews({ callers: opts.customerDecisionWatches, changed: render });
 
   const load = async (): Promise<void> => {
     const mine = ++generation;
     taskBlockers.refresh();
     await Promise.all([controller.load(() => !disposed && mine === generation).then(() => {
       if (!disposed && mine === generation) render();
-    }), reminders.load()]);
+    }), reminders.load(), followUps.load(), customerReviews.load()]);
     if (disposed || mine !== generation) return;
     render();
     // Drain AFTER the paint, never during — a broadcast that arrived mid-read
@@ -317,6 +350,13 @@ export const bootstrapTodayRoute = (opts: BootstrapTodayRouteOptions): TodayRout
     }
     if (reminders.handle(action, target?.getAttribute('data-today-reminder-id') ?? '', target?.getAttribute('data-today-reminder-preset') ?? undefined)) return;
     if (reminders.busy()) return;
+    if (action === 'today-follow-ups-refresh') { if (!followUps.loading()) void followUps.load(); return; }
+    if (action === 'today-customer-reviews-refresh') { void customerReviews.load(); return; }
+    if (action === 'today-customer-review-done') {
+      const id = target?.getAttribute('data-review-id');
+      if (id) void customerReviews.reviewed(id);
+      return;
+    }
     if (action === 'refresh-today') {
       if (!controller.refreshing()) pending = load();
       return;
@@ -461,17 +501,21 @@ export const bootstrapTodayRoute = (opts: BootstrapTodayRouteOptions): TodayRout
       streamDialog?.close(true);
       disposed = true;
       taskBlockers.dispose();
+      taskReplyWatches.dispose();
       reminders.dispose();
+      followUps.dispose();
+      customerReviews.dispose();
       for (const off of unsubscribers) off();
       root.removeEventListener('click', onClick);
       root.removeEventListener('input', onInput);
       root.removeEventListener('keydown', onKeyDown);
       if (clock !== undefined) doc.defaultView?.clearInterval?.(clock);
       doc.removeEventListener?.('visibilitychange', onVisible);
+      searchBack?.remove();
       root.remove();
     },
     // A task write in flight must retain its owner across a route change.
-    hasInFlightWork: () => controller.busy() || reminders.busy() || streamDialog?.panel.hasInFlightWork() === true,
+    hasInFlightWork: () => controller.busy() || reminders.busy() || customerReviews.busy() || streamDialog?.panel.hasInFlightWork() === true,
     // ⛔ ALWAYS STARTS A NEW READ — it does NOT skip while one is running.
     // Superseding is the point: `load()` takes a fresh generation, so the
     // in-flight read is retired and can no longer repaint rows the newer one
@@ -481,7 +525,7 @@ export const bootstrapTodayRoute = (opts: BootstrapTodayRouteOptions): TodayRout
     refresh: () => { pending = load(); },
     getRecoveryContextFreshness: () => {
       const snap = controller.snapshot();
-      return disposed || deferredViewPaint || controller.refreshing() || snap === null || snap.issues.length > 0 || !taskBlockers.current() || !reminders.current()
+      return disposed || deferredViewPaint || controller.refreshing() || snap === null || snap.issues.length > 0 || !taskBlockers.current() || !reminders.current() || !followUps.current()
         ? 'unavailable' : 'current';
     },
     whenLoaded: () => pending,

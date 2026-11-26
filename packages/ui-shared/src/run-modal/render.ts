@@ -188,6 +188,11 @@ const runResultStatusLabel = (result: NonNullable<RunModalState['result']>): str
   return result.success ? 'Run completed' : 'Run returned errors';
 };
 
+/** One body owns scrolling; actions stay outside it, including on short screens. */
+const renderTabFrame = (state: RunModalState, body: string, primary = ''): string =>
+  `<div class="run-modal-scroll" data-run-modal-scroll-tab="${state.tab}">${body}</div><footer class="run-modal-footer run-modal-actions">
+    <button type="button" class="run-modal-button" ${RUN_MODAL_ACTION_ATTR}="cancel"${state.executing || state.mutating || state.trigger_mutating ? ' aria-disabled="true"' : ''}>Cancel</button>${primary}</footer>`;
+
 const renderRunTab = (
   state: RunModalState,
   recipe: ServerRecipeListEntry,
@@ -346,7 +351,7 @@ const renderRunTab = (
     ? ''
     : '<p class="run-modal-meta">Running is not available on this server yet.</p>';
 
-  return `
+  return renderTabFrame(state, `
       ${renderDishChoice(state, dishes, 'Run as')}
       ${connectionRows}
       ${targetBody}
@@ -354,15 +359,14 @@ const renderRunTab = (
       ${contextReview}
       ${notWired}
       ${state.before_run === null ? '' : `<div class="run-modal-before" ${RUN_MODAL_BEFORE_RUN_ATTR} role="status">${renderNextStep(state.before_run, state)}</div>`}
-      <div class="run-modal-actions">
+      ${result}`, `
         <button type="button" class="run-modal-button run-modal-button--primary"
           ${RUN_MODAL_ACTION_ATTR}="confirm-run"
           ${!caps.canExecute || !gate.assessment.ok ? 'disabled' : ''}
           ${state.executing ? 'aria-disabled="true" aria-busy="true"' : ''}>
           ${state.executing ? 'Running...' : 'Run'}
         </button>
-      </div>
-      ${result}`;
+`);
 };
 
 /** D-215 slice 5 — a schedule's cadence line, MODE-FIRST.
@@ -480,10 +484,10 @@ const renderScheduleTab = (
   dishes: readonly Dish[],
 ): string => {
   if (!caps.canSchedule) {
-    return '<p class="run-modal-meta">Scheduling is not available on this server yet.</p>';
+    return renderTabFrame(state, '<p class="run-modal-meta">Scheduling is not available on this server yet.</p>');
   }
   if (state.schedules === null) {
-    return '<p class="run-modal-meta">Loading schedules…</p>';
+    return renderTabFrame(state, '<p class="run-modal-meta">Loading schedules…</p>');
   }
   // D-319 — a schedule runs as its dish, with the dish's settings.
   const rows = state.schedules
@@ -504,7 +508,7 @@ const renderScheduleTab = (
   const error = state.schedule_error !== null
     ? `<div ${RUN_MODAL_SCHEDULE_ERROR_ATTR} role="alert" class="run-modal-target-warning">${e(state.schedule_error)}</div>`
     : '';
-  return `
+  return renderTabFrame(state, `
       ${error}
       ${list}
       ${renderDishChoice(state, dishes, 'Add to')}
@@ -539,7 +543,7 @@ const renderScheduleTab = (
               missedPolicyOptions(state.missed_policy)
             }</select>
         </label>` : ''}
-        <button type="button" class="run-modal-button run-modal-button--primary"
+      </div>`, `        <button type="button" class="run-modal-button run-modal-button--primary"
           ${RUN_MODAL_ACTION_ATTR}="add-schedule"${state.mutating ? ' aria-disabled="true" aria-busy="true"' : ''}>
           ${state.repeat ? 'Add schedule' : 'Schedule once'}
         </button>
@@ -547,7 +551,7 @@ const renderScheduleTab = (
           ${RUN_MODAL_ACTION_ATTR}="review-schedule"${state.mutating ? ' aria-disabled="true" aria-busy="true"' : ''}>
           Review and pre-approve
         </button>` : ''}
-      </div>`;
+`);
 };
 
 /** R21 — the Trigger tab: this recipe's warehouse event-trigger rows +
@@ -562,10 +566,10 @@ const renderTriggerTab = (
   dishes: readonly Dish[],
 ): string => {
   if (!caps.canTrigger) {
-    return '<p class="run-modal-meta">This server cannot set things off from events yet.</p>';
+    return renderTabFrame(state, '<p class="run-modal-meta">This server cannot set things off from events yet.</p>');
   }
   if (state.triggers === null) {
-    return '<p class="run-modal-meta">Loading triggers…</p>';
+    return renderTabFrame(state, '<p class="run-modal-meta">Loading triggers…</p>');
   }
   const busyAttrs = state.trigger_mutating
     ? ' aria-disabled="true" aria-busy="true"'
@@ -621,14 +625,9 @@ const renderTriggerTab = (
         <input id="run-modal-pattern" type="text" class="run-modal-select"
           ${RUN_MODAL_PATTERN_ATTR} value="${e(state.pattern_text)}"
           placeholder="e.g. data.mail.*" />
-        <button type="button" class="run-modal-button run-modal-button--primary"
-          ${RUN_MODAL_ACTION_ATTR}="add-trigger"${state.pattern_text.trim().length === 0
-            ? ' disabled'
-            : busyAttrs}>
-          Add trigger
-        </button>
+
       </div>`;
-  return `
+  return renderTabFrame(state, `
       ${error}
       ${list}
       ${renderDishChoice(state, dishes, 'Add to')}
@@ -636,7 +635,8 @@ const renderTriggerTab = (
         ${kindButton('pattern', 'An event pattern')}
         ${kindButton('mail_fact', 'A mail fact')}
       </div>
-      ${form}`;
+      ${form}`, `<button type="button" class="run-modal-button run-modal-button--primary"
+        ${RUN_MODAL_ACTION_ATTR}="add-trigger"${state.trigger_kind === 'pattern' && state.pattern_text.trim().length === 0 ? ' disabled' : busyAttrs}>Add trigger</button>`);
 };
 
 const option = (value: string, label: string, selected: boolean): string =>
@@ -725,10 +725,7 @@ const renderMailFactForm = (state: RunModalState, busyAttrs: string): string => 
               </select>
             </label>`
           : ''}
-        <div class="run-modal-actions">
-          <button type="button" class="run-modal-button run-modal-button--primary"
-            ${RUN_MODAL_ACTION_ATTR}="add-trigger"${busyAttrs}>Add trigger</button>
-        </div>
+
       </div>`;
 };
 

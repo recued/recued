@@ -39,11 +39,19 @@ import { unpackWebclientArchive } from '@recued/release';
 import type { VerifyArtifactInput, VerifyArtifactResult } from './binary-apply-executor.js';
 import { fsyncDir, writeFileAtomicSync } from '../durable-fs.js';
 
-/** Hard bound on the webclient download so a stalled connection can NEVER wedge
- *  the apply: `runApply` awaits this sync before requesting the restart, and the
- *  default `fetch`-based download has no timeout of its own. A timeout turns an
- *  unbounded hang into a caught rejection so the binary path can proceed. */
-export const DEFAULT_WEBCLIENT_DOWNLOAD_TIMEOUT_MS = 60_000;
+/** A backstop on the webclient download so a stalled connection can NEVER wedge
+ *  the apply: `runApply` awaits this sync before requesting the restart. A
+ *  timeout turns an unbounded hang into a caught rejection so the binary path can
+ *  proceed.
+ *
+ *  ⛔ IT WAS 60 s FOR THE WHOLE ~30 MB BUNDLE (until 2026-11-22), which a working
+ *  link under 500 KB/s could never meet: the owner's Mac, through a proxy at
+ *  54–149 KB/s, would have installed a new binary behind the old UI. The download
+ *  it races now has limits of its own (`defaultDownload`: no data for a minute,
+ *  6 hours in all), which end a hung connection by themselves; this only bounds a
+ *  `download` injected without them. ⚠ Losing the race does not cancel the
+ *  download: its own limits do. */
+export const DEFAULT_WEBCLIENT_DOWNLOAD_TIMEOUT_MS = 2 * 60 * 60 * 1000;
 
 /** Where the bundle displaced by the PREVIOUS successful sync waits while this
  *  apply is still abortable. Distinct from `.old`, which always names the

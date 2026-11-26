@@ -333,9 +333,10 @@ export * as Upload from './upload/index.js';
 export * as RunModal from './run-modal/index.js';
 // Shared modal focus-trap (a11y) — Tab cycling within an `aria-modal` dialog +
 // focus-in/restore, across the Run modal, the recipes Automation modal, and the
-// chat Create overlay. A flat named export (one function + its types).
+// chat Create overlay. Flat named exports for wiring and host-owned dialogs.
 export {
   wireFocusTrap,
+  focusNextInDialog,
   type WireFocusTrapOptions,
   type FocusTrapHandle,
 } from './focus-trap.js';

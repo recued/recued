@@ -316,6 +316,7 @@ export interface MemoryLensProps {
   composeDiscardGuard?: boolean;
   /** Slice 2 — the open detail view (absent = the feed list). */
   detail?: MemoryDetailState | null;
+  desktopReader?: boolean;
   /** Slice 3 — the open import panel (absent/closed = the feed list). */
   importPanel?: MemoryImportState;
   /** Local review shown before populated import JSON is discarded. */
@@ -669,6 +670,23 @@ const renderRemoveConfirm = (
           : ''}</span>`;
 };
 
+const renderMemoryRunLink = (
+  entry: MemoryActionTarget & Pick<MemoryListEntry, 'run_id'>,
+  actionAttr: string,
+  runHref: MemoryLensProps['runHref'],
+  locked = false,
+): string => entry.run_id
+  ? renderReferenceLink({
+      label: 'Open run',
+      referenceId: entry.run_id,
+      href: runHref(entry.run_id),
+      className: 'memory-row-run-link',
+      ariaLabel: memoryActionName('Open run for memory', entry),
+      disabled: locked,
+      attributes: { [actionAttr]: MEMORY_OPEN_RUN_ACTION },
+    })
+  : '';
+
 /** The per-row action foot: the audit run link, a "View" affordance for rows
  *  carrying a full body, and — when writes are wired (§3) — Edit + Delete on the
  *  memories the owner WROTE, Replace + Delete on an agent's note (§12/§13), and
@@ -691,6 +709,7 @@ const renderRowFoot = (
   restoreError: { memoryId: string; message: string } | undefined,
   checkingDeleteId: string | undefined,
   deleteSaves: MemoryDeleteSaves | undefined,
+  selected: boolean,
 ): string => {
   const isOwn = isOwnMemoryEntry(entry);
   const isRedacted = entry.redacted === true;
@@ -707,18 +726,7 @@ const renderRowFoot = (
         ? ' aria-disabled="true"'
         : ''} aria-label="${actionName(checking ? `Checking… ${act.noun}` : act.aria)}">${checking ? 'Checking…' : act.button}</button>`;
   };
-  const runLink =
-    entry.run_id !== undefined && entry.run_id.length > 0
-      ? renderReferenceLink({
-          label: 'Open run',
-          referenceId: entry.run_id,
-          href: runHref(entry.run_id),
-          className: 'memory-row-run-link',
-          ariaLabel: actionName('Open run for memory'),
-          disabled: locked,
-          attributes: { [actionAttr]: MEMORY_OPEN_RUN_ACTION },
-        })
-      : '';
+  const runLink = renderMemoryRunLink(entry, actionAttr, runHref, locked);
   if (isRedacted) {
     // D-198 §10 — an entry an AGENT forgot can be restored; the owner's own
     // redaction cannot (nothing left to act on).
@@ -744,7 +752,7 @@ const renderRowFoot = (
     entry.has_body === true
       ? `<button type="button" class="memory-row-btn" ${actionAttr}="${MEMORY_OPEN_ACTION}" ${idAttr}${locked
         ? ' aria-disabled="true"'
-        : ''} aria-label="${actionName('View memory')}">View</button>`
+        : ''}${selected ? ' aria-current="true"' : ''} aria-label="${actionName('View memory')}">View</button>`
       : '';
   let controls = '';
   if (canWrite) {
@@ -821,6 +829,7 @@ const renderRow = (
   restoreError: { memoryId: string; message: string } | undefined,
   checkingDeleteId: string | undefined,
   deleteSaves: MemoryDeleteSaves | undefined,
+  selected: boolean,
 ): string => {
   const summary = entry.summary ?? '';
   const bodyPreview = entry.body_preview ?? '';
@@ -838,7 +847,7 @@ const renderRow = (
     ? `<p class="memory-row-redacted">${e(removedNote(entry, now))}</p>`
     : `${primary ? `<p class="memory-row-title">${e(primary)}</p>` : ''}${
         secondary ? `<p class="memory-row-preview">${e(secondary)}</p>` : ''}${claimLine(entry)}${revisionNote(entry)}${revokedNote(entry, now)}${contradictsNote(entry)}`;
-  return `<li class="memory-row${isRedacted ? ' is-redacted' : ''}" data-origin="${e(entry.origin_actor)}">
+  return `<li class="memory-row${isRedacted ? ' is-redacted' : ''}${selected ? ' is-selected' : ''}" data-origin="${e(entry.origin_actor)}">
     <div class="memory-row-head">
       ${renderMemoryOrigin(entry)}
       <span class="memory-row-kind">${e(entry.kind)}</span>
@@ -861,6 +870,7 @@ const renderRow = (
       restoreError,
       checkingDeleteId,
       deleteSaves,
+      selected,
     )}
   </li>`;
 };
@@ -1125,18 +1135,13 @@ const renderImportPanel = (
 /** The detail view — full body (lazy `memory.get`), + Edit/Delete for own rows. */
 const renderDetail = (
   detail: MemoryDetailState,
-  now: number,
-  actionAttr: string,
-  pendingDeleteId: string | undefined,
-  deletingId: string | undefined,
-  deleteError: string | undefined,
-  openingEditId: string | undefined,
-  editError: { memoryId: string; message: string } | undefined,
-  canWrite: boolean,
-  checkingDeleteId: string | undefined,
-  deleteSaves: MemoryDeleteSaves | undefined,
+  props: MemoryLensProps,
+  inline: boolean,
 ): string => {
-  const back = `<button type="button" class="memory-btn" ${actionAttr}="${MEMORY_DETAIL_CLOSE_ACTION}">← Back</button>`;
+  const { actionAttr, canWrite, checkingDeleteId, deleteError, deleteSaves, deletingId,
+    editError, now, openingEditId, pendingDeleteId, runHref } = props;
+  const back = `<button type="button" class="memory-btn" ${actionAttr}="${MEMORY_DETAIL_CLOSE_ACTION}">${inline ? 'Close reader' : '← Back'}</button>`;
+  let title = 'Memory detail';
   let body: string;
   if (detail.error !== undefined) {
     body = `<p class="memory-lens-error" role="alert">${e(detail.error)}</p>`;
@@ -1147,6 +1152,8 @@ const renderDetail = (
     const when = formatRelativeTime(entry.event_at ?? entry.ts, now);
     const isOwn = isOwnMemoryEntry(entry);
     const isRedacted = entry.redacted === true;
+    const readerTitle = inline && !isRedacted ? entry.summary?.trim() : undefined;
+    if (readerTitle) title = readerTitle;
     const idAttr = `${MEMORY_ROW_ID_ATTR}="${e(entry.memory_id)}"`;
     const actionName = (label: string): string => memoryActionName(label, entry);
     const act = removeActFor(entry);
@@ -1199,7 +1206,7 @@ const renderDetail = (
     const change = !canWrite || isRedacted ? undefined : isOwn ? 'Edit' as const : isReplaceableEntry(entry) ? 'Replace' as const : undefined;
     const content = isRedacted
       ? `<p class="memory-row-redacted">${e(removedNote(entry, now))}</p>`
-      : `${entry.summary !== undefined ? `<p class="memory-detail-summary">${e(entry.summary)}</p>` : ''}${
+      : `${entry.summary !== undefined && !readerTitle ? `<p class="memory-detail-summary">${e(entry.summary)}</p>` : ''}${
           claimLine(entry)}${claimSwitchHint(entry.claim, change)}${
           entry.body !== undefined
             ? `<pre class="memory-detail-body">${e(entry.body)}</pre>`
@@ -1210,11 +1217,14 @@ const renderDetail = (
         <span class="memory-row-time">${e(when)}</span>
       </div>
       ${content}
+      ${inline ? renderMemoryRunLink(entry, actionAttr, runHref) : ''}
       ${controls ? `<footer class="memory-detail-actions">${controls}</footer>` : ''}`;
   }
+  const heading = `<h3 class="memory-detail-title" ${MEMORY_DETAIL_HEADING_ATTR} tabindex="-1">${e(title)}</h3>`;
   return `<section class="memory-detail" aria-label="Memory detail">
-    <div class="memory-detail-bar">${back}</div>
-    <h3 class="memory-detail-title" ${MEMORY_DETAIL_HEADING_ATTR} tabindex="-1">Memory detail</h3>
+    ${inline
+      ? `<header class="memory-reader-header">${heading}${back}</header>`
+      : `<div class="memory-detail-bar">${back}</div>${heading}`}
     ${body}
   </section>`;
 };
@@ -1255,25 +1265,14 @@ export const renderClaimCounts = (counts: MemoryClaimCountsResult): string => {
 };
 
 export const renderMemoryLens = (props: MemoryLensProps): string => {
-  const canWrite = props.canWrite ?? false;
   const detail = props.detail ?? null;
   const compose = props.compose;
+  const inline = detail !== null && props.desktopReader === true;
+  // The reader owns entry actions while the index stays available for navigation.
+  const canWrite = props.canWrite === true && !inline;
 
-  // View stack: detail > compose > list.
-  if (detail !== null) {
-    return renderMemoryLensFrame(renderDetail(
-      detail,
-      props.now,
-      props.actionAttr,
-      props.pendingDeleteId,
-      props.deletingId,
-      props.deleteError,
-      props.openingEditId,
-      props.editError,
-      canWrite,
-      props.checkingDeleteId,
-      props.deleteSaves,
-    ));
+  if (detail !== null && !inline) {
+    return renderMemoryLensFrame(renderDetail(detail, props, false));
   }
   if (compose !== undefined && compose.open) {
     return renderMemoryLensFrame(renderComposeForm(
@@ -1323,9 +1322,12 @@ export const renderMemoryLens = (props: MemoryLensProps): string => {
           : ''}>Add memory</button>`
     : '';
 
+  const error = props.error === undefined
+    ? ''
+    : `<p class="memory-lens-error" role="alert">${e(props.error)}</p>`;
   let body: string;
-  if (props.error !== undefined) {
-    body = `<p class="memory-lens-error" role="alert">${e(props.error)}</p>`;
+  if (props.entries.length === 0 && error) {
+    body = error;
   } else if (props.loading && props.entries.length === 0) {
     body = `<p class="memory-lens-loading">Loading memory…</p>`;
   } else if (props.entries.length === 0) {
@@ -1333,7 +1335,7 @@ export const renderMemoryLens = (props: MemoryLensProps): string => {
       props.originFilter === 'all' ? '' : ' from here'
     } yet.</p>`;
   } else {
-    body = `<ul class="memory-list" role="list">${props.entries
+    body = `${error}<ul class="memory-list" role="list">${props.entries
       .map((entry) =>
         renderRow(
           entry,
@@ -1351,6 +1353,7 @@ export const renderMemoryLens = (props: MemoryLensProps): string => {
           props.restoreError,
           props.checkingDeleteId,
           props.deleteSaves,
+          inline && detail.memory_id === entry.memory_id,
         ),
       )
       .join('')}</ul>${
@@ -1367,14 +1370,22 @@ export const renderMemoryLens = (props: MemoryLensProps): string => {
     }`;
   }
 
-  return renderMemoryLensFrame(`
-    <div class="memory-lens-controls">
+  const filters = `<div class="memory-lens-controls">
       <div class="memory-filter-chips" role="group" aria-label="Filter memory by origin">${chips}</div>
       ${tools}
-    </div>
-    ${props.claimCounts !== undefined ? renderClaimCounts(props.claimCounts) : ''}
-    ${body}
-  `, addBtn);
+    </div>`;
+  const claimCounts = props.claimCounts !== undefined ? renderClaimCounts(props.claimCounts) : '';
+  if (inline) {
+    return renderMemoryLensFrame(`<div class="memory-reader-workspace">
+      <div class="memory-reader-index">
+        ${filters}
+        ${claimCounts}
+        <div class="memory-reader-entries" role="region" aria-label="Memory entries" tabindex="0">${body}</div>
+      </div>
+      ${renderDetail(detail, props, true)}
+    </div>`);
+  }
+  return renderMemoryLensFrame(`${filters}${claimCounts}${body}`, addBtn);
 };
 
 export const MEMORY_LENS_STYLES = `
@@ -1505,6 +1516,38 @@ ${MEMORY_CLAIM_TAKES_STYLES}
 .memory-field-hint, .memory-lens-empty, .memory-lens-loading, .memory-lens-error { overflow-wrap: anywhere; }
 .memory-lens-empty, .memory-lens-loading, .memory-lens-error { color: var(--fg-muted); font-size: 0.875rem; }
 .memory-lens-error { color: var(--danger); }
+.memory-reader-workspace {
+  display: grid; grid-template-columns: minmax(0, min(40%, 26rem)) minmax(0, 1fr);
+  align-items: start; gap: var(--wc-space-lg, 24px);
+}
+.memory-reader-index {
+  display: flex; flex-direction: column; gap: var(--wc-space-sm, 8px); min-width: 0;
+}
+.memory-reader-workspace .memory-row.is-selected {
+  border-color: var(--accent); background: var(--accent-weak);
+}
+.memory-reader-entries { min-width: 0; min-height: 0; padding: 3px; margin-inline: -3px; }
+.memory-reader-workspace .memory-detail {
+  gap: 0.875rem; padding: var(--wc-space-md, 16px); border: 1px solid var(--border);
+  border-radius: var(--wc-radius, 9px); background: var(--surface);
+}
+.memory-reader-header {
+  display: flex; align-items: start; justify-content: space-between; gap: 0.75rem;
+  border-bottom: 1px solid var(--border); padding-block-end: 0.75rem;
+}
+.memory-reader-header > .memory-btn { flex: none; }
+.memory-reader-header .memory-detail-title {
+  align-self: center; min-width: 0; font-size: 1.125rem; line-height: 1.4; overflow-wrap: anywhere;
+}
+.memory-reader-workspace .memory-detail-body { max-inline-size: 76ch; line-height: 1.6; }
+.memory-reader-workspace .memory-detail > .memory-row-run-link { align-self: start; }
+@media (min-height: 600px) {
+  .memory-reader-index {
+    position: sticky; inset-block-start: var(--wc-space-md, 16px);
+    max-height: calc(100dvh - var(--wc-header-height, 56px) - var(--wc-connection-banner-h, 0px) - 10rem);
+  }
+  .memory-reader-entries { overflow: auto; scrollbar-width: thin; scroll-padding-block: 4px; }
+}
 @media (max-width: 640px) {
   /* A finger's height on a phone. ⛔ 36px. */
   .data-lens-btn { min-height: 44px; }

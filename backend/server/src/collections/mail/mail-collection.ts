@@ -314,7 +314,7 @@ export interface CreateMailCollectionOptions {
   inboundAttachmentDeps?: () => MailInboundAttachmentDeps | undefined;
 }
 
-const recordIdFor = (sourceId: string): string =>
+export const mailRecordIdForSource = (sourceId: string): string =>
   `mail:${createHash('sha256').update(sourceId).digest('hex').slice(0, 32)}`;
 
 /** ⚠ BOTH CONSTANTS MOVED TO `@recued/contracts` (`packages/contracts/src/mail.ts`),
@@ -454,7 +454,7 @@ export const MAIL_CHAT_CONVERSATION_FIELD = 'mail_chat';
 /** Hot fields that classify a message rather than describe it: their first
  *  appearance on a message stored before them is not an update, or every
  *  re-listed message would wake every `updated` trigger once. */
-const CLASSIFYING_HOT_FIELDS: ReadonlySet<string> = new Set([MAIL_CHAT_CONVERSATION_FIELD]);
+const CLASSIFYING_HOT_FIELDS: ReadonlySet<string> = new Set([MAIL_CHAT_CONVERSATION_FIELD, 'reply_automation', 'delivery_report', 'delivery_report_original_id', 'delivery_report_unverified']);
 
 /** D-124 — what changed between a message's stored row and the row it
  *  becomes: its hot fields by name, and `body` and `received_at`. Nothing,
@@ -490,6 +490,8 @@ export const buildRecord = (
     thread_id: msg.thread_id,
     folder: pickPrimaryFolder(msg.folder_or_label, msg.labels),
     direction: resolveMailMessageDirection(msg, accountEmail),
+    // Retain only the classification; raw headers remain in memory.
+    reply_automation: msg.reply_automation === 'automatic' ? 'v1:automatic' : msg.reply_automation === 'unmarked' ? 'v1:unmarked' : 'v1:unknown',
     is_read: msg.is_read,
     // D-239 — mirrored so `mail-flag` has a field to write and the next
     // sync has the same field to confirm. Both halves shipped together;
@@ -499,6 +501,11 @@ export const buildRecord = (
     has_attachments: msg.has_attachments,
     message_id: msg.source_id,
   };
+  if (msg.delivery_report_unverified) hotFields.delivery_report_unverified = 'v1:unknown';
+  if (msg.delivery_report) {
+    hotFields.delivery_report = msg.delivery_report;
+    hotFields.delivery_report_original_id = msg.delivery_report.original_message_id;
+  }
   if (msg.labels && msg.labels.length > 0) hotFields.labels = msg.labels;
   // D-184 Decision 2 — queryable RFC822 Message-ID for the engagement
   // resolver's live CRM-email ↔ data.mail twin join. Stored separately
@@ -511,7 +518,7 @@ export const buildRecord = (
   }
 
   const record: CollectionRecord = {
-    record_id: recordIdFor(msg.source_id),
+    record_id: mailRecordIdForSource(msg.source_id),
     received_at: msg.received_at,
     modified_at: nowOf(),
     hot_fields: hotFields,
@@ -661,6 +668,8 @@ type ResolvedAttachment = OutgoingAttachment & { blob_hash: string; run_scoped?:
  *  underlying provider's fields so the picker / sender-resolution
  *  paths can read them without reaching through the provider. */
 export interface MailCollection extends Collection {
+  /** Latest successful inbound poll for this live collection, cleared on stop or failure. */
+  readonly lastInboundSyncAt: number | null;
   /** A mailbox read succeeded in this live collection. Separate from the
    * durable sync clock: fetching a page does not refresh stored mail. */
   readonly mailboxAccessVerified: boolean;
@@ -855,6 +864,7 @@ export const createMailCollection = (
 
   let state: CollectionState = 'idle';
   let lastIndexedAt = 0;
+  let lastInboundSyncAt: number | null = null;
   /** D-315 — where the row each upsert still in flight wrote lives now: a
    *  verified move gives an email a new id while its attachments download,
    *  and the upsert's hook reads it there. */
@@ -977,10 +987,14 @@ export const createMailCollection = (
       touchSyncClock(outcome.at);
       // A start's scan is followed by a poll or catch-up: once one succeeds,
       // the mailbox has caught up.
-      if (outcome.phase === 'poll') markCaughtUp();
+      if (outcome.phase === 'poll') {
+        if (backfillComplete()) lastInboundSyncAt = outcome.at;
+        markCaughtUp();
+      }
       return;
     }
     lastProviderFailure = outcome.failure ?? 'transient';
+    lastInboundSyncAt = null;
     // A failure is reported immediately, un-throttled: the throttle exists to
     // bound redundant SUCCESS writes, and delaying bad news is the opposite of
     // the point. `reportSyncOutcome` is idempotent on an unchanged row.
@@ -1363,7 +1377,7 @@ export const createMailCollection = (
       throw new Error('mail sync generation is no longer active');
     }
     if (event.kind === 'deleted') {
-      const recordId = recordIdFor(event.source_id);
+      const recordId = mailRecordIdForSource(event.source_id);
       const prev = table.delete(recordId);
       if (prev) {
         emitter.deleted(recordId, prev.hot_fields);
@@ -1430,7 +1444,7 @@ export const createMailCollection = (
       else delete hot_fields.labels;
     }
 
-    const nextRecordId = recordIdFor(result.source_id);
+    const nextRecordId = mailRecordIdForSource(result.source_id);
     const next: CollectionRecord = {
       ...prev,
       record_id: nextRecordId,
@@ -1629,6 +1643,7 @@ export const createMailCollection = (
     async stop() {
       // Invalidate provider callbacks before any asynchronous teardown.
       syncGeneration += 1;
+      lastInboundSyncAt = null;
       markCaughtUp();
       clearScanRetry();
       state = 'disconnected';
@@ -2414,7 +2429,7 @@ export const createMailCollection = (
     // on gmail's tight history loop). Use the deterministic
     // record_id derivation to check; recipes can poll later when
     // _id is null.
-    const expectedRecordId = recordIdFor(meta.source_id);
+    const expectedRecordId = mailRecordIdForSource(meta.source_id);
     const existing = table.get(expectedRecordId);
     return {
       source_id: meta.source_id,
@@ -2485,6 +2500,7 @@ export const createMailCollection = (
     gate,
     sync,
     get mailboxAccessVerified() { return mailboxAccessVerified; },
+    get lastInboundSyncAt() { return lastInboundSyncAt; },
     get caughtUp() { return caughtUp; },
     async settledSends() { await Promise.allSettled([...smtpSends]); },
     sendCapable: provider.sendCapable,

@@ -7,7 +7,8 @@ import { waitForQuiet } from '../actions/page-scroll.js';
 
 afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); });
 type Mode = 'lost-move' | 'malformed-move' | 'null-area-move' | 'foreign-move' | 'throw-after-scroll' | 'lost-element-preparation'
-  | 'lost-initial-read' | 'malformed-initial-read' | 'missing-element' | 'invalid-selector' | 'normal' | 'lost-final-read';
+  | 'lost-initial-read' | 'malformed-initial-read' | 'missing-element' | 'invalid-selector' | 'normal' | 'lost-final-read'
+  | 'replaced-anchor' | 'reparented-anchor';
 
 // Real executor, identity, measurements and quiet wait; DOM geometry,
 // document delivery, observer and clock are controlled adapters. No live
@@ -15,9 +16,11 @@ type Mode = 'lost-move' | 'malformed-move' | 'null-area-move' | 'foreign-move' |
 const scroll = async (mode: Mode) => {
   vi.useFakeTimers(); vi.setSystemTime(0);
   const url = 'https://app.example.com/page';
-  const state = { measurements: 0, quietDisconnects: 0, scripts: [] as string[], scrolls: [] as Array<{ x: number; y: number }> };
+  const nested = mode === 'replaced-anchor' || mode === 'reparented-anchor';
+  const state = { measurements: 0, quietDisconnects: 0, scripts: [] as string[],
+    scrolls: [] as Array<{ x: number; y: number }>, panelScrolls: [] as number[] };
   const view: any = { innerWidth: 800, innerHeight: 600, scrollX: 5, scrollY: 120, frameElement: null,
-    getComputedStyle: () => ({ overflowY: 'visible' }),
+    getComputedStyle: (box: unknown) => ({ overflowY: box === panel ? 'auto' : 'visible' }),
     scrollTo(options: { left?: number; top?: number }) {
       if (options.left !== undefined) view.scrollX = options.left;
       if (options.top !== undefined) view.scrollY = options.top;
@@ -34,14 +37,21 @@ const scroll = async (mode: Mode) => {
     clientWidth: 800, clientHeight: 600, scrollWidth: 800, scrollHeight: 1_800,
     get scrollLeft() { return view.scrollX; }, get scrollTop() { return view.scrollY; },
     scrollTo: (options: object) => view.scrollTo(options) };
-  const element: any = { nodeType: 1, parentNode: root, ownerDocument: doc,
+  const panel = { nodeType: 1, parentNode: root, ownerDocument: doc, isConnected: true, scrollTop: 0, scrollLeft: 0,
+    clientWidth: 400, clientHeight: 300, clientTop: 0, clientLeft: 0, scrollWidth: 400, scrollHeight: 1_000,
+    getBoundingClientRect: () => ({ top: 0, left: 0 }),
+    scrollTo(options: { top: number }) { panel.scrollTop = options.top; state.panelScrolls.push(options.top); } };
+  const element: any = { nodeType: 1, parentNode: nested ? panel : root, ownerDocument: doc, isConnected: true,
     clientWidth: 200, clientHeight: 100, scrollWidth: 200, scrollHeight: 100,
-    getBoundingClientRect: () => ({ left: 50, top: 1_050 - view.scrollY, right: 250, bottom: 1_150 - view.scrollY, width: 200, height: 100 }),
-    scrollIntoView: () => view.scrollTo({ top: 900 }) };
+    getBoundingClientRect: () => {
+      const top = nested ? 50 - panel.scrollTop : 1_050 - view.scrollY;
+      return { left: 50, top, right: 250, bottom: top + 100, width: 200, height: 100 };
+    } };
   doc.documentElement = root; doc.scrollingElement = root; doc.body = root;
   vi.stubGlobal('window', view); vi.stubGlobal('document', doc); vi.stubGlobal('location', { href: url });
   vi.stubGlobal('Node', { ELEMENT_NODE: 1, DOCUMENT_NODE: 9, DOCUMENT_FRAGMENT_NODE: 11 });
   vi.stubGlobal('recuedScreenshotScroll', undefined);
+  vi.stubGlobal('recuedElementScroll', undefined);
   vi.stubGlobal('MutationObserver', class { observe() {} disconnect() { state.quietDisconnects++; } });
   const api: BridgeBrowserApi = {
     async findTabByUrlPattern() { return null; }, async executeScript() { return null; },
@@ -52,6 +62,10 @@ const scroll = async (mode: Mode) => {
       const result = await func(...args);
       if (func === measurePageArea) {
         state.measurements++;
+        if (nested && state.measurements === 1) {
+          element.parentNode = mode === 'replaced-anchor' ? null : root;
+          element.isConnected = mode !== 'replaced-anchor';
+        }
         if (mode === 'lost-move' && state.measurements === 2 || mode === 'lost-initial-read' && state.measurements === 1
           || mode === 'lost-element-preparation' && state.measurements === 1 || mode === 'lost-final-read' && state.measurements === 3) return null;
         if (mode === 'foreign-move' && state.measurements === 2) return { document_id: 'OTHER', result };
@@ -69,7 +83,8 @@ const scroll = async (mode: Mode) => {
     ingredient: { publisher_id: 'fixture', slug: 'fixture', version: '1', surface_kind: 'reading',
       domain_allowlist: ['https://app.example.com/*'], domain_allowlist_signature: 'fixture' },
     action: 'scroll', target_domain_pattern: 'https://app.example.com/*',
-    args: { page: '7:DOC7', to: 'next', ...(['lost-element-preparation', 'missing-element', 'invalid-selector'].includes(mode) ? { selector: '#target' } : {}) },
+    args: { page: '7:DOC7', to: 'next',
+      ...(nested || ['lost-element-preparation', 'missing-element', 'invalid-selector'].includes(mode) ? { selector: '#target' } : {}) },
     expects_output_keys: ['page', 'url', 'title', 'screen', 'screens'], timeout_ms: 5_000, idempotency_key: 'scroll',
   };
   // Capture a rejected executor promise immediately so a decoder failure is
@@ -89,7 +104,7 @@ describe('scroll acknowledgement after possible movement', () => {
       expect(t.outcome).toMatchObject({ status: 'error', error: { code: 'delivery_uncertain',
         message: 'The browser could not confirm the command outcome. Check the page before retrying.' } });
       expect(t.outcome.outputs).toBeUndefined();
-      const y = mode === 'lost-element-preparation' ? 900 : 525;
+      const y = mode === 'lost-element-preparation' ? 550 : 525;
       expect(t.state.scrolls).toEqual([{ x: 5, y }]); expect([t.view.scrollX, t.view.scrollY]).toEqual([5, y]);
       expect(t.state.quietDisconnects).toBe(0);
     });
@@ -106,5 +121,19 @@ describe('scroll acknowledgement after possible movement', () => {
     const t = await scroll(mode);
     expect(t.outcome).toEqual({ status: 'ok', outputs: { page: '7:DOC7', url: 'https://app.example.com/page', title: 'Fixture', screen: 2, screens: 4 } });
     expect(t.state.scrolls).toEqual([{ x: 5, y: 525 }]); expect(t.state.quietDisconnects).toBe(1);
+  });
+
+  it('keeps the live scroller when its virtualized anchor is replaced', async () => {
+    const t = await scroll('replaced-anchor');
+    expect(t.outcome).toMatchObject({ status: 'ok', outputs: { screen: 2, screens: 4 } });
+    expect(t.state.panelScrolls).toEqual([262]);
+    expect(t.state.scrolls).toEqual([]);
+  });
+
+  it('refuses to scroll the old panel when its anchor moves elsewhere', async () => {
+    const t = await scroll('reparented-anchor');
+    expect(t.outcome).toMatchObject({ status: 'error', error: { code: 'selector_not_found' } });
+    expect(t.state.panelScrolls).toEqual([]);
+    expect(t.state.scrolls).toEqual([]);
   });
 });

@@ -1,5 +1,5 @@
-import { SEARCH_TYPE_LABELS } from './universal-search-filter.js';
-import { REMINDER_STATUS_LABELS } from '../reminders/reminder-search.js';
+import { readSavedViewSearchRow, sameSavedViewSearchSelection, type SavedViewSearchRow } from './saved-view-search.js';
+import { savedViewSettingsSummary as settingsSummary, savedViewAlertSummary as alertSummary } from './saved-view-summary.js';
 /** Server-backed named views wrap the existing Data reader; opening a link only reads. */
 import {
   SAVED_DATA_VIEW_NAME_LIMIT, parseSavedDataViewDefinition, sameSavedDataViewDefinition, savedDataViewSupportsAlerts,
@@ -40,6 +40,7 @@ export interface SavedDataRouteOptions extends BootstrapDataRouteOptions {
   serverTimeZone?: () => string | undefined;
   savedViews: SavedDataViewsClient;
   savedViewId?: string;
+  viewSearchReturn?: { hash: string; destinationHash: string; selection: SavedViewSearchRow };
   /** D-291 — which half of this module the host wants.
    *
    *  `'data'` (the default) is `#data`: the Data route plus the one control
@@ -60,52 +61,30 @@ export interface SavedDataRouteOptions extends BootstrapDataRouteOptions {
 const e = (text: string): string => text.replace(/&/g, '&amp;').replace(/</g, '&lt;')
   .replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 export const savedDataViewHref = (id: string): string => serializeShellRoute('views', id);
-const settingsSummary = (definition: SavedDataViewDefinition): string => {
-  const labels: Record<SavedDataViewDefinition['tab'], string> = {
-    today: 'Today',
-    search: 'Search', contact: 'Contacts', task: 'Tasks', note: 'Notes', commitment: 'Commitments',
-    project: 'Projects', booking: 'Bookings', asset: 'Assets', mail: 'Mail', calendar: 'Calendar', files: 'Files',
-    webhook: 'Webhook deliveries', memory: 'Memory', records: 'Records', form_response: 'Form responses',
-    annotation: 'Annotations', link: 'Links', shared: 'Shared',
-  };
-  const parts = [labels[definition.tab]];
-  if ('query' in definition) parts.push(definition.query ? `Search: “${definition.query}”` : 'No search text');
-  if (definition.tab === 'search' && definition.result_type && definition.result_type !== 'all') parts.push(`Type: ${SEARCH_TYPE_LABELS[definition.result_type]}`);
-  if (definition.tab === 'search' && definition.reminder_state && definition.reminder_state !== 'all') parts.push(`Reminders: ${REMINDER_STATUS_LABELS[definition.reminder_state]}`);
-  if ('source_id' in definition) {
-    parts.push(`Source: ${definition.source_id ?? 'All sources'}`);
-    if (definition.tab === 'booking') parts.push(`Lifecycle: ${definition.booking_lifecycle}`);
-    if (definition.tab === 'task') {
-      const filters = definition.task_filters;
-      parts.push(({ all: 'All tasks', open: 'Open tasks', completed: 'Completed tasks' })[filters?.completion ?? 'all']);
-      parts.push(({ all: 'Any time', overdue: 'Overdue', today: 'Today', next_7_days: 'Next seven days' })[filters?.due ?? 'all']);
-      parts.push(filters?.sort === 'due_asc' ? 'Due date — earliest first' : 'Open first');
-    }
-  }
-  if ('collection_slug' in definition) parts.push(`Source: ${definition.collection_slug ?? 'None selected'}`);
-  if (definition.tab === 'records') {
-    parts.push(definition.owner === null ? 'No pack selected'
-      : `Pack: ${definition.owner.publisher}/${definition.owner.pack_slug}`, `Kind: ${definition.entity ?? 'None selected'}`);
-    const operators = { eq: '=', ne: '≠', lt: '<', lte: '≤', gt: '>', gte: '≥', in: 'is any of', prefix: 'starts with' };
-    const filters = Object.entries(definition.filters ?? {}).map(([field, filter]) =>
-      filter.op === 'is_null' ? `${field} ${filter.value ? 'is not set' : 'is set'}`
-        : `${field} ${operators[filter.op]} ${JSON.stringify(filter.value)}`);
-    parts.push(filters.length ? `Filters: ${filters.join('; ')}` : 'No field filters');
-    const sort = definition.sort ?? 'id';
-    parts.push(`Sort: ${sort.startsWith('-') ? `${sort.slice(1)} descending` : `${sort} ascending`}`);
-  }
-  if (definition.tab === 'memory') parts.push(({ all: 'All origins', user_self: 'You', contracted_user: 'Agents', system: 'System' })[definition.origin]);
-  return parts.join(' · ');
+const VIEW_SWITCHER_MEDIA = '(min-width: 1280px) and (hover: hover) and (pointer: fine)';
+const VIEW_SWITCHER = '[data-view-switcher]';
+const VIEW_LIBRARY = '[data-view-library]';
+
+const renderViewSwitcher = (
+  current: SavedDataView, ownViews: SavedDataView[], packViews: SavedDataView[], open: boolean,
+): string => {
+  const visiblePackViews = packViews.filter(view => !view.hidden);
+  // Safari's default keyboard navigation can skip links without an explicit tab stop.
+  const links = (entries: SavedDataView[]) => `<ul>${entries.map(view => `<li>
+    <a href="${e(savedDataViewHref(view.id))}" tabindex="0" data-view-action="open" data-view-id="${e(view.id)}"${view.id === current.id ? ' aria-current="page"' : ''}>
+      <span>${e(view.name)}</span>
+      ${view.pack === undefined ? '' : `<small>From ${e(view.pack.slug)}</small>`}
+    </a></li>`).join('')}</ul>`;
+  return `<details class="saved-data-switcher" data-view-switcher ${open ? 'open' : ''}>
+    <summary aria-label="Switch saved view: ${e(current.name)}" title="${e(current.name)}"><span>${e(current.name)}</span></summary>
+    <div class="saved-data-switcher-panel" data-view-switcher-panel>
+      ${ownViews.length ? links(ownViews) : ''}
+      ${visiblePackViews.length ? `<p>From packs</p>${links(visiblePackViews)}` : ''}
+      ${ownViews.length || visiblePackViews.length ? '' : '<p>No views to switch to.</p>'}
+    </div>
+  </details>`;
 };
-const alertSummary = (view: SavedDataView): string => {
-  const alert = view.alert;
-  if (!alert) return 'Alerts off';
-  if (!alert.enabled) return 'Alerts paused';
-  const status = alert.status === 'unavailable'
-    ? `Alerts waiting for your ${view.definition.tab === 'records' ? 'records' : 'tasks'}` : 'Alerts on';
-  return `${status}${view.definition.tab === 'task' ? ` · ${alert.time_zone}` : ''}${alert.last_checked_at === null ? ''
-    : ` · Checked ${new Date(alert.last_checked_at).toLocaleString()}`}`;
-};
+
 const alertControls = (view: SavedDataView, disabled: boolean, pendingId: string | null, explain = false): string => {
   if (!savedDataViewSupportsAlerts(view.definition)) return '';
   const action = !view.alert ? 'Notify me' : view.alert.enabled ? 'Pause alerts' : 'Resume alerts';
@@ -172,6 +151,30 @@ const STYLES = `
   .saved-data-alert-help { flex-basis:100%; margin:0 0 8px; color:var(--muted); font-size:13px; }
   .saved-data-opened > .saved-data-alert-help { margin-top:0; }
   .saved-data-conflict { border:1px solid var(--border); border-radius:8px; padding:12px; overflow-wrap:anywhere; }
+  .saved-data-reader-title { display:flex; align-items:center; gap:12px; flex:1 1 260px; min-width:0; }
+  .saved-data-reader-title h1 { flex:none; }
+  .saved-data-reader-header .saved-data-header-actions { margin-inline-start:auto; }
+  .saved-data-tools .saved-data-switcher { position:relative; flex:0 1 auto; min-width:0; max-width:280px;
+    padding:0; border:0; background:transparent; }
+  .saved-data-switcher > summary { display:flex; align-items:center; gap:12px; padding:0 12px; box-sizing:border-box; min-height:var(--wc-control-h, 44px);
+    border:1px solid var(--border); border-radius:var(--wc-radius, 9px); background:var(--surface); font-size:13px; font-weight:650; }
+  .saved-data-switcher > summary::-webkit-details-marker { display:none; }
+  .saved-data-switcher > summary span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .saved-data-switcher > summary::after { content:''; width:6px; height:6px; flex:none;
+    border:solid currentColor; border-width:0 1.5px 1.5px 0; transform:translateY(-2px) rotate(45deg); }
+  .saved-data-switcher[open] > summary, .saved-data-switcher > summary:hover { background:var(--surface-subtle); }
+  .saved-data-switcher-panel { position:absolute; z-index:5; inset-block-start:calc(100% + 6px); inset-inline-start:0;
+    box-sizing:border-box; width:clamp(240px, 26vw, 360px); max-height:min(360px, 50vh); overflow:auto;
+    overscroll-behavior:contain; padding:6px; border:1px solid var(--border); border-radius:var(--wc-radius, 9px);
+    background:var(--surface); box-shadow:var(--wc-shadow-panel, 0 8px 28px rgb(15 23 42 / 16%)); }
+  .saved-data-switcher-panel ul, .saved-data-switcher-panel li { margin:0; }
+  .saved-data-switcher-panel p { margin:8px 10px 4px; color:var(--muted); font-size:12px; }
+  .saved-data-switcher-panel li a { display:grid; align-content:center; gap:2px; min-width:0; min-height:38px;
+    box-sizing:border-box; padding:6px 10px; border-radius:6px; color:var(--fg); font-size:13px; text-decoration:none; }
+  .saved-data-switcher-panel a small { color:var(--muted); }
+  .saved-data-switcher-panel a:focus-visible { outline-offset:-2px; }
+  .saved-data-switcher-panel a:hover { background:var(--surface-subtle); }
+  .saved-data-switcher-panel a[aria-current] { background:var(--accent-soft, var(--surface-subtle)); color:var(--accent); font-weight:650; }
   @media (max-width:640px) { .saved-data-header-actions { justify-content:flex-start; } }
   @media (max-width:600px) { .saved-data-tools li a { flex-basis:100%; } }
 `;
@@ -194,6 +197,7 @@ export const bootstrapSavedDataRoute = (opts: SavedDataRouteOptions) => {
   frame.appendChild(content);
   opts.root.appendChild(frame);
   let child: DataRoute | null = null;
+  let viewSearchReturn = opts.viewSearchReturn;
   let disposed = false;
   let views: SavedDataView[] = [];
   /** D-300 — views a pack update replaced that the owner had set up. */
@@ -248,6 +252,8 @@ export const bootstrapSavedDataRoute = (opts: SavedDataRouteOptions) => {
   const canFocusCompletion = (): boolean => doc.activeElement == null
     || doc.activeElement === doc.body || doc.activeElement === opts.root || tools.contains?.(doc.activeElement) === true;
   const chrome = opts.chrome ?? 'data';
+  const switcherBreakpoint = chrome === 'views' && opts.savedViewId !== undefined
+    ? doc.defaultView?.matchMedia?.(VIEW_SWITCHER_MEDIA) : undefined;
   /** ⛔ THE SAVE CONTROL FOLLOWS THE CHILD, NOT THE CHROME. It is hidden only
    *  when there is no data surface mounted to save — bare `#views`, which is a
    *  list and nothing else. Keying it on `selectedView === null` instead looked
@@ -258,6 +264,7 @@ export const bootstrapSavedDataRoute = (opts: SavedDataRouteOptions) => {
   const render = (returnTo?: ViewFocus): void => {
     if (disposed) return;
     const active = doc.activeElement as HTMLInputElement | null;
+    const searchBackFocused = active?.hasAttribute('data-search-saved-view-return') === true;
     const nameFocused = active?.hasAttribute('data-view-name') === true;
     const selection = nameFocused ? [active.selectionStart, active.selectionEnd] : null;
     const action = active?.getAttribute('data-view-action');
@@ -265,10 +272,16 @@ export const bootstrapSavedDataRoute = (opts: SavedDataRouteOptions) => {
     const priorOrder = viewOrder();
     const formFocused = active?.closest?.('[data-view-editor], .saved-data-confirm') != null;
     const listFocused = active != null && active === tools.querySelector('details > summary');
+    const previousSwitcher = tools.querySelector<HTMLDetailsElement>(VIEW_SWITCHER);
+    const switcherScroll = previousSwitcher?.querySelector('[data-view-switcher-panel]')?.scrollTop ?? 0;
+    const desktopView = switcherBreakpoint?.matches === true ? selectedView : null;
     const definition = child?.currentView() ?? null;
     const canSave = !busy && definition !== null;
     const modified = selectedView !== null && lastDefinition !== null
       && !sameSavedDataViewDefinition(lastDefinition, selectedView.definition);
+    const modifiedLabel = modified ? '<span class="saved-data-modified" data-view-modified>Modified</span>' : '';
+    const updateButton = `<button type="button"${desktopView ? ' class="wc-button"' : ''} data-view-action="update" ${canSave && modified && conflictView === null ? '' : 'disabled'}>Update view</button>`;
+    const supportsAlerts = selectedView !== null && savedDataViewSupportsAlerts(selectedView.definition);
     // D-289 — two groups, because they answer to different people: the owner
     // owns their own views outright, and a pack owns its views' name and
     // settings. Mixing them would put Rename/Delete beside rows where those
@@ -277,12 +290,19 @@ export const bootstrapSavedDataRoute = (opts: SavedDataRouteOptions) => {
     const ownViews = views.filter((view) => view.pack === undefined);
     const packViews = views.filter((view) => view.pack !== undefined)
       .sort((a, b) => Number(a.hidden ?? false) - Number(b.hidden ?? false));
-    listOpen = tools.querySelector?.('details')?.open ?? listOpen;
+    listOpen = tools.querySelector<HTMLDetailsElement>(VIEW_LIBRARY)?.open ?? listOpen;
+    const title = `<h1 class="data-title" data-recued-data-route-heading tabindex="-1">${chrome === 'views' ? 'Saved views' : 'Data'}</h1>`;
     const html = `
-      <header class="saved-data-header"><h1 class="data-title" data-recued-data-route-heading tabindex="-1">${chrome === 'views' ? 'Saved views' : 'Data'}</h1>
+      <header class="saved-data-header${desktopView ? ' saved-data-reader-header' : ''}">${desktopView === null ? title : `
+        <div class="saved-data-reader-title">
+          ${title}${renderViewSwitcher(desktopView, ownViews, packViews, previousSwitcher?.open === true)}
+        </div>`}
+      ${viewSearchReturn ? `<a class="rx-btn rx-btn-outline" data-search-saved-view-return href="${e(viewSearchReturn.hash)}">Back to search</a>` : ''}
         <div class="saved-data-header-actions">
+          ${desktopView ? modifiedLabel + updateButton : ''}
           ${(child === null && !createAttempt) || (createAttempt && edit?.kind === 'create') ? '' : `<button type="button" class="wc-button" data-view-action="new" ${!busy && (createAttempt || canSave) ? '' : 'disabled'}>${createAttempt ? 'Check saved view' : selectedView === null ? 'Save current view' : 'Save as new'}</button>`}
-          ${chrome === 'views' ? `<button type="button" class="wc-button" data-view-action="refresh" aria-label="Refresh saved views" ${listing || busy ? 'aria-disabled="true"' : ''} ${listing ? 'aria-busy="true"' : ''}>${listing ? 'Refreshing…' : 'Refresh saved views'}</button>` : ''}
+          ${chrome === 'views' ? `<button type="button" class="wc-button" data-view-action="refresh" aria-label="Refresh saved views" ${listing || busy ? 'aria-disabled="true"' : ''} ${listing ? 'aria-busy="true"' : ''}>${listing ? 'Refreshing…' : desktopView ? 'Refresh' : 'Refresh saved views'}</button>` : ''}
+          ${desktopView ? `<a class="saved-data-views-link" data-view-action="manage" href="${e(serializeShellRoute('views'))}">Manage views</a>` : ''}
           ${chrome === 'data' ? `<a class="saved-data-views-link" href="${e(serializeShellRoute('views'))}">Saved views</a>` : ''}
         </div></header>
       ${chrome !== 'views' ? '' : `${listing ? '<p role="status">Loading saved views…</p>' : ''}
@@ -298,7 +318,7 @@ export const bootstrapSavedDataRoute = (opts: SavedDataRouteOptions) => {
           <button type="button" data-view-action="retired-dismiss" data-view-id="${e(view.id)}" ${busy ? 'disabled' : ''}>Dismiss</button>
         </div>`).join('')}
       </section>` : ''}
-      ${chrome === 'data' ? '' : `<details ${listOpen ? 'open' : ''}><summary>Saved views${views.length ? ` (${views.length})` : ''}</summary>
+      ${chrome === 'data' || desktopView !== null ? '' : `<details data-view-library ${listOpen ? 'open' : ''}><summary>Saved views${views.length ? ` (${views.length})` : ''}</summary>
         <p>Open a view to reload its current records on this server.</p>
         ${views.some(view => savedDataViewSupportsAlerts(view.definition)) ? '<p>Alerts notify you when additional tasks or records match the saved filters. Checks run every minute while this server runs. Enabling or resuming starts from the current matches.</p>' : ''}
         <ul>${ownViews.map((view) => `<li>
@@ -319,11 +339,11 @@ export const bootstrapSavedDataRoute = (opts: SavedDataRouteOptions) => {
           ${view.hidden ? '' : alertControls(view, busy, pendingAlertId)}
         </li>`).join('')}</ul>`}
       </details>`}
-      ${selectedView === null ? '' : `<div class="saved-data-opened"><p>Opened from <a href="${e(savedDataViewHref(selectedView.id))}" data-view-action="open" data-view-id="${e(selectedView.id)}">${e(selectedView.name)}</a></p>
-        ${modified ? '<span class="saved-data-modified" data-view-modified>Modified</span>' : ''}
-        <button type="button" data-view-action="update" ${canSave && modified && conflictView === null ? '' : 'disabled'}>Update view</button>
+      ${selectedView === null || (desktopView !== null && !supportsAlerts) ? '' : `<div class="saved-data-opened">${desktopView ? '' : `
+        <p>Opened from <a href="${e(savedDataViewHref(selectedView.id))}" data-view-action="open" data-view-id="${e(selectedView.id)}">${e(selectedView.name)}</a></p>
+        ${modifiedLabel}${updateButton}`}
         ${alertControls(selectedView, busy || conflictView !== null, pendingAlertId, true)}
-        ${savedDataViewSupportsAlerts(selectedView.definition) ? `<p class="saved-data-alert-help">${modified
+        ${supportsAlerts ? `<p class="saved-data-alert-help">${modified
           ? 'Your unsaved filter changes are not monitored. Update view to use them for alerts.'
           : 'Checks run every minute while this server is running. Turning alerts on or resuming starts from the current matches.'}</p>` : ''}</div>`}
       ${conflictView === null ? '' : `<div class="saved-data-conflict" role="group" aria-label="Review saved view changes">
@@ -370,12 +390,23 @@ export const bootstrapSavedDataRoute = (opts: SavedDataRouteOptions) => {
       // messages when a save changes phase.
       const label = editorName.closest('label');
       const nextLabel = nextEditor?.querySelector('[data-view-name]')?.closest('label');
-      for (const node of Array.from(editor.childNodes)) if (node !== label) editor.removeChild(node);
-      for (const node of Array.from(nextEditor?.childNodes ?? [])) if (node !== nextLabel) editor.appendChild(node);
+      const controls = Array.from(editor.childNodes).filter(node => node !== label);
+      const nextControls = Array.from(nextEditor?.childNodes ?? []).filter(node => node !== nextLabel);
+      const markup = (nodes: ChildNode[]): string => nodes.map(node => node.nodeType === 1
+        ? (node as Element).outerHTML : node.textContent ?? '').join('');
+      // A Data read can complete between pointer-down and pointer-up. Keep
+      // unchanged buttons connected so that gesture still delivers its click.
+      if (markup(controls) !== markup(nextControls)) {
+        for (const node of controls) editor.removeChild(node);
+        for (const node of nextControls) editor.appendChild(node);
+      }
     } else tools.innerHTML = html;
+    const switcherPanel = tools.querySelector<HTMLElement>('[data-view-switcher-panel]');
+    if (switcherPanel && switcherScroll > 0) switcherPanel.scrollTop = switcherScroll;
     if (returnTo) restoreViewFocus(returnTo, true);
-    else if (listFocused) tools.querySelector<HTMLElement>('details > summary')?.focus({ preventScroll: true });
-    else if (nameFocused) {
+    else if (listFocused || (desktopView === null && previousSwitcher?.contains(active))) {
+      tools.querySelector<HTMLElement>('details > summary')?.focus({ preventScroll: true });
+    } else if (nameFocused) {
       const input = tools.querySelector<HTMLInputElement>('[data-view-name]');
       if (input !== active) {
         input?.focus({ preventScroll: true });
@@ -388,7 +419,9 @@ export const bootstrapSavedDataRoute = (opts: SavedDataRouteOptions) => {
       if (target) target.focus({ preventScroll: true });
       else if (formFocused && formOrigin) restoreViewFocus(formOrigin, false);
       else if (id != null) restoreViewFocus({ action, id, order: priorOrder }, false);
+      else if (action === 'manage') tools.querySelector<HTMLElement>('details > summary')?.focus({ preventScroll: true });
     }
+    if (searchBackFocused) tools.querySelector<HTMLElement>('[data-search-saved-view-return]')?.focus({ preventScroll: true });
     if (edit === null && deleting === null) formOrigin = null;
   };
 
@@ -443,6 +476,10 @@ export const bootstrapSavedDataRoute = (opts: SavedDataRouteOptions) => {
     selectedView = view ?? null;
     conflictView = null; lastDefinition = null;
     const options: BootstrapDataRouteOptions = { ...opts, root: content, hideHeading: true,
+      onHashSync: hash => {
+        if (viewSearchReturn && hash !== viewSearchReturn.destinationHash) { viewSearchReturn = undefined; render(); }
+        opts.onHashSync?.(hash);
+      },
       onViewChange: (definition) => {
         if (definition !== null) lastDefinition = definition;
         opts.onViewChange?.(definition);
@@ -483,6 +520,9 @@ export const bootstrapSavedDataRoute = (opts: SavedDataRouteOptions) => {
       const { view } = await opts.savedViews.get({ id });
       if (disposed || seq !== loadSeq) return;
       if (view === null) { showLoadError('This server does not have that saved view any more.'); return; }
+      if (viewSearchReturn && !sameSavedViewSearchSelection(viewSearchReturn.selection, readSavedViewSearchRow(view))) {
+        showLoadError('This saved view changed or is no longer available. Return to search and refresh saved views before opening it.'); return;
+      }
       const definition = parseSavedDataViewDefinition(view.definition);
       if (view.id !== id || definition === null) { showLoadError('This saved view has settings this version of Recued cannot open.'); return; }
       // ⛔ A PRE-D-290 "Today" VIEW MEANT "take me to Today", and Today is its
@@ -493,7 +533,7 @@ export const bootstrapSavedDataRoute = (opts: SavedDataRouteOptions) => {
       if (definition.tab === 'today') {
         const target = serializeShellRoute('today');
         const view_ = doc.defaultView;
-        if (view_ !== null && view_ !== undefined) view_.location.hash = target;
+        if (view_ !== null && view_ !== undefined) viewSearchReturn ? view_.location.replace(target) : view_.location.hash = target;
         return;
       }
       // ⛔ The same, for a view of the removed "Webhook deliveries" tab
@@ -502,7 +542,7 @@ export const bootstrapSavedDataRoute = (opts: SavedDataRouteOptions) => {
       if (definition.tab === 'webhook') {
         const target = serializeShellRoute('connections', 'webhooks');
         const view_ = doc.defaultView;
-        if (view_ !== null && view_ !== undefined) view_.location.hash = target;
+        if (view_ !== null && view_ !== undefined) viewSearchReturn ? view_.location.replace(target) : view_.location.hash = target;
         return;
       }
       await mountData({ ...view, definition }).whenLoaded();
@@ -756,6 +796,14 @@ export const bootstrapSavedDataRoute = (opts: SavedDataRouteOptions) => {
       }
     }
   };
+  const closeSwitcher = (switcher: HTMLDetailsElement, restoreFocus: boolean): void => {
+    switcher.open = false;
+    if (restoreFocus) switcher.querySelector('summary')?.focus({ preventScroll: true });
+  };
+  const dismissSwitcherOutside = (event: Event): void => {
+    const switcher = tools.querySelector<HTMLDetailsElement>(VIEW_SWITCHER);
+    if (switcher?.open && !switcher.contains(event.target as Node)) closeSwitcher(switcher, false);
+  };
   const click = (event: Event): void => {
     const target = event.target as HTMLElement | null;
     const control = target?.closest<HTMLElement>('[data-view-action]');
@@ -763,10 +811,18 @@ export const bootstrapSavedDataRoute = (opts: SavedDataRouteOptions) => {
     const action = control.getAttribute('data-view-action');
     if (action === 'save') return; // native form submission also supports Enter
     if (busy || action === 'refresh' && listing) { event.preventDefault(); return; }
+    if (action === 'manage') return;
     if (action === 'open') {
+      const switcher = control.closest<HTMLDetailsElement>(VIEW_SWITCHER);
+      const sameAddress = doc.defaultView?.location.hash === control.getAttribute('href');
+      if (switcher) {
+        const { altKey, ctrlKey, metaKey, shiftKey } = event as MouseEvent;
+        if (altKey || ctrlKey || metaKey || shiftKey) return;
+        closeSwitcher(switcher, switcher.contains(doc.activeElement));
+      }
       if (child !== null && (child.hasInFlightWork() || child.currentView() === null)) {
         event.preventDefault(); actionError = 'Finish or close what you are doing before you open a saved view.'; render();
-      } else if (doc.defaultView?.location.hash === control.getAttribute('href')) {
+      } else if (sameAddress) {
         event.preventDefault(); pending = loadView();
       }
       return;
@@ -817,13 +873,24 @@ export const bootstrapSavedDataRoute = (opts: SavedDataRouteOptions) => {
   };
   const submit = (event: Event): void => { event.preventDefault(); pending = save(); };
   const keydown = (event: KeyboardEvent): void => {
-    if (event.key !== 'Escape' || busy || (edit === null && deleting === null)) return;
+    if (event.key !== 'Escape') return;
+    const switcher = tools.querySelector<HTMLDetailsElement>(VIEW_SWITCHER);
+    if (switcher?.open) {
+      event.preventDefault(); event.stopPropagation(); closeSwitcher(switcher, true); return;
+    }
+    if (busy || (edit === null && deleting === null)) return;
     event.preventDefault(); const origin = formOrigin; edit = null; deleting = null; actionError = null;
     render(origin ?? undefined);
   };
   const retry = (event: Event): void => {
     if ((event.target as HTMLElement | null)?.hasAttribute('data-view-load-retry')) pending = loadView();
   };
+  const onSwitcherBreakpointChange = (): void => render();
+  switcherBreakpoint?.addEventListener?.('change', onSwitcherBreakpointChange);
+  if (switcherBreakpoint) {
+    doc.addEventListener('pointerdown', dismissSwitcherOutside);
+    doc.addEventListener('focusin', dismissSwitcherOutside);
+  }
   tools.addEventListener('click', click);
   tools.addEventListener('input', input);
   tools.addEventListener('submit', submit);
@@ -855,6 +922,11 @@ export const bootstrapSavedDataRoute = (opts: SavedDataRouteOptions) => {
     dispose: () => {
       disposed = true; listSeq += 1; loadSeq += 1;
       child?.dispose();
+      switcherBreakpoint?.removeEventListener?.('change', onSwitcherBreakpointChange);
+      if (switcherBreakpoint) {
+        doc.removeEventListener('pointerdown', dismissSwitcherOutside);
+        doc.removeEventListener('focusin', dismissSwitcherOutside);
+      }
       tools.removeEventListener('click', click); tools.removeEventListener('input', input);
       tools.removeEventListener('submit', submit); content.removeEventListener('click', retry);
       tools.removeEventListener('keydown', keydown);

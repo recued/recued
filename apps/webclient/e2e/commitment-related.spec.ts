@@ -21,6 +21,83 @@ const preview = async (page: Page, key: string, kind: 'Contact' | 'Project' | 'T
   await expect(region.locator('dl')).toBeVisible(); return region;
 };
 
+test('the desktop commitment reader restores the filtered list, evidence and focus after a related visit', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 900 });
+  const f = await boot(page, fixture => fixture.seedProjects(18), '#data/commitment');
+  try {
+    const selected = page.locator('button[data-entity-id="promise-one"]');
+    const other = page.locator('button[data-entity-id="promise-two"]');
+    const source = page.getByRole('combobox', { name: 'Source', exact: true });
+    const direction = page.getByRole('combobox', { name: 'Who owes', exact: true });
+    const status = page.getByRole('combobox', { name: 'Commitment status', exact: true });
+    const search = page.getByRole('searchbox', { name: 'Search commitments', exact: true });
+    await expect(other).toBeVisible();
+    await source.selectOption('recued.commitment');
+    await direction.selectOption('outbound');
+    await status.selectOption('open');
+    await search.fill('revised proposal');
+    await expect(other).toHaveCount(0);
+    await selected.click();
+    const pane = page.getByRole('region', { name: 'Send the revised proposal', exact: true });
+    await expect(pane).toBeVisible();
+    await expect(selected).toHaveAttribute('aria-current', 'true');
+    const listBox = (await selected.boundingBox())!;
+    expect(listBox.x + listBox.width).toBeLessThan((await pane.boundingBox())!.x);
+    await expect(pane.locator('.work-entity-commitment-meta')).toContainText('Riley <team>');
+    const evidence = pane.locator('[data-commitment-section="evidence"]');
+    await evidence.locator('summary').click();
+    await expand(page);
+    const key = 'project:paged-14';
+    await preview(page, key, 'Project');
+    const open = button(page, key);
+    await open.scrollIntoViewIfNeeded(); await open.focus();
+    const content = pane.locator('.work-entity-commitment-content');
+    const top = await content.evaluate(el => el.scrollTop);
+    expect(top).toBeGreaterThan(0);
+    await expect(pane.getByRole('button', { name: 'Mark fulfilled', exact: true })).toBeInViewport();
+    await open.press('Enter');
+    await expect(page.locator('[data-project-overview="paged-14"]')).toBeVisible();
+    await page.getByRole('button', { name: 'Back to commitment', exact: true }).click();
+    await expect(pane).toBeVisible();
+    await expect(open).toBeFocused();
+    await expect(evidence).toHaveAttribute('open', '');
+    await expect(row(page, key).getByRole('region')).toBeVisible();
+    await expect(search).toHaveValue('revised proposal');
+    await expect(source).toHaveValue('recued.commitment');
+    await expect(direction).toHaveValue('outbound');
+    await expect(status).toHaveValue('open');
+    await expect(selected).toHaveAttribute('aria-current', 'true');
+    await expect.poll(async () => Math.abs(await content.evaluate(el => el.scrollTop) - top)).toBeLessThan(3);
+    expect(f.writes).toEqual([]);
+  } finally { f.dispose(); }
+});
+
+test('the desktop commitment list lets a newer selection supersede a delayed read', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 900 });
+  const f = await boot(page, undefined, '#data/commitment');
+  try {
+    const first = page.locator('button[data-entity-id="promise-one"]');
+    const selected = page.locator('button[data-entity-id="promise-two"]');
+    f.hold('work_entity.get', 'promise-one');
+    await first.click(); await expect.poll(f.pending).toBe(true);
+    await selected.click();
+    const pane = page.getByRole('region', { name: 'Another promise', exact: true });
+    await expect(pane).toBeVisible();
+    f.release();
+    await page.waitForFunction(() => (window as unknown as { __commitmentRelatedSettled: Record<string, number> }).__commitmentRelatedSettled['work_entity.get:promise-one'] > 0);
+    await expect(pane).toBeVisible();
+    await expect(selected).toHaveAttribute('aria-current', 'true');
+    f.fail('work_entity.get', 'promise-one');
+    await first.click();
+    await expect(page.getByRole('alert')).toContainText('This read was interrupted.');
+    await expect(pane.getByRole('button', { name: 'Draft follow-up', exact: true })).toBeEnabled();
+    await expect(selected).toHaveAttribute('aria-current', 'true');
+    await page.goBack();
+    await expect(pane).toHaveCount(0);
+    await expect(selected).toBeFocused();
+  } finally { f.dispose(); }
+});
+
 test('loads linked names lazily and previews saved contact, task and project details without changing the promise', async ({ page }, info) => {
   await page.setViewportSize({ width: 390, height: 844 }); const f = await boot(page);
   try {

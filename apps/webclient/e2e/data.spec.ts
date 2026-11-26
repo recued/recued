@@ -13,6 +13,7 @@ import { installProjectOverviewFixture } from './helpers/project-overview-fixtur
 import { installCommitmentWorkspaceFixture } from './helpers/commitment-workspace-fixture.js';
 import { installDocumentSearchFixture } from './helpers/document-content-search-fixture.js';
 import { expect, test, type Page } from '@playwright/test';
+import { openRecordsManagement } from './helpers/records.js';
 import { installSearchEverywhereFixture } from './helpers/search-everywhere-fixture.js';
 import type { ContactRecord, MailFactRow, MailFactRowsCursor, MailFactRowsQuery, MailFactSenderDismissal, MailFactSendersResult, ReminderView, WorkEntity } from '@recued/contracts';
 import {
@@ -264,6 +265,46 @@ const openMailFactsPagingFixture = async (
     await host.getByRole('button', { name: 'Load more', exact: true }).click();
   }
   await expect(host.getByRole('alert')).toContainText('Fixture page interrupted.');
+};
+
+const openMailFactsWorkspaceFixture = async (page: Page, destination: 'email' | 'run'): Promise<void> => {
+  await page.addInitScript(() => {
+    const rows: MailFactRow[] = Array.from({ length: 34 }, (_, index) => {
+      const id = `shipment-${index + 1}`;
+      const at = Date.UTC(2026, 8, 20, 10) - index * 3_600_000;
+      const email = { slug: 'work', record_id: index === 26 ? 'mail-1' : `mail:${id}` };
+      const subject = index === 26 ? 'Quarterly planning' : `Parcel ${index + 1}`;
+      const variables = { carrier: 'West Freight', tracking_number: `1Z-${id}`, state: 'in_transit' };
+      return {
+        fact: {
+          fact_id: id, type: 'shipment', template_id: null, email, email_at: at, position: 0, identity_keys: [],
+          thing_id: id, variables, passes: { tracking_number: 'standard' }, data: { parcel: id },
+          missing: [], refused: [], complete: true, source_hash: id, revision: 1, created_at: at,
+        },
+        email: { ...email, from: 'lead@example.com', subject, at },
+        thing: {
+          thing_id: id, type: 'shipment', identity_keys: [], variables, passes: {}, variable_email_at: {},
+          last_email_at: at, missing: [], complete: true, created_at: at, updated_at: at,
+        },
+        of_email: { index: 1, count: 1 },
+        runs: index === 26 ? [{
+          trigger_id: 'shipment-review', recipe_id: 'calendar/schedule-review', recipe_name: 'Schedule customer review',
+          run_id: 'run-verify', outcome: 'completed', status: 'succeeded', at,
+        }] : [],
+      };
+    });
+    const next = rows[19]!.fact;
+    Object.assign(window, { __connectionsFixture: async (method: string, query: MailFactRowsQuery) => {
+      if (method === 'mail_fact.template.list') return { result: { templates: [] } };
+      if (method === 'mail_fact.type.list') return { result: { types: [] } };
+      if (method !== 'mail_fact.facts.list') return undefined;
+      if (query.before !== undefined) return { result: { rows: rows.slice(20) } };
+      return { result: { rows: rows.slice(0, 20), next_cursor: { ...next.email, email_at: next.email_at } } };
+    } });
+  });
+  const fixture = destination === 'email' ? 'connection=source-answer' : 'journey=verification';
+  await page.goto(`${HARNESS_URL}?${fixture}#data/mail_fact/facts`);
+  await page.waitForFunction(() => window.__app?.ready === true);
 };
 
 const retryMailFactsPage = async (page: Page): Promise<void> => {
@@ -605,7 +646,7 @@ test.describe('Standalone Notes reader', () => {
     await discard.getByRole('button', { name: 'Discard changes', exact: true }).click();
     await expect(reader(page).getByRole('heading', { name: 'Note', exact: true })).toBeVisible();
     expect(await reader(page).locator('[data-note-body]').textContent()).toBe(changed); expect(await writes(page)).toHaveLength(1);
-    await reader(page).getByRole('button', { name: 'Back to notes', exact: true }).click();
+    await reader(page).getByRole('button', { name: 'Close', exact: true }).click();
     await expect(page.locator('[data-entity-id="editable-note"] .work-entity-list-row-primary')).toContainText('revised');
   });
 
@@ -640,7 +681,7 @@ test.describe('Standalone Notes reader', () => {
     await reader(page).getByRole('button', { name: 'Edit', exact: true }).click();
     await expect(reader(page).getByRole('alert')).toContainText('cannot be edited now'); await expect(editor(page)).toHaveCount(0);
     expect(await writes(page)).toEqual([]);
-    await reader(page).getByRole('button', { name: 'Back to notes', exact: true }).click();
+    await reader(page).getByRole('button', { name: 'Close', exact: true }).click();
     await page.evaluate(() => { delete document.documentElement.dataset.notesReadonly; }); await open(page, 'confirmed-note');
     await reader(page).getByRole('button', { name: 'Edit', exact: true }).click();
     await editor(page).getByLabel('Note text').fill('Keep this draft');
@@ -754,7 +795,7 @@ test.describe('Standalone Notes reader', () => {
     await text.fill(`needle added\n\n${body}`); await editor(page).getByRole('button', { name: 'Save', exact: true }).click();
     await expect(view).toBeVisible(); await expect(field).toHaveValue('needle'); await expect(status).toHaveText('2 of 3 matches.');
     expect((await writes(page)).map(write => write.args)).toEqual([{ kind: 'note', id: 'find-edit', body: `needle added\n\n${body}` }]);
-    await view.getByRole('button', { name: 'Back to notes', exact: true }).click(); await open(page, 'find-other');
+    await view.getByRole('button', { name: 'Close', exact: true }).click(); await open(page, 'find-other');
     await expect(field).toHaveCount(0); await view.getByRole('button', { name: 'Find in note', exact: true }).click();
     await expect(field).toHaveValue(''); await expect(status).toHaveText('Type to find text.');
   });
@@ -876,6 +917,7 @@ test.describe('Standalone Notes reader', () => {
   });
 
   test('bounds dense-note highlights and leaves composing key events to the input', async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 720 });
     await boot(page, [note('find-dense', 'Dense note', 'needle '.repeat(1001))]); await open(page, 'find-dense');
     const view = reader(page); await view.getByRole('button', { name: 'Find in note', exact: true }).click();
     const field = view.getByRole('searchbox', { name: 'Find in this note', exact: true });
@@ -1088,6 +1130,80 @@ test('Data collection tabs form one arrow-key keyboard stop', async ({ page }) =
   await page.setViewportSize({ width: 1280, height: 900 });
   await expect(tablist).toHaveAttribute('aria-orientation', 'vertical');
   await expect(tasks).toBeFocused();
+});
+
+test('Data makes room for the active collection and keeps navigation in the header when the desktop rail is collapsed', async ({ page }) => {
+  await page.setViewportSize({ width: 1536, height: 900 });
+  await page.goto(`${HARNESS_URL}?data=contacts-paged&settle_reads=1#data/contact`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.getByRole('button', { name: 'Open navigation', exact: true }).click();
+  await page.getByRole('button', { name: 'Pin navigation', exact: true }).click();
+
+  const rail = page.getByRole('tablist', { name: 'Data collections' });
+  const collapse = page.getByRole('button', { name: 'Collapse collections', exact: true });
+  const show = page.getByRole('button', { name: 'Show collections', exact: true });
+  const collections = page.getByRole('combobox', { name: 'Collection', exact: true });
+  const contacts = page.getByRole('tabpanel', { name: 'Contacts', exact: true });
+  const query = contacts.getByRole('searchbox', { name: 'Search contacts' });
+  await query.fill('example.test');
+  await expect(contacts.locator(`[${DATA_CONTACT_ROW}]`)).toHaveCount(3);
+  await expect(rail).toBeVisible();
+  await expect(collections).toBeHidden();
+  const expandedWidth = (await contacts.boundingBox())!.width;
+  const searchField = await query.elementHandle();
+  await collapse.press('Enter');
+
+  await expect(show).toBeFocused();
+  await expect(rail).toBeHidden();
+  await expect(collections).toHaveValue('contact');
+  await expect(query).toHaveValue('example.test');
+  expect(await searchField!.evaluate(node => node.isConnected)).toBe(true);
+  expect((await contacts.boundingBox())!.width).toBeGreaterThan(expandedWidth);
+  await page.keyboard.press('Tab');
+  await expect(collections).toBeFocused();
+  await collections.selectOption('task');
+  await expect(page).toHaveURL(/#data\/task$/u);
+  await expect(page.getByRole('tabpanel', { name: 'Tasks', exact: true })).toBeVisible();
+  await expect(collections).toBeFocused();
+
+  await show.press('Enter');
+  await expect(collapse).toBeFocused();
+  await expect(collections).toBeHidden();
+  const tasks = rail.getByRole('tab', { name: 'Tasks', exact: true });
+  await expect(tasks).toHaveAttribute('aria-selected', 'true');
+  await page.keyboard.press('Tab');
+  await expect(tasks).toBeFocused();
+});
+
+test('Data keeps the desktop collection choice through resize and reload, with focus on the visible navigation', async ({ page }) => {
+  await page.setViewportSize({ width: 960, height: 900 });
+  await page.goto(`${HARNESS_URL}?data=contacts&settle_reads=1#data/contact`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.getByRole('button', { name: 'Collapse collections', exact: true }).press('Enter');
+  const show = page.getByRole('button', { name: 'Show collections', exact: true });
+  const collections = page.getByRole('combobox', { name: 'Collection', exact: true });
+  const rail = page.getByRole('tablist', { name: 'Data collections' });
+  const notes = rail.getByRole('tab', { name: 'Notes', exact: true });
+  await collections.focus();
+  await collections.selectOption('note');
+  await expect(collections).toBeFocused();
+
+  await page.setViewportSize({ width: 959, height: 900 });
+  await expect(show).toBeHidden();
+  await expect(rail).toHaveAttribute('aria-orientation', 'horizontal');
+  await expect(notes).toBeFocused();
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(collections).toBeFocused();
+  await expect(collections).toHaveValue('note');
+  await expect(rail).toBeHidden();
+
+  await page.setViewportSize({ width: 960, height: 900 });
+  await expect(show).toBeVisible();
+  await expect(collections).toBeFocused();
+  await page.reload();
+  await expect(show).toBeVisible();
+  await expect(collections).toHaveValue('note');
+  await expect(rail).toBeHidden();
 });
 
 test('Data exposes full mobile targets for its persistent navigation', async ({ page }) => {
@@ -1556,7 +1672,7 @@ test.describe('Contact quick actions', () => {
     }, { primary, noEmail });
     await page.goto(`${HARNESS_URL}?data=contacts&settle_reads=1#data/contact`);
     await page.waitForFunction(() => window.__app?.ready === true);
-    await page.locator(`[${DATA_CONTACT_ROW}="${primary.email}"]`).click();
+    await page.locator(`[${DATA_CONTACT_ROW}="${primary.email}"] .data-contact-row-button`).click();
     await expect(page.locator(`[${DATA_CONTACT_DETAIL_HEADING}]`)).toHaveText(primary.name!);
   };
   const detail = (page: Page) => page.locator('[data-recued-data-contact-detail]');
@@ -1606,7 +1722,7 @@ test.describe('Contact quick actions', () => {
     await expect(otherCopy).toHaveAttribute('aria-disabled', 'true'); await otherCopy.dispatchEvent('click');
     expect(await page.evaluate(() => (window as unknown as QuickWindow).__contactQuick.copies)).toEqual([primary.email, primary.email]);
     await detail(page).getByRole('button', { name: '← Back to contacts', exact: true }).click();
-    await page.locator(`[${DATA_CONTACT_ROW}="${noEmail.email}"]`).click();
+    await page.locator(`[${DATA_CONTACT_ROW}="${noEmail.email}"] .data-contact-row-button`).click();
     await expect(page.locator(`[${DATA_CONTACT_DETAIL_HEADING}]`)).toHaveText('Without email');
     await page.evaluate(async () => {
       (window as unknown as QuickWindow).__contactQuick.release?.();
@@ -1843,7 +1959,7 @@ test('Data moves keyboard focus into the editable Contact field', async ({ page 
   await page.evaluate(() => window.__app.setHash('#data/contact'));
 
   await page.locator(
-    `[${DATA_CONTACT_ROW}="mary@example.test"] button`,
+    `[${DATA_CONTACT_ROW}="mary@example.test"] .data-contact-row-button`,
   ).click();
   const edit = page.getByRole('button', { name: 'Edit', exact: true });
   await edit.focus();
@@ -1892,7 +2008,7 @@ test('Data protects an unfinished contact edit from Cancel', async ({ page }) =>
   await page.evaluate(() => window.__app.setHash('#data/contact'));
 
   await page.locator(
-    `[${DATA_CONTACT_ROW}="mary@example.test"] button`,
+    `[${DATA_CONTACT_ROW}="mary@example.test"] .data-contact-row-button`,
   ).click();
   const edit = page.getByRole('button', { name: 'Edit', exact: true });
   await edit.click();
@@ -1926,7 +2042,7 @@ test('Data does not reopen Contact edit after leaving its detail', async ({ page
   await page.evaluate(() => window.__app.setHash('#data/contact'));
 
   const row = page.locator(
-    `[${DATA_CONTACT_ROW}="mary@example.test"] button`,
+    `[${DATA_CONTACT_ROW}="mary@example.test"] .data-contact-row-button`,
   );
   await row.click();
   await expect(page.locator(`[${DATA_CONTACT_DETAIL_HEADING}]`)).toBeVisible();
@@ -1958,7 +2074,7 @@ test('Data restores failed Contact edit focus without opening a dialog', async (
   await page.evaluate(() => window.__app.setHash('#data/contact'));
 
   await page.locator(
-    `[${DATA_CONTACT_ROW}="mary@example.test"] button`,
+    `[${DATA_CONTACT_ROW}="mary@example.test"] .data-contact-row-button`,
   ).click();
   await expect(page.locator(`[${DATA_CONTACT_DETAIL_HEADING}]`)).toBeVisible();
   const edit = page.getByRole('button', { name: 'Edit', exact: true });
@@ -1986,7 +2102,7 @@ test('Data restores Contact edit focus after a successful save', async ({ page }
   await page.evaluate(() => window.__app.setHash('#data/contact'));
 
   await page.locator(
-    `[${DATA_CONTACT_ROW}="mary@example.test"] button`,
+    `[${DATA_CONTACT_ROW}="mary@example.test"] .data-contact-row-button`,
   ).click();
   const edit = page.getByRole('button', { name: 'Edit', exact: true });
   await edit.click();
@@ -2273,6 +2389,142 @@ test('Data contains long Contact identity text on a narrow phone', async ({ page
   );
 });
 
+test('Data previews contacts beside the desktop roster and opens the full profile on request', async ({ page }) => {
+  await page.setViewportSize({ width: 1536, height: 900 });
+  await page.goto(`${HARNESS_URL}?data=contacts-paged&settle_reads=1#data/contact`);
+
+  const search = page.getByRole('searchbox', { name: 'Search contacts' });
+  const rows = page.locator(`[${DATA_CONTACT_ROW}]`);
+  await expect(rows).toHaveCount(1);
+  await search.fill('example.test');
+  await expect(rows).toHaveCount(3);
+  const john = page.getByRole('button', { name: 'Preview John Chen', exact: true });
+  const mary = page.getByRole('button', { name: 'Preview Mary Rivera', exact: true });
+  const contactGets = await page.evaluate(() => window.__app.rpcCallCount('contact.get'));
+  await john.press('Enter');
+
+  const pane = page.getByRole('complementary', { name: 'Contact preview' });
+  await expect(pane.getByRole('heading', { name: 'John Chen', exact: true })).toBeFocused();
+  await expect(pane.getByText('Wayfinder', { exact: true })).toBeVisible();
+  await expect(pane.getByText('john@example.test', { exact: true })).toBeVisible();
+  await expect(pane.getByText('+1 202-555-0143', { exact: true })).toBeVisible();
+  await expect(john).toHaveAttribute('aria-expanded', 'true');
+  await expect(search).toHaveValue('example.test');
+  await expect(rows).toHaveCount(3);
+  await expect(page).toHaveURL(/#data\/contact$/);
+  const rosterBounds = await rows.first().boundingBox();
+  const paneBounds = await pane.boundingBox();
+  expect(paneBounds!.x).toBeGreaterThan(rosterBounds!.x + rosterBounds!.width);
+
+  await mary.click();
+  await expect(pane.getByRole('heading', { name: 'Mary Rivera', exact: true })).toBeFocused();
+  await expect(john).toHaveAttribute('aria-expanded', 'false');
+  await expect(pane.getByText('john@example.test', { exact: true })).toHaveCount(0);
+  await page.keyboard.press('Escape');
+  await expect(pane).toHaveCount(0);
+  await expect(mary).toHaveAttribute('aria-expanded', 'false');
+  await expect(mary).toBeFocused();
+
+  await mary.press('Space');
+  await pane.getByRole('button', { name: 'Close preview', exact: true }).click();
+  await expect(pane).toHaveCount(0);
+  await expect(mary).toBeFocused();
+  expect(await page.evaluate(() => window.__app.rpcCallCount('contact.get'))).toBe(contactGets);
+
+  await mary.press('Enter');
+  await pane.getByRole('button', { name: 'Open contact', exact: true }).click();
+  const detail = page.locator(`[${DATA_CONTACT_DETAIL_HEADING}]`);
+  await expect(detail).toHaveText('Mary Rivera');
+  await expect(detail).toBeFocused();
+  await expect(page).toHaveURL(/#data\/contact\/mary%40example\.test$/);
+  expect(await page.evaluate(() => window.__app.rpcCallCount('contact.get'))).toBe(contactGets + 1);
+  await page.getByRole('button', { name: '← Back to contacts', exact: true }).press('Enter');
+  await expect(search).toHaveValue('example.test');
+  await expect(rows).toHaveCount(3);
+  await expect(mary).toBeFocused();
+  await expect(pane).toHaveCount(0);
+
+  await mary.press('Enter');
+  await pane.getByRole('button', { name: 'Open contact', exact: true }).press('Enter');
+  await expect(detail).toBeFocused();
+  await page.goBack();
+  await expect(page).toHaveURL(/#data\/contact$/);
+  await expect(search).toHaveValue('example.test');
+  await expect(rows).toHaveCount(3);
+  await expect(mary).toBeFocused();
+  await expect(pane).toHaveCount(0);
+});
+
+test('Data retires the contact preview when the query or desktop breakpoint changes', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.goto(`${HARNESS_URL}?data=contacts-paged&settle_reads=1#data/contact`);
+  const row = page.locator(`[${DATA_CONTACT_ROW}="mary@example.test"]`);
+  const preview = row.getByRole('button', { name: 'Preview Mary Rivera', exact: true });
+  const pane = page.getByRole('complementary', { name: 'Contact preview' });
+  const search = page.getByRole('searchbox', { name: 'Search contacts' });
+
+  await preview.press('Enter');
+  await expect(pane).toBeVisible();
+  await search.fill('Mary');
+  await expect(pane).toHaveCount(0);
+  await expect(search).toHaveValue('Mary');
+  await expect(search).toBeFocused();
+
+  await preview.press('Enter');
+  await expect(pane.getByRole('heading', { name: 'Mary Rivera', exact: true })).toBeFocused();
+  await page.setViewportSize({ width: 1279, height: 900 });
+  await expect(pane).toHaveCount(0);
+  await expect(preview).toHaveCount(0);
+  const openRow = row.locator('.data-contact-row-button');
+  await expect(openRow).toBeFocused();
+  await expect(search).toHaveValue('Mary');
+
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await expect(preview).toHaveAttribute('aria-expanded', 'false');
+  await expect(pane).toHaveCount(0);
+  await expect(openRow).toBeFocused();
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(preview).toHaveCount(0);
+  await openRow.press('Enter');
+  await expect(page.locator(`[${DATA_CONTACT_DETAIL_HEADING}]`)).toHaveText('Mary Rivera');
+});
+
+test('Data keeps a scrolled contact roster in place on a short desktop viewport', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 500 });
+  await page.addInitScript(() => {
+    Object.assign(window, { __connectionsFixture: (method: string) => {
+      if (method !== 'contact.search.local') return;
+      const contacts: ContactRecord[] = Array.from({ length: 40 }, (_, index) => {
+        const email = `person-${index}@example.test`;
+        return {
+          _id: email, _collection: 'contact', email, name: `Roster Person ${index}`, company: 'Directory',
+          first_seen: 1, last_interaction: 1, interaction_count: index,
+          source: 'manual', created_at: 1, updated_at: 1,
+        };
+      });
+      return { result: { contacts, total: contacts.length, rollups: {} } };
+    } });
+  });
+  await page.goto(`${HARNESS_URL}?data=contacts-paged&settle_reads=1#data/contact`);
+  await page.getByRole('searchbox', { name: 'Search contacts' }).fill('Roster');
+  const row = page.getByRole('button', { name: 'Preview Roster Person 30', exact: true });
+  await row.scrollIntoViewIfNeeded();
+  const scrollTop = () => page.locator('[data-recued-webclient-content]').evaluate(node => node.scrollTop);
+  const before = await scrollTop();
+  expect(before).toBeGreaterThan(0);
+
+  await row.click();
+  const pane = page.getByRole('complementary', { name: 'Contact preview' });
+  await expect(pane.getByRole('heading', { name: 'Roster Person 30', exact: true })).toBeFocused();
+  await expect(pane.getByRole('button', { name: 'Open contact', exact: true })).toBeInViewport();
+  expect(Math.abs(await scrollTop() - before)).toBeLessThan(2);
+
+  await page.keyboard.press('Escape');
+  await expect(row).toBeFocused();
+  await expect(pane).toHaveCount(0);
+  expect(Math.abs(await scrollTop() - before)).toBeLessThan(2);
+});
+
 test('Data hands keyboard focus from a contact row to its loaded detail', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(`${HARNESS_URL}?data=contacts`);
@@ -2280,7 +2532,7 @@ test('Data hands keyboard focus from a contact row to its loaded detail', async 
   await page.evaluate(() => window.__app.setHash('#data/contact'));
 
   const row = page.locator(
-    `[${DATA_CONTACT_ROW}="mary@example.test"] button`,
+    `[${DATA_CONTACT_ROW}="mary@example.test"] .data-contact-row-button`,
   );
   await expect(row).toBeVisible();
   await row.focus();
@@ -2307,7 +2559,7 @@ test('Data renders a prior in-page hash after opening contact detail', async ({ 
   await page.evaluate(() => window.__app.setHash('#data/contact'));
 
   const row = page.locator(
-    `[${DATA_CONTACT_ROW}="mary@example.test"] button`,
+    `[${DATA_CONTACT_ROW}="mary@example.test"] .data-contact-row-button`,
   );
   await row.click();
   const heading = page.locator(`[${DATA_CONTACT_DETAIL_HEADING}]`);
@@ -2329,7 +2581,7 @@ test('Data returns keyboard focus from contact detail to its exact row', async (
   await page.evaluate(() => window.__app.setHash('#data/contact'));
 
   const row = page.locator(
-    `[${DATA_CONTACT_ROW}="mary@example.test"] button`,
+    `[${DATA_CONTACT_ROW}="mary@example.test"] .data-contact-row-button`,
   );
   await row.focus();
   await page.keyboard.press('Enter');
@@ -2384,7 +2636,7 @@ test('Data guards contact pagination and advances focus on the final page', asyn
   });
 
   const second = page.locator(
-    `[${DATA_CONTACT_ROW}="john@example.test"] button`,
+    `[${DATA_CONTACT_ROW}="john@example.test"] .data-contact-row-button`,
   );
   await expect(second).toBeVisible();
   await expect(page.locator(
@@ -2397,7 +2649,7 @@ test('Data guards contact pagination and advances focus on the final page', asyn
 
   await page.keyboard.press('Enter');
   const final = page.locator(
-    `[${DATA_CONTACT_ROW}="zoe@example.test"] button`,
+    `[${DATA_CONTACT_ROW}="zoe@example.test"] .data-contact-row-button`,
   );
   await expect(final).toBeVisible();
   await expect(page.locator(`[${DATA_CONTACT_LOAD_MORE}]`)).toHaveCount(0);
@@ -2747,7 +2999,7 @@ test('Data restores task relationship removal focus to a survivor or Add', async
 
 test('Data keeps task save visible, single-flight, and returns focus to the updated row', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.goto(`${HARNESS_URL}?data=work-entities-paged`);
+  await page.goto(`${HARNESS_URL}?data=work-entities-paged&hold_rpc=work_entity.upsert`);
   await page.waitForFunction(() => window.__app?.ready === true);
   await page.evaluate(() => window.__app.setHash('#data/task'));
 
@@ -2792,6 +3044,7 @@ test('Data keeps task save visible, single-flight, and returns focus to the upda
     () => page.evaluate(() => window.__app.rpcCallCount('work_entity.upsert')),
   ).toBe(writesBefore + 1);
 
+  expect(await page.evaluate(() => window.__app.releaseRpcResponses!('work_entity.upsert'))).toBe(1);
   await expect(dialog).toHaveCount(0);
   await expect(row).toContainText('Task polished');
   await page.locator('.work-entity-task-reader').getByRole('button', { name: 'Back to tasks', exact: true }).click();
@@ -2993,6 +3246,124 @@ test('Data hands form-response focus into detail and returns it to the row', asy
   await expect(row).toBeFocused();
 });
 
+test('Data desktop form responses keep loaded rows and reading position through an edit and browser Back', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 768 });
+  await page.goto(`${HARNESS_URL}?data=form-responses-paged&form_response_workspace=1#data/form_response`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  const rows = page.locator('[data-recued-data-form-response-row]');
+  const selected = rows.filter({ has: page.getByText('visitor-25@example.test', { exact: true }) }).getByRole('button');
+  await expect(rows).toHaveCount(20);
+  await page.getByRole('button', { name: 'Load more', exact: true }).click();
+  await expect(rows).toHaveCount(34);
+  const listReads = await page.evaluate(() => window.__app.rpcCallCount('form_response.list'));
+  await selected.click();
+
+  const pane = page.getByRole('region', { name: 'visitor-25@example.test', exact: true });
+  await expect(pane.getByRole('heading', { name: 'visitor-25@example.test' })).toBeFocused();
+  await expect(selected).toHaveAttribute('aria-current', 'true');
+  await expect(selected).toBeInViewport();
+  const rowBox = (await selected.boundingBox())!, paneBox = (await pane.boundingBox())!;
+  expect(rowBox.x + rowBox.width).toBeLessThan(paneBox.x);
+  await expect(pane.getByRole('heading', { name: 'Answers', exact: true })).toBeInViewport();
+  await expect(pane.locator('.data-response-fields')).toContainText('Project 25');
+  await expect(pane.getByRole('button', { name: 'Run this response', exact: true })).toBeVisible();
+  await expect(pane.getByRole('link', { name: 'Automate this form', exact: true })).toBeVisible();
+  for (const name of ['Export JSON', 'Export CSV']) await expect(page.getByRole('button', { name, exact: true })).toBeVisible();
+  await expect(pane.getByRole('textbox', { name: 'Answers (JSON)', exact: true })).toHaveCount(0);
+
+  await pane.getByRole('button', { name: 'Edit working record', exact: true }).click();
+  const email = pane.getByRole('textbox', { name: 'Email', exact: true });
+  await expect(email).toBeFocused();
+  await email.fill('reviewed-25@example.test');
+  await pane.getByRole('combobox', { name: 'Lifecycle', exact: true }).selectOption('in_review');
+  await pane.getByRole('button', { name: 'Save changes', exact: true }).press('Enter');
+  const updated = rows.filter({ has: page.getByText('reviewed-25@example.test', { exact: true }) }).getByRole('button');
+  await expect(updated).toContainText('in review');
+  await expect(rows).toHaveCount(34);
+  const scrollTop = () => page.locator('[data-recued-webclient-content]').evaluate(node => node.scrollTop);
+  const savedTop = await scrollTop();
+  expect(savedTop).toBeGreaterThan(0);
+  await page.goBack();
+  await expect(page).toHaveURL(/#data\/form_response$/);
+  await expect(page.getByRole('button', { name: 'Close response', exact: true })).toHaveCount(0);
+  await expect(updated).toBeFocused();
+  await expect(rows).toHaveCount(34);
+  await expect.poll(async () => Math.abs(await scrollTop() - savedTop)).toBeLessThan(3);
+  expect(await page.evaluate(() => window.__app.rpcCallCount('form_response.list'))).toBe(listReads);
+
+  await page.evaluate(() => window.__app.setHash('#data/form_response/submission-25'));
+  await expect(page.getByRole('button', { name: '← Back to form responses', exact: true })).toBeVisible();
+  await expect(page.getByRole('textbox', { name: 'Email', exact: true })).toHaveValue('reviewed-25@example.test');
+  await expect(rows).toHaveCount(0);
+});
+
+test('Data desktop form responses ignore stale reads and protect the working draft when switching rows', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 768 });
+  await page.goto(`${HARNESS_URL}?data=form-responses-paged&hold_rpc=form_response.get#data/form_response`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  const first = page.locator('[data-recued-data-form-response-row="submission-0"] button');
+  const second = page.locator('[data-recued-data-form-response-row="submission-1"] button');
+  const reads = () => page.evaluate(() => window.__app.rpcCallCount('form_response.get'));
+  await page.getByRole('button', { name: 'Load more', exact: true }).click();
+  await expect(second).toBeVisible();
+  await first.click();
+  await expect.poll(reads).toBe(1);
+  await second.click();
+  await expect.poll(reads).toBe(2);
+  expect(await page.evaluate(() => window.__app.releaseRpcResponses!('form_response.get', 1))).toBe(1);
+  const pane = page.getByRole('region', { name: 'visitor-1@example.test', exact: true });
+  await expect(pane.getByRole('heading', { name: 'visitor-1@example.test' })).toBeFocused();
+  expect(await page.evaluate(() => window.__app.releaseRpcResponses!('form_response.get'))).toBe(1);
+  await expect(second).toHaveAttribute('aria-current', 'true');
+  await expect(first).not.toHaveAttribute('aria-current');
+
+  await pane.getByRole('button', { name: 'Edit working record', exact: true }).click();
+  const email = pane.getByRole('textbox', { name: 'Email', exact: true });
+  await email.fill('unfinished@example.test');
+  await first.click();
+  const guard = page.getByRole('alertdialog', { name: 'Discard your form-response changes?' });
+  await expect(guard).toBeFocused();
+  expect(await reads()).toBe(2);
+  await guard.getByRole('button', { name: 'Keep editing', exact: true }).click();
+  await expect(email).toHaveValue('unfinished@example.test');
+  await expect(first).toBeFocused();
+
+  await first.press('Enter');
+  await guard.getByRole('button', { name: 'Discard changes', exact: true }).click();
+  await expect.poll(reads).toBe(3);
+  expect(await page.evaluate(() => window.__app.releaseRpcResponses!('form_response.get'))).toBe(1);
+  await expect(page.getByRole('region', { name: 'visitor-0@example.test', exact: true })).toBeVisible();
+  await expect(first).toHaveAttribute('aria-current', 'true');
+  expect(await page.evaluate(() => window.__app.rpcCallCount('form_response.update'))).toBe(0);
+});
+
+test('Data desktop form responses preserve the draft on declined Back and restore the list after discard', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 768 });
+  await page.goto(`${HARNESS_URL}?data=form-responses-paged#data/form_response`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  const row = page.locator('[data-recued-data-form-response-row="submission-1"] button');
+  await page.getByRole('button', { name: 'Load more', exact: true }).click();
+  await row.click();
+  await page.getByRole('button', { name: 'Edit working record', exact: true }).click();
+  const email = page.getByRole('textbox', { name: 'Email', exact: true });
+  await email.fill('back-draft@example.test');
+  const prompts: string[] = [];
+  page.once('dialog', dialog => { prompts.push(dialog.message()); void dialog.dismiss(); });
+  await page.goBack();
+  await expect.poll(() => prompts.length).toBe(1);
+  expect(prompts[0]).toContain('Your form-response changes are not saved');
+  await expect(page).toHaveURL(/#data\/form_response\/submission-1$/);
+  await expect(email).toHaveValue('back-draft@example.test');
+
+  page.once('dialog', dialog => { prompts.push(dialog.message()); void dialog.accept(); });
+  await page.goBack();
+  await expect.poll(() => prompts.length).toBe(2);
+  await expect(page).toHaveURL(/#data\/form_response$/);
+  await expect(row).toBeFocused();
+  await expect(page.locator('[data-recued-data-form-response-row]')).toHaveCount(2);
+  expect(await page.evaluate(() => window.__app.rpcCallCount('form_response.update'))).toBe(0);
+});
+
 test('Data protects unfinished form-response edits from Back', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(`${HARNESS_URL}?data=form-responses-paged`);
@@ -3052,11 +3423,12 @@ test('Data protects unfinished form-response edits from Back', async ({ page }) 
   await expect(row).toBeFocused();
 });
 
-test('Data protects unfinished form-response edits from mobile collection changes', async ({ page }) => {
-  await page.setViewportSize({ width: 390, height: 844 });
+for (const [layout, width] of [['mobile', 390], ['collapsed desktop', 960]] as const) test(`Data protects unfinished form-response edits from ${layout} collection changes`, async ({ page }) => {
+  await page.setViewportSize({ width, height: 844 });
   await page.goto(`${HARNESS_URL}?data=form-responses-paged`);
   await page.waitForFunction(() => window.__app?.ready === true);
   await page.evaluate(() => window.__app.setHash('#data/form_response'));
+  if (layout === 'collapsed desktop') await page.getByRole('button', { name: 'Collapse collections', exact: true }).press('Enter');
   await page.locator(
     '[data-recued-data-form-response-row="submission-0"] button',
   ).click();
@@ -3230,6 +3602,7 @@ test('Data distinguishes form-response run actions and retains modal ownership',
 });
 
 test('Data preserves form-response drafts and save ownership', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(`${HARNESS_URL}?data=form-responses-paged`);
   await page.waitForFunction(() => window.__app?.ready === true);
   await page.evaluate(() => window.__app.setHash('#data/form_response'));
@@ -3272,12 +3645,14 @@ test('Data preserves form-response drafts and save ownership', async ({ page }) 
 });
 
 test('Data keeps form-response navigation attached while saving', async ({ page }) => {
-  await page.goto(`${HARNESS_URL}?data=form-responses-paged`);
+  await page.setViewportSize({ width: 1280, height: 768 });
+  await page.goto(`${HARNESS_URL}?data=form-responses-paged&hold_rpc=form_response.update`);
   await page.waitForFunction(() => window.__app?.ready === true);
   await page.evaluate(() => window.__app.setHash('#data/form_response'));
   await page.locator(
     '[data-recued-data-form-response-row="submission-0"] button',
   ).click();
+  await page.getByRole('button', { name: 'Edit working record', exact: true }).click();
 
   const heading = page.locator(`[${DATA_FORM_RESPONSE_DETAIL_HEADING}]`);
   const email = page.locator(`[${DATA_FORM_RESPONSE_EMAIL}]`);
@@ -3285,10 +3660,10 @@ test('Data keeps form-response navigation attached while saving', async ({ page 
     'button[data-recued-data-action="save-form-response"]',
   );
   const back = page.getByRole('button', {
-    name: '← Back to form responses',
+    name: 'Close response',
     exact: true,
   });
-  const automate = page.getByRole('link', { name: 'Automate this form' });
+  const editorBack = page.getByRole('button', { name: 'Cancel editing', exact: true });
   const contactTab = page.locator(`[${DATA_TAB}="contact"]`);
   await email.fill('saving@example.test');
   await save.focus();
@@ -3296,19 +3671,20 @@ test('Data keeps form-response navigation attached while saving', async ({ page 
 
   await expect(save).toHaveText('Saving…');
   await expect(back).toHaveAttribute('aria-disabled', 'true');
-  await expect(automate).toHaveAttribute('aria-disabled', 'true');
+  await expect(editorBack).toHaveAttribute('aria-disabled', 'true');
   await expect(contactTab).toHaveAttribute('aria-disabled', 'true');
   await back.dispatchEvent('click');
-  await automate.dispatchEvent('click');
+  await editorBack.dispatchEvent('click');
   await contactTab.dispatchEvent('click');
   await expect(heading).toBeVisible();
   await expect(page).toHaveURL(/#data\/form_response\/submission-0$/);
   await expect(page.locator(`[${DATA_TAB}="form_response"]`))
     .toHaveAttribute('aria-selected', 'true');
 
+  expect(await page.evaluate(() => window.__app.releaseRpcResponses!('form_response.update'))).toBe(1);
   await expect(save).toHaveText('Save changes');
   await expect(back).not.toHaveAttribute('aria-disabled');
-  await expect(automate).not.toHaveAttribute('aria-disabled');
+  await expect(editorBack).not.toHaveAttribute('aria-disabled');
   await expect(contactTab).not.toHaveAttribute('aria-disabled');
 });
 
@@ -3492,7 +3868,7 @@ test('Data gives a contact with no address its email from its Edit form', async 
   await page.waitForFunction(() => window.__app?.ready === true);
   await page.evaluate(() => window.__app.setHash('#data/contact'));
 
-  await page.locator(`[${DATA_CONTACT_ROW}="mention-only-ct-mia@_recued.invalid"] button`).click();
+  await page.locator(`[${DATA_CONTACT_ROW}="mention-only-ct-mia@_recued.invalid"] .data-contact-row-button`).click();
   await expect(page.getByRole('heading', { name: 'About Mia', exact: true })).toBeVisible();
   await page.getByRole('button', { name: 'Edit', exact: true }).click();
   const dialog = page.getByRole('dialog', { name: 'Edit contact' });
@@ -3524,7 +3900,7 @@ test('D-336 slice R — Data changes a contact\'s saved address on its Edit form
   await page.waitForFunction(() => window.__app?.ready === true);
   await page.evaluate(() => window.__app.setHash('#data/contact'));
 
-  await page.locator(`[${DATA_CONTACT_ROW}="dana@work.example.test"] button`).click();
+  await page.locator(`[${DATA_CONTACT_ROW}="dana@work.example.test"] .data-contact-row-button`).click();
   await expect(page.locator('.data-contact-detail-heading .data-row-meta')).toHaveText('dana@work.example.test');
   await page.getByRole('button', { name: 'Edit', exact: true }).click();
   const dialog = page.getByRole('dialog', { name: 'Edit contact' });
@@ -3554,7 +3930,7 @@ test('D-336 slice P — Data merges a contact with no address into the one that 
   await page.waitForFunction(() => window.__app?.ready === true);
   await page.evaluate(() => window.__app.setHash('#data/contact'));
 
-  await page.locator(`[${DATA_CONTACT_ROW}="mention-only-ct-mia@_recued.invalid"] button`).click();
+  await page.locator(`[${DATA_CONTACT_ROW}="mention-only-ct-mia@_recued.invalid"] .data-contact-row-button`).click();
   await expect(page.getByRole('heading', { name: 'About Mia', exact: true })).toBeVisible();
   await page.getByRole('button', { name: 'Edit', exact: true }).click();
   const dialog = page.getByRole('dialog', { name: 'Edit contact' });
@@ -3852,7 +4228,123 @@ test('D-336 slice T — Memory tells a name in words from a linked contact, and 
   }
 });
 
-test('Data owns Memory detail loading and returns Back to the exact row', async ({ page }) => {
+test('Data desktop Memory keeps loaded entries and gives the latest selection the reader', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 768 });
+  await page.addInitScript(() => {
+    const entries = Array.from({ length: 16 }, (_, index) => ({
+      memory_id: `reader-${index}`,
+      origin_actor: 'user_self',
+      kind: 'note',
+      summary: `Reading note ${index}`,
+      body_preview: `Preview ${index}`,
+      has_body: true,
+      ts: 1_700_000_000_000 - index,
+    }));
+    Object.assign(window, {
+      __connectionsFixture: async (method: string, args: {
+        cursor?: string; origin_actors?: string[]; memory_id?: string;
+      }) => {
+        if (method === 'memory.list' && args.origin_actors?.includes('user_self')) {
+          return { result: args.cursor ? { entries: entries.slice(2) }
+            : { entries: entries.slice(0, 2), next_cursor: 'older-notes' } };
+        }
+        if (method === 'memory.get') {
+          const index = entries.findIndex(entry => entry.memory_id === args.memory_id);
+          if (index >= 0) return { result: { ...entries[index], body: `Full text of note ${index}.` } };
+        }
+        return undefined;
+      },
+    });
+  });
+  await page.goto(`${HARNESS_URL}?data=memory-rows&hold_rpc=memory.get#data/memory`);
+  const origin = page.getByRole('group', { name: 'Filter memory by origin' });
+  const you = origin.getByRole('button', { name: 'You', exact: true });
+  const view = (index: number) => page.getByRole('button', {
+    name: `View memory Reading note ${index} (reader-${index})`, exact: true,
+  });
+  const first = view(0);
+  const older = view(15);
+  const reader = page.getByRole('region', { name: 'Memory detail', exact: true });
+  const entries = page.getByRole('region', { name: 'Memory entries', exact: true });
+  const reads = () => page.evaluate(() => window.__app.rpcCallCount('memory.get'));
+  const listReads = () => page.evaluate(() => window.__app.rpcCallCount('memory.list'));
+
+  await you.click();
+  await first.press('Enter');
+  await expect(first).toHaveAttribute('aria-current', 'true');
+  await expect(reader.getByRole('heading')).toBeFocused();
+  await expect(reader).toContainText('Loading memory…');
+  await expect.poll(reads).toBe(1);
+  await entries.getByRole('button', { name: 'Load more', exact: true }).click();
+  await older.scrollIntoViewIfNeeded();
+  const scrolled = await entries.evaluate(node => node.scrollTop);
+  expect(scrolled).toBeGreaterThan(0);
+  const loadedListReads = await listReads();
+  await older.press('Enter');
+  await expect.poll(reads).toBe(2);
+  expect(await page.evaluate(() => window.__app.releaseRpcResponses!('memory.get', 1))).toBe(1);
+  const heading = reader.getByRole('heading', { name: 'Reading note 15', exact: true });
+  await expect(heading).toBeFocused();
+  await expect(reader.getByText('Full text of note 15.', { exact: true })).toBeVisible();
+  await expect(older).toHaveAttribute('aria-current', 'true');
+  await expect(first).not.toHaveAttribute('aria-current');
+  await expect(you).toHaveAttribute('aria-pressed', 'true');
+  await expect(entries.getByRole('listitem')).toHaveCount(16);
+  expect(await entries.evaluate(node => node.scrollTop)).toBe(scrolled);
+  const listBounds = (await entries.boundingBox())!;
+  const readerBounds = (await reader.boundingBox())!;
+  expect(listBounds.x + listBounds.width).toBeLessThan(readerBounds.x);
+
+  expect(await page.evaluate(() => window.__app.releaseRpcResponses!('memory.get'))).toBe(1);
+  await expect(heading).toBeFocused();
+  await expect(reader).not.toContainText('Full text of note 0.');
+
+  await first.focus();
+  await page.setViewportSize({ width: 1279, height: 768 });
+  await expect(entries).toHaveCount(0);
+  await expect(reader.getByRole('heading', { name: 'Memory detail' })).toBeFocused();
+  await expect(reader).toContainText('Full text of note 15.');
+  await page.setViewportSize({ width: 1280, height: 768 });
+  await expect(heading).toBeFocused();
+  await expect(older).toBeInViewport();
+  await reader.getByRole('button', { name: 'Close reader', exact: true }).press('Enter');
+  await expect(reader).toHaveCount(0);
+  await expect(older).toBeFocused();
+  await expect(you).toHaveAttribute('aria-pressed', 'true');
+  expect(await listReads()).toBe(loadedListReads);
+  expect(await reads()).toBe(2);
+
+  await page.evaluate(() => window.__app.holdRpcResponses!('memory.get'));
+  await first.press('Enter');
+  await expect.poll(reads).toBe(3);
+  const system = origin.getByRole('button', { name: 'System', exact: true });
+  await system.press('Enter');
+  await expect(system).toBeFocused();
+  await expect(system).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.locator('.memory-row')).toHaveText(/Recipe execution remembered/);
+  expect(await page.evaluate(() => window.__app.releaseRpcResponses!('memory.get'))).toBe(1);
+  await expect(reader).toHaveCount(0);
+  await expect(system).toBeFocused();
+});
+
+test.describe('Data Memory on touch screens', () => {
+  test.use({ hasTouch: true, viewport: { width: 1440, height: 800 } });
+
+  test('keeps the single-view reader and restores the row on Back on wide touch screens', async ({ page }) => {
+    await page.goto(`${HARNESS_URL}?data=memory-rows#data/memory`);
+    const view = page.getByRole('button', { name: 'View memory Concise answers (memory-own-1)', exact: true });
+    await view.tap();
+    const reader = page.getByRole('region', { name: 'Memory detail', exact: true });
+    await expect(reader).toContainText('Keep answers concise and direct.');
+    await expect(view).toHaveCount(0);
+    await expect(page.getByRole('group', { name: 'Filter memory by origin' })).toHaveCount(0);
+    await reader.getByRole('button', { name: '← Back', exact: true }).tap();
+    await expect(view).toBeFocused();
+  });
+});
+
+test('Data owns Memory detail loading and returns Back to the exact row on a phone', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(
     `${HARNESS_URL}?data=memory-rows&memory_get_response=slow`,
   );
@@ -3870,6 +4362,7 @@ test('Data owns Memory detail loading and returns Back to the exact row', async 
   const heading = detail.locator(`[${DATA_MEMORY_DETAIL_HEADING}]`);
   await expect(detail).toContainText('Loading memory…');
   await expect(heading).toBeFocused();
+  await expect(view).toHaveCount(0);
 
   await detail.getByRole('button', { name: '← Back', exact: true }).click();
   await expect(detail).toHaveCount(0);
@@ -3925,6 +4418,7 @@ test('Data preserves outside-actor Memory provenance from list through detail', 
 });
 
 test('Data keeps a failed Memory detail owned through a successful retry', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 800 });
   await page.goto(
     `${HARNESS_URL}?data=memory-rows&memory_get_response=fail-once-slow-retry`,
   );
@@ -3945,7 +4439,7 @@ test('Data keeps a failed Memory detail owned through a successful retry', async
   );
   await expect(heading).toBeFocused();
 
-  await detail.getByRole('button', { name: '← Back', exact: true }).click();
+  await detail.getByRole('button', { name: 'Close reader', exact: true }).click();
   await expect(view).toBeFocused();
   await page.keyboard.press('Enter');
   await expect(heading).toBeFocused();
@@ -4645,7 +5139,7 @@ test('Data opens Records with the keyboard and returns focus to the exact row', 
 
 test('Data keeps a Records delete owned and reconciles its list once', async ({ page }) => {
   await page.goto(
-    `${HARNESS_URL}?data=records&records_delete_response=slow`,
+    `${HARNESS_URL}?data=records&hold_rpc=records.delete`,
   );
   await page.waitForFunction(() => window.__app?.ready === true);
   await page.evaluate(() => window.__app.setHash('#data/records'));
@@ -4664,9 +5158,7 @@ test('Data keeps a Records delete owned and reconciles its list once', async ({ 
   const confirm = page.locator('[data-action="records-confirm-delete"]');
   const cancel = page.locator('[data-action="records-cancel-delete"]');
   const back = page.locator('[data-action="records-close-record"]');
-  const namespace = page.locator(
-    '[data-action="records-select-namespace"][data-records-namespace="publisher-a/same-board"]',
-  );
+  const namespace = page.getByRole('combobox', { name: 'Pack', exact: true });
   const kind = page.locator(
     '[data-action="records-select-kind"][data-records-kind="job"]',
   );
@@ -4708,7 +5200,7 @@ test('Data keeps a Records delete owned and reconciles its list once', async ({ 
   await confirm.dispatchEvent('click');
   await cancel.dispatchEvent('click');
   await back.dispatchEvent('click');
-  await namespace.dispatchEvent('click');
+  await namespace.dispatchEvent('change');
   await kind.dispatchEvent('click');
   await reference.dispatchEvent('click');
   await outboxSummary.dispatchEvent('click');
@@ -4739,8 +5231,9 @@ test('Data keeps a Records delete owned and reconciles its list once', async ({ 
     'data-audit-confirm-message',
     'Something is still happening in Records. Leave Data anyway?',
   );
-  await expect(page).toHaveURL(/#data\/records$/);
+  await expect(page).toHaveURL(/#data\/records\/publisher-a\/same-board\/job\/job-1$/);
   await expect(confirm).toBeFocused();
+  expect(await page.evaluate(() => window.__app.releaseRpcResponses?.('records.delete'))).toBe(1);
 
   await expect(page.getByText('No records in this kind.')).toBeVisible();
   await expect(record).toHaveCount(0);
@@ -4755,11 +5248,10 @@ test('Data keeps a Records delete owned and reconciles its list once', async ({ 
 });
 
 test('Data keeps Records exports focused and single-flight', async ({ page }) => {
-  await page.goto(
-    `${HARNESS_URL}?data=records&records_export_response=slow`,
-  );
+  await page.goto(`${HARNESS_URL}?data=records`);
   await page.waitForFunction(() => window.__app?.ready === true);
   await page.evaluate(() => window.__app.setHash('#data/records'));
+  await openRecordsManagement(page);
 
   const cases = [
     {
@@ -4782,6 +5274,7 @@ test('Data keeps Records exports focused and single-flight', async ({ page }) =>
   for (const candidate of cases) {
     const owner = page.locator(`[data-action="${candidate.action}"]`);
     const download = page.waitForEvent('download');
+    await page.evaluate(() => window.__app.holdRpcResponses!('records.export'));
     await owner.focus();
     await page.keyboard.press('Enter');
 
@@ -4806,6 +5299,7 @@ test('Data keeps Records exports focused and single-flight', async ({ page }) =>
       () => page.evaluate(() => window.__app.rpcCallCount('records.export')),
     ).toBe(calls + 1);
 
+    expect(await page.evaluate(() => window.__app.releaseRpcResponses!('records.export'))).toBe(1);
     expect((await download).suggestedFilename()).toBe(candidate.filename);
     await expect(owner).toHaveText(candidate.label);
     await expect(owner).not.toHaveAttribute('aria-disabled');
@@ -4817,10 +5311,11 @@ test('Data keeps Records exports focused and single-flight', async ({ page }) =>
 
 test('Data keeps Records event retirement visible, owned, and single-flight', async ({ page }) => {
   await page.goto(
-    `${HARNESS_URL}?data=records&records_retire_response=slow`,
+    `${HARNESS_URL}?data=records&hold_rpc=records.outbox.retire`,
   );
   await page.waitForFunction(() => window.__app?.ready === true);
   await page.evaluate(() => window.__app.setHash('#data/records'));
+  await openRecordsManagement(page);
 
   const outbox = page.locator('.records-outbox');
   const summary = outbox.locator('summary');
@@ -4860,7 +5355,7 @@ test('Data keeps Records event retirement visible, owned, and single-flight', as
   await expect(cancel).toHaveAttribute('aria-disabled', 'true');
   await expect(summary).toHaveAttribute('aria-disabled', 'true');
   const refresh = page.locator('[data-action="records-refresh-outbox"]');
-  const namespace = page.locator('[data-action="records-select-namespace"]');
+  const namespace = page.getByRole('combobox', { name: 'Pack', exact: true });
   const kind = page.locator('[data-action="records-select-kind"]');
   const record = page.getByRole('button', {
     name: 'Open record job-1',
@@ -4876,7 +5371,7 @@ test('Data keeps Records event retirement visible, owned, and single-flight', as
   await cancel.dispatchEvent('click');
   await summary.dispatchEvent('click');
   await refresh.dispatchEvent('click');
-  await namespace.dispatchEvent('click');
+  await namespace.dispatchEvent('change');
   await kind.dispatchEvent('click');
   await record.dispatchEvent('click');
   await expect.poll(
@@ -4886,6 +5381,7 @@ test('Data keeps Records event retirement visible, owned, and single-flight', as
   ).toBe(1);
   await expect(outbox).toHaveAttribute('open', '');
   await expect(confirm).toBeFocused();
+  expect(await page.evaluate(() => window.__app.releaseRpcResponses?.('records.outbox.retire'))).toBe(1);
 
   await expect(summary).toContainText('0 pending · 1 dead-lettered');
   await expect(summary).toBeFocused();
@@ -4907,6 +5403,7 @@ test('Data keeps Records outbox refresh focused and single-flight', async ({ pag
   );
   await page.waitForFunction(() => window.__app?.ready === true);
   await page.evaluate(() => window.__app.setHash('#data/records'));
+  await openRecordsManagement(page);
 
   const outbox = page.locator('.records-outbox');
   const summary = outbox.locator('summary');
@@ -4947,10 +5444,11 @@ test('Data keeps Records outbox refresh focused and single-flight', async ({ pag
 
 test('Data preserves and owns orphaned Records namespace purge', async ({ page }) => {
   await page.goto(
-    `${HARNESS_URL}?data=records-orphaned&records_purge_response=slow`,
+    `${HARNESS_URL}?data=records-orphaned&hold_rpc=records.purge`,
   );
   await page.waitForFunction(() => window.__app?.ready === true);
   await page.evaluate(() => window.__app.setHash('#data/records'));
+  await openRecordsManagement(page);
 
   const arm = page.locator('[data-action="records-purge"]');
   await arm.focus();
@@ -4991,7 +5489,7 @@ test('Data preserves and owns orphaned Records namespace purge', async ({ page }
   await expect(input).toHaveValue('publisher-a/same-board');
   await expect(input).toHaveAttribute('readonly', '');
   await expect(input).toHaveAttribute('aria-disabled', 'true');
-  const namespace = page.locator('[data-action="records-select-namespace"]');
+  const namespace = page.getByRole('combobox', { name: 'Pack', exact: true });
   const kind = page.locator('[data-action="records-select-kind"]');
   const exportPack = page.locator('[data-action="records-export-pack"]');
   const outboxSummary = page.locator('.records-outbox summary');
@@ -5003,7 +5501,7 @@ test('Data preserves and owns orphaned Records namespace purge', async ({ page }
   await confirm.dispatchEvent('click');
   await confirm.dispatchEvent('click');
   await cancel.dispatchEvent('click');
-  await namespace.dispatchEvent('click');
+  await namespace.dispatchEvent('change');
   await kind.dispatchEvent('click');
   await exportPack.dispatchEvent('click');
   await outboxSummary.dispatchEvent('click');
@@ -5012,6 +5510,7 @@ test('Data preserves and owns orphaned Records namespace purge', async ({ page }
   ).toBe(1);
   await expect(confirm).toBeFocused();
   await expect(input).toHaveValue('publisher-a/same-board');
+  expect(await page.evaluate(() => window.__app.releaseRpcResponses?.('records.purge'))).toBe(1);
 
   await expect(page.getByText(
     'No pack-owned Records are installed or retained.',
@@ -5028,6 +5527,7 @@ test('Data preserves and owns orphaned Records namespace purge', async ({ page }
 });
 
 test('Data keeps Records namespace and kind switching focused and single-flight', async ({ page }) => {
+  await page.setViewportSize({ width: 1000, height: 900 });
   await page.goto(
     `${HARNESS_URL}?data=records-navigation&records_navigation_response=slow`,
   );
@@ -5577,6 +6077,93 @@ for (const action of ['save', 'cancel'] as const) {
   });
 }
 
+for (const destination of ['email', 'run'] as const) {
+  test(`Data Mail facts desktop restores review after opening the ${destination}`, async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 720 });
+    await openMailFactsWorkspaceFixture(page, destination);
+    const host = page.locator('[data-recued-mail-facts="facts"]');
+    const type = host.getByRole('combobox', { name: 'Type', exact: true });
+    const rows = host.locator('[data-recued-mail-fact-row]');
+    await expect(rows).toHaveCount(20);
+    await type.selectOption('shipment');
+    await host.getByRole('button', { name: 'Load more', exact: true }).click();
+    await expect(rows).toHaveCount(34);
+    const first = host.getByRole('button', { name: /Parcel 26\b/ });
+    const selected = host.getByRole('button', { name: /Quarterly planning/ });
+    const reader = host.getByRole('region', { name: 'Fact details', exact: true });
+    await first.click();
+    await expect(reader.getByRole('heading', { name: 'Shipment', exact: true })).toBeFocused();
+    await expect(reader).toContainText('1Z-shipment-26');
+    await selected.click();
+    await expect(first).not.toHaveAttribute('aria-current');
+    await expect(selected).toHaveAttribute('aria-current', 'true');
+    await expect(reader.locator('h4')).toHaveText(['Extracted values', 'Source email', 'Triggered recipes']);
+    await expect(reader).toContainText('1Z-shipment-27');
+    const rawData = reader.getByText('Raw data', { exact: true });
+    await expect(rawData.locator('..')).not.toHaveAttribute('open');
+    await rawData.click();
+    await expect(reader.getByText('"parcel": "shipment-27"', { exact: false })).toBeVisible();
+    const link = destination === 'email'
+      ? reader.getByRole('link', { name: 'Quarterly planning', exact: true })
+      : reader.getByRole('link', { name: 'Schedule customer review', exact: true });
+    await link.scrollIntoViewIfNeeded();
+    const readingPosition = () => host.evaluate(node => ({
+      pageTop: node.closest('[data-recued-webclient-content]')?.scrollTop,
+      listTop: node.querySelector('.mail-facts-workspace-list .mail-facts-list')?.scrollTop,
+      readerTop: node.querySelector('[data-mail-fact-reader]')?.scrollTop,
+    }));
+    const position = await readingPosition();
+    expect(position.listTop).toBeGreaterThan(0);
+    const listReads = await page.evaluate(() => window.__app.rpcCallCount('mail_fact.facts.list'));
+    await link.click();
+    if (destination === 'email') {
+      await expect(page).toHaveURL(/#data\/mail\/record\/work\/mail-1$/);
+      await expect(page.getByText('Please review the quarterly plan before Friday.', { exact: true })).toBeVisible();
+    } else {
+      await expect(page).toHaveURL(/#logs\/run-verify$/);
+      await expect(page.locator('[data-recued-logs-detail="run-verify"]')).toContainText('Schedule customer review');
+    }
+    await page.goBack();
+    await expect(page).toHaveURL(/#data\/mail_fact\/facts$/);
+    await expect(type).toHaveValue('shipment');
+    await expect(rows).toHaveCount(34);
+    await expect(selected).toHaveAttribute('aria-current', 'true');
+    await expect(link).toBeFocused();
+    await expect(rawData.locator('..')).toHaveAttribute('open', '');
+    await expect.poll(readingPosition).toEqual(position);
+    expect(await page.evaluate(() => window.__app.rpcCallCount('mail_fact.facts.list'))).toBe(listReads);
+    await page.keyboard.press('Escape');
+    await expect(reader).toHaveCount(0);
+    await expect(selected).toBeFocused();
+
+    if (destination === 'run') {
+      await page.goForward();
+      await expect(page).toHaveURL(/#logs\/run-verify$/);
+      await page.evaluate(() => { window.location.hash = '#data/mail_fact/facts'; });
+      await expect(rows).toHaveCount(20);
+      await expect(type).toHaveValue('');
+      await expect(reader).toHaveCount(0);
+    }
+  });
+}
+
+test('Data Mail facts keeps stacked cards on phones and transfers the focused fact at the desktop breakpoint', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await openMailFactsWorkspaceFixture(page, 'email');
+  const host = page.locator('[data-recued-mail-facts="facts"]');
+  const source = host.getByRole('link', { name: 'Parcel 1', exact: true });
+  const reader = host.getByRole('region', { name: 'Fact details', exact: true });
+  await expect(source).toBeVisible();
+  await expect(reader).toHaveCount(0);
+  await expect(source.locator('xpath=ancestor::li').getByText('1Z-shipment-1', { exact: true })).toBeVisible();
+  await source.focus();
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await expect(reader.getByRole('link', { name: 'Parcel 1', exact: true })).toBeFocused();
+  await reader.getByRole('button', { name: 'Close fact', exact: true }).click();
+  await expect(reader).toHaveCount(0);
+  await expect(host.getByRole('button', { name: /Parcel 1\b/ })).toBeFocused();
+});
+
 for (const width of [390, 1280]) {
   for (const failure of ['first-append', 'third-page'] as const) {
     for (const moveAway of [false, true]) {
@@ -5587,7 +6174,9 @@ for (const width of [390, 1280]) {
         const rows = host.locator('[data-recued-mail-fact-row]');
         const count = failure === 'third-page' ? 2 : 1;
         const failedQuery = await page.evaluate(() => window.__mailFactsPaging.queries.at(-1));
-        await host.locator('[data-recued-mail-facts-focus="data:a"]').click();
+        if (width === 1280) await host.getByRole('button', { name: /Parcel a/ }).click();
+        const rawData = host.locator('[data-recued-mail-facts-focus="data:a"]');
+        await rawData.click();
         await retryMailFactsPage(page);
         await expect(rows).toHaveCount(count);
         await page.evaluate(() => window.__mailFactsPaging.release('error'));
@@ -5603,10 +6192,10 @@ for (const width of [390, 1280]) {
         await expect(rows).toHaveCount(3);
         expect(await rows.evaluateAll(nodes => nodes.map(node => node.getAttribute('data-recued-mail-fact-row')))).toEqual(['a', 'b', 'c']);
         await expect(host.getByRole('alert')).toHaveCount(0);
-        await expect(host.locator('[data-recued-mail-fact-row="a"] details')).toHaveAttribute('open', '');
+        await expect(rawData.locator('..')).toHaveAttribute('open', '');
         await expect(host.locator('[data-recued-mail-facts-focus="list-count"]')).toHaveText('3 facts shown');
         if (moveAway) await expect(outside).toBeFocused();
-        else await expect(host.locator(`[data-recued-mail-facts-focus="mail:${failure === 'third-page' ? 'c' : 'b'}"]`)).toBeFocused();
+        else await expect(host.locator(`[data-recued-mail-facts-focus="${width === 1280 ? 'row' : 'mail'}:${failure === 'third-page' ? 'c' : 'b'}"]`)).toBeFocused();
         const queries = await page.evaluate(() => window.__mailFactsPaging.queries);
         expect(queries.slice(-3)).toEqual([failedQuery, failedQuery, failedQuery]);
         expect(queries).toHaveLength(failure === 'third-page' ? 5 : 4);
@@ -5623,7 +6212,8 @@ for (const width of [390, 1280]) {
       const host = page.locator('[data-recued-mail-facts]');
       await expect(host.getByRole('alert')).toHaveCount(0);
       await expect(host.locator('[data-recued-mail-fact-row]')).toHaveCount(reply === 'page' ? 1 : 0);
-      await expect(host.locator(`[data-recued-mail-facts-focus="${reply === 'page' ? 'mail:a' : 'view:facts'}"]`)).toBeFocused();
+      const firstFact = width === 1280 ? 'row:a' : 'mail:a';
+      await expect(host.locator(`[data-recued-mail-facts-focus="${reply === 'page' ? firstFact : 'view:facts'}"]`)).toBeFocused();
       if (reply === 'empty') await expect(host).toContainText('No facts yet.');
       expect(await page.evaluate(() => window.__mailFactsPaging.queries)).toEqual([{ limit: 50 }, { limit: 50 }]);
     });
@@ -5782,11 +6372,14 @@ test.describe('Records CSV import', () => {
   test('Records imports through its pack recipe only after a check, then shows the receipt and new rows', async ({ page }) => {
     await page.goto('/full-app-harness.html?data=records-navigation&records_import=1#data/records');
     await ready(page);
+    await openRecordsManagement(page);
     const imports = page.getByRole('region', { name: 'Import records', exact: true });
+    const pack = page.getByRole('combobox', { name: 'Pack', exact: true });
     await expect(imports.getByRole('button', { name: 'Import CSV', exact: true })).toBeVisible();
-    await page.getByRole('button', { name: /Other statement pack/ }).click();
+    await pack.selectOption('other-publisher/statement-import');
     await expect(imports).toHaveCount(0);
-    await page.getByRole('button', { name: /Statement import.*recued-core/ }).click();
+    await expect(pack).not.toHaveAttribute('aria-disabled', 'true');
+    await pack.selectOption('recued-core/statement-import');
     const dialog = await checkCsvImport(page);
     expect(await page.evaluate(() => sessionStorage.getItem('recued-test-records-imported'))).toBeNull();
     await dialog.getByRole('button', { name: 'Import', exact: true }).click();
@@ -5806,6 +6399,7 @@ test.describe('Records CSV import', () => {
   test('Records keeps the confirmed import receipt when its refresh fails and recovers without importing again', async ({ page }) => {
     await page.goto('/full-app-harness.html?data=records-navigation&records_import=1#data/records');
     await ready(page);
+    await openRecordsManagement(page);
     const dialog = await checkCsvImport(page);
     await page.evaluate(() => sessionStorage.setItem('recued-test-records-import-refresh-failure', '1'));
     await dialog.getByRole('button', { name: 'Import', exact: true }).click();
@@ -5814,7 +6408,7 @@ test.describe('Records CSV import', () => {
     await expect(receipt).toContainText('Import finished');
     await expect(page.locator('[role="alert"]').first()).toContainText('Records refresh is temporarily unavailable');
     await page.evaluate(() => sessionStorage.removeItem('recued-test-records-import-refresh-failure'));
-    await page.getByRole('button', { name: /Statement import.*recued-core/ }).click();
+    await page.getByRole('button', { name: 'Reload pack', exact: true }).click();
     await expect(rows(page)).toContainText('Coffee');
     await expect(receipt).toContainText('Import finished');
     expect(await page.evaluate(() => JSON.parse(sessionStorage.getItem('recued-test-records-import-runs') ?? '[]').length)).toBe(2);
@@ -6529,6 +7123,40 @@ test.describe('Commitment workspace', () => {
     await page.getByRole('combobox', { name: 'Commitment status', exact: true }).selectOption(status);
   };
 
+  test('the desktop commitment reader keeps loaded rows and focuses the next open promise after fulfillment', async ({ page }) => {
+    await page.setViewportSize({ width: 1536, height: 900 });
+    const f = await installCommitmentWorkspaceFixture(page);
+    try {
+      await page.goto(`${HARNESS_URL}?data=contacts#data/commitment`);
+      await expect(listRows(page)).toHaveCount(100);
+      const search = page.getByRole('searchbox', { name: 'Search commitments', exact: true });
+      await selectView(page, 'outbound', 'open');
+      await search.fill('ordinary-');
+      await expect(page.locator('button[data-entity-id="maya-outbound"]')).toHaveCount(0);
+      await page.getByRole('button', { name: 'Load more', exact: true }).click();
+      await expect(listRows(page)).toHaveCount(200);
+      const row = page.locator('button[data-entity-id="ordinary-125"]');
+      const next = page.locator('button[data-entity-id="ordinary-126"]');
+      await row.click();
+      const pane = page.getByRole('region', { name: 'Review promise ordinary-125', exact: true });
+      await expect(pane).toBeVisible();
+      await expect(row).toHaveAttribute('aria-current', 'true');
+      const listReads = f.reads.length;
+      await pane.getByRole('button', { name: 'Mark fulfilled', exact: true }).click();
+      await expect(page.getByRole('status').filter({ hasText: 'Commitment marked fulfilled.' })).toBeVisible();
+      await expect(pane).toHaveCount(0);
+      await expect(row).toHaveCount(0);
+      await expect(listRows(page)).toHaveCount(199);
+      await expect(next).toBeFocused();
+      await expect(next).toBeInViewport();
+      await expect(search).toHaveValue('ordinary-');
+      await expect(page.getByRole('combobox', { name: 'Who owes', exact: true })).toHaveValue('outbound');
+      await expect(page.getByRole('combobox', { name: 'Commitment status', exact: true })).toHaveValue('open');
+      expect(f.reads).toHaveLength(listReads);
+      expect(f.writes).toEqual([{ method: 'work_entity.commitment.fulfill', args: { id: 'ordinary-125' } }]);
+    } finally { f.close(); }
+  });
+
   test('Commitment workspace searches the complete set and restores saved direction and status filters', async ({ page }, testInfo) => {
     const f = await installCommitmentWorkspaceFixture(page);
     try {
@@ -6630,7 +7258,7 @@ test.describe('Commitment workspace', () => {
       await expect(reader.getByRole('button', { name: 'Cancel commitment', exact: true })).toHaveCount(0);
       await expect(reader.getByRole('button', { name: 'Edit', exact: true })).toHaveCount(0);
       expect(f.writes).toEqual([]);
-      await reader.getByRole('button', { name: 'Back to commitments', exact: true }).click();
+      await reader.getByRole('button', { name: 'Close', exact: true }).click();
       await selectView(page, 'inbound', 'closed');
       await listRows(page).filter({ hasText: 'Maya will send the signed agreement' }).getByRole('button').click();
       await expect(reader.locator('[data-commitment-status]')).toHaveText('Expired');

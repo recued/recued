@@ -42,6 +42,7 @@ import { stopAllowing } from '../stop-allowing.js';
 import { projectRunResultForAgent, RAN_WITHOUT_ASKING_MESSAGE, ranWithoutAskingSentence } from '../run-result-agent-projection.js';
 import { createSessionGrantResolver } from '../session-grant-resolver.js';
 import { createBrowserPassStore } from '../storage/browser-pass-store.js';
+import { createBrowserJobRegistry } from '../bridges/browser-job-registry.js';
 import { createContractDefinitionStore } from '../storage/contract-definition-store.js';
 import { createContractGrantEntryStore } from '../storage/contract-grant-entry-store.js';
 import { createContractScanFn, createContractStore } from '../storage/contract-store.js';
@@ -71,7 +72,8 @@ const RUN_BUTTON: ExecutionSource = { channel: 'user', actor: 'user_self', user_
 /** An AI app's call, as the MCP host sends it: a contracted user under its contract. */
 const APP_SOURCE: ExecutionSource = { channel: 'mcp', actor: 'contracted_user', agent_id: 'agent-1', tool_call_id: 'tc-1',
   mcp_token_id: 'mcp-token-1', contract_id: 'k-claude' } as ExecutionSource;
-const APP_SNAPSHOT = () => ({ contract_id: 'k-claude', contract_version: 'v1', allowed_tools: ['f3-notes'],
+// The app's tools: the notes, and the browser reads a recipe of the Toolkit's shape uses (2026-11-23's cases below).
+const APP_SNAPSHOT = () => ({ contract_id: 'k-claude', contract_version: 'v1', allowed_tools: ['f3-notes', 'dom-tabs', 'dom-open', 'dom-inspect', 'dom-act', 'dom-click'],
   approval_required: ['write', 'admin'], scope_restrictions: [], resolved_at: Date.now() });
 const SCHEDULE: ExecutionSource = { channel: 'schedule', actor: 'system', schedule_id: 'sch_1', cron: '0 7 * * *', source_recipe: 'add-note' } as ExecutionSource;
 
@@ -112,6 +114,8 @@ const fixture = (steps: unknown[] = [ADD], extra: Record<string, unknown> = {}, 
   });
   const triggerPreapprovals = createTriggerPreapprovalStore(db);
   const browserPasses = createBrowserPassStore(db);
+  // D-402 — each fixture's own jobs: an AI app's runs in a job it started.
+  const jobs = createBrowserJobRegistry();
   const auditLog = createAuditLogStore(createInMemoryCollection<AuditEntry>(), createInMemoryCollection<ActivityEntry>());
   const askStore = createAskStore(createInMemoryCollection<PendingAsk>());
   const block = createNotificationBlock({
@@ -134,7 +138,7 @@ const fixture = (steps: unknown[] = [ADD], extra: Record<string, unknown> = {}, 
     contractOverlay: createContractOverlayResolver({ definitionStore, grantEntryStore }),
     contractScan: createContractScanFn(contractStore),
     commitStore: createCommitStore(createInMemoryCollection<Commit>()),
-    checkpointStore, auditLog, preflightNotifier: block, triggerPreapprovals, browserPasses,
+    checkpointStore, auditLog, preflightNotifier: block, triggerPreapprovals, browserPasses, browserJobs: jobs,
     sessionGrantResolver: createSessionGrantResolver({ definitionStore }),
     aiAppNameOf: (contract_id: string) => (contract_id === 'k-claude' ? 'Claude Desktop' : undefined),
     // An AI app's run resumes only under its contract's authority as it stands then (as the server reads it).
@@ -155,7 +159,8 @@ const fixture = (steps: unknown[] = [ADD], extra: Record<string, unknown> = {}, 
     const [ask] = await open();
     await block.submitAnswer({ ask_id: ask!.ask_id, option, via: 'ui' });
   };
-  return { recipe, run, notes, open, answer, rows, triggerPreapprovals, browserPasses, clicks, version: triggerPreapprovalRecipeSha256(recipe) };
+  return { recipe, run, notes, open, answer, rows, triggerPreapprovals, browserPasses, clicks, sent, jobs,
+    version: triggerPreapprovalRecipeSha256(recipe) };
 };
 
 describe('D-402 slice F3 — a chat\'s run is held before step 1 and asked once about the whole run', () => {
@@ -324,6 +329,24 @@ describe('D-402 slice F3b — what the owner already granted covers the run: no 
     expect(response.awaiting_approval, JSON.stringify(response.errors)).toBeFalsy();
     expect(f.clicks()).toBe(1);
   });
+
+  // D-402 (2026-11-23) — an AI app's pass "until this job ends" covers its runs in that job, and no others.
+  it('an AI app\'s pass until its job ends: no question in that job, the question once it is over', async () => {
+    const click = { id: 'click', op: 'core.dom.click', args: { target: 'https://example.test/*', page: '7:ABCDEF0123', ref: 'e12' } };
+    const f = fixture([click]);
+    const app = { mcp_token_id: 'mcp-token-1', agent_id: 'agent-1' };
+    const job = f.jobs.start(app);
+    f.browserPasses.mint({ key: { principal: { kind: 'ai_app', contract_id: 'k-claude' }, recipe: 'add-note', site: 'https://example.test' },
+      host: 'example.test', kind: 'session', channel_session_id: `job:${job.job_id}`, expires_at: job.expires_at, now: Date.now() });
+    const inJob = await f.run('n1', APP_SOURCE);
+    expect((await f.open()).map((ask) => ask.handler_kind)).toEqual([]);
+    expect(inJob.awaiting_approval, JSON.stringify(inJob.errors)).toBeFalsy();
+    expect(f.clicks()).toBe(1);
+    f.jobs.end(app);
+    expect((await f.run('n2', APP_SOURCE)).awaiting_approval).toBe(true);
+    expect((await f.open())[0]!.handler_kind).toBe(RUN_QUESTION_ASK_KIND);
+    expect(f.clicks()).toBe(1);
+  });
 });
 
 describe('D-402 slice F3 — the runs that never get the question', () => {
@@ -467,5 +490,49 @@ describe('D-402 slice D5 (ruling 11) — a step run for each item of a list: the
     expect(await said([{ ...CUT, end: 0 }, { ...ADD, foreach: '{{step.cut}}' }])).toBe('Your chat asks to run it. Without asking, it will: add a note.');
     expect(await said([{ ...CUT, end: '{{config.most}}' }, { ...ADD, foreach: '{{step.cut}}' }]))
       .toBe('Your chat asks to run it. Without asking, it will: add a note.');
+  });
+});
+
+// 2026-11-23 (the owner: "make all reads & open as normal read permission, which does not need ask, it is more align with
+// human expectation") — a read that opens the page it names asks no one. The live drive that found the question had saved
+// the Toolkit's reads one by one, so they were not the Toolkit pack's own (whose recipes never get the question), and every
+// read an AI app asked for was held before step 1 for its possible open.
+describe('a read that opens its page asks no one, from the chat or an AI app', () => {
+  const PAGE = 'https://example.test/';
+  const READ_STEPS = [
+    { id: 'found', op: 'core.dom.tabs', args: { target: '*://*/*', address: PAGE } },
+    { id: 'shown', transform: 'any', conditions: ['{{step.found.tabs}} is_not_empty'] },
+    { id: 'opened', op: 'core.dom.open', args: { target: '*://*/*', address: PAGE }, skip_when: '{{step.shown}} equal true' },
+    { id: 'tab', transform: 'coalesce', values: ['{{step.found.tabs.0.page}}', '{{step.opened.page}}'] },
+    { id: 'read', op: 'core.dom.inspect', args: { target: '*://*/*', page: '{{step.tab}}', form: 'text' } },
+  ];
+  it.each([['the chat', CHAT], ['an AI app', APP_SOURCE]] as const)('%s: no question, nothing held, and the page is opened', async (_who, source) => {
+    const f = fixture(READ_STEPS);
+    const response = await f.run('n1', source);
+    expect(response.awaiting_approval, JSON.stringify(response.errors)).not.toBe(true);
+    expect(await f.open()).toEqual([]);
+    // The open step ran: no tab showed the page, and nothing stood between it and the Bridge.
+    expect(f.sent.mock.calls.map(([request]) => request.action)).toContain('open_tab');
+  });
+
+  // 2026-11-23 (the owner: "make the go read no ask default too") — going to an address reads, as opening a page does.
+  it.each([['the chat', CHAT], ['an AI app', APP_SOURCE]] as const)('%s: going to an address raises no question either', async (_who, source) => {
+    const f = fixture([{ id: 'act_1', op: 'core.dom.act', args: { target: 'https://example.test/*', steps: [{ url: PAGE,
+      do: 'go', address: 'https://example.test/next' }, { do: 'read' }] } }]);
+    const response = await f.run('n1', source);
+    expect(response.awaiting_approval, JSON.stringify(response.errors)).not.toBe(true);
+    expect(await f.open()).toEqual([]);
+    expect(f.sent.mock.calls.map(([request]) => request.action)).toContain('navigate');
+  });
+
+  // 2026-11-23 (the owner: "make Collects that turn pages read too") — a collect that turns pages reads as well.
+  it.each([['the chat', CHAT], ['an AI app', APP_SOURCE]] as const)('%s: a collect that turns pages raises no question either', async (_who, source) => {
+    const f = fixture([{ id: 'act_1', op: 'core.dom.act', args: { target: 'https://example.test/*', steps: [{ url: PAGE,
+      do: 'collect', items: 'li', fields: { value: { selector: ':scope' } }, next: { text: 'Next' }, max_pages: 5 }] } }]);
+    const response = await f.run('n1', source);
+    expect(response.awaiting_approval, JSON.stringify(response.errors)).not.toBe(true);
+    expect(await f.open()).toEqual([]);
+    // The collect began: its first read of the page went to the Bridge, nothing standing before it.
+    expect(f.sent.mock.calls.map(([request]) => request.action)).toContain('reread');
   });
 });

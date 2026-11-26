@@ -25,7 +25,7 @@ declare global {
   }
 }
 
-const installManagementFixture = async (page: Page, options: { queueId?: string | null } = {}): Promise<void> => {
+const installManagementFixture = async (page: Page, options: { queueId?: string | null; recordedError?: string } = {}): Promise<void> => {
   const now = 1_700_000_000_000;
   const tally = (failed: number, total = 12, stopped_at: string | null = null): RunYield =>
     ({ steps_run: 2, steps_skipped: 0, items_total: total, items_failed: failed, stopped_at });
@@ -62,7 +62,7 @@ const installManagementFixture = async (page: Page, options: { queueId?: string 
       state: 'waiting_slot', intent: 'Wait for import capacity' },
     { ...run, entry_kind: 'detached-job', run_id: 'management-detached', state: 'detached', intent: 'Watch for a recorded result', progress: { contract: 'silent', stalled: true } },
   ];
-  await page.addInitScript(({ history, active }) => {
+  await page.addInitScript(({ history, active, recordedError }) => {
     let current = [...active];
     window.__logsManagementQueries = [];
     window.__connectionsFixture = async (method, raw) => {
@@ -88,9 +88,14 @@ const installManagementFixture = async (page: Page, options: { queueId?: string 
       if (method === 'execution.get') {
         const row = history.find(row => row.run_id === args.run_id);
         if (!row) return { result: { run: null } };
+        const errors = row.run_id === 'history-failed' && recordedError ? [{
+          error_id: 'failed-import', code: 'RECIPE_POLICY_DENIED', message: recordedError, severity: 'error',
+          source: { recipe_id: row.recipe_id, step_id: 'import', ingredient_slug: null },
+          details: {}, timestamp: new Date(row.finished_at).toISOString(), retryable: false,
+        }] : [];
         return { result: { run: {
-          audit: { ...row, recipe_hash: 'fixture-hash', trigger_source: 'manual', instance_id: 'fixture-server', errors: [] },
-          approvals: { checkpoints: [] }, errors: [], links: [], gateway: { policy_result: row.policy_result, per_call_trace: [] },
+          audit: { ...row, recipe_hash: 'fixture-hash', trigger_source: 'manual', instance_id: 'fixture-server', errors },
+          approvals: { checkpoints: [] }, errors, links: [], gateway: { policy_result: row.policy_result, per_call_trace: [] },
         } } };
       }
       if (method === 'execution.active') return { result: { entries: current,
@@ -108,7 +113,7 @@ const installManagementFixture = async (page: Page, options: { queueId?: string 
       if (method === 'execution.promote') return { result: { status: 'promoted' } };
       return undefined;
     };
-  }, { history: rows, active: entries });
+  }, { history: rows, active: entries, recordedError: options.recordedError });
 };
 
 const RUN_SUMMARY = '[data-recued-logs-run-summary]';
@@ -208,11 +213,12 @@ for (const blocked of ['getUserMedia', 'codec getter', 'codec probe']) {
 }
 
 for (const width of [375, 1280]) {
-  test(`Logs copies recorded run metadata by keyboard at ${width}px`, async ({ page, context }) => {
+  test(`Logs copies recorded run metadata by keyboard at ${width}px`, async ({ page, context, browserName }) => {
     await page.setViewportSize({ width, height: 900 });
     await page.goto(`${HARNESS_URL}?journey=verification&logs_summary=1#logs/run-verify`);
     await page.waitForFunction(() => window.__app?.ready === true);
-    await context.grantPermissions(['clipboard-read', 'clipboard-write'], { origin: new URL(page.url()).origin });
+    // WebKit permits clipboard reads; a trusted key gesture authorizes writes.
+    await context.grantPermissions(browserName === 'webkit' ? ['clipboard-read'] : ['clipboard-read', 'clipboard-write'], { origin: new URL(page.url()).origin });
     const summary = page.locator(RUN_SUMMARY);
     const copy = summary.getByRole('button', { name: 'Copy run summary', exact: true });
     await copy.focus(); await page.keyboard.press('Enter');
@@ -1111,37 +1117,39 @@ test('Logs keeps an acknowledged kill retired when active reconciliation fails',
   ).toBe(1);
 });
 
-test('Logs keeps a pass revocation focused until its row retires', async ({ page }) => {
-  await page.setViewportSize({ width: 390, height: 844 });
+test('Logs keeps a pass revocation focused through resize and advances focus when its row retires', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 650 });
   await page.goto(
-    `${HARNESS_URL}?live=running&logs_passes=active`
+    `${HARNESS_URL}?live=running&logs_passes=three`
     + '&logs_control_response=slow',
   );
   await page.waitForFunction(() => window.__app?.ready === true);
   await page.evaluate(() => window.__app.setHash('#logs/active'));
 
-  const firstRow = page.locator(
-    `[${LOGS_PASS_ROW}="pass-live-control-1"]`,
-  );
-  const firstRevoke = firstRow.locator(`[${LOGS_ACTION}="revoke-grant"]`);
+  const previousRow = page.locator(`[${LOGS_PASS_ROW}="pass-live-control-0"]`);
+  const row = page.locator(`[${LOGS_PASS_ROW}="pass-live-control-1"]`);
+  const revoke = row.locator(`[${LOGS_ACTION}="revoke-grant"]`);
   const nextRevoke = page.locator(
     `[${LOGS_PASS_ROW}="pass-live-control-2"] `
     + `[${LOGS_ACTION}="revoke-grant"]`,
   );
-  await expect(firstRevoke).toBeVisible();
+  await expect(revoke).toBeInViewport({ ratio: 1 });
   await page.evaluate(() => window.__app.holdRpcResponses?.('collection.contract.session_grant.revoke'));
-  await firstRevoke.focus();
+  await revoke.focus();
   await page.keyboard.press('Enter');
 
-  await expect(firstRevoke).toHaveText('Revoking…');
-  await expect(firstRevoke).toHaveAccessibleName(
+  await expect(revoke).toHaveText('Revoking…');
+  await expect(revoke).toHaveAccessibleName(
     'Revoking… Send reviewed mail (pass-live-control-1)',
   );
-  await expect(firstRevoke).toBeFocused();
-  await expect(firstRevoke).not.toHaveAttribute('disabled');
-  await expect(firstRevoke).toHaveAttribute('aria-disabled', 'true');
-  await expect(firstRevoke).toHaveAttribute('aria-busy', 'true');
-  await firstRevoke.evaluate((button: HTMLButtonElement) => {
+  await expect(revoke).toBeFocused();
+  await expect(revoke).not.toHaveAttribute('disabled');
+  await expect(revoke).toHaveAttribute('aria-disabled', 'true');
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(revoke).toBeFocused();
+  await expect(revoke).toHaveAttribute('aria-busy', 'true');
+  await revoke.evaluate((button: HTMLButtonElement) => {
     button.click();
     button.click();
   });
@@ -1152,8 +1160,10 @@ test('Logs keeps a pass revocation focused until its row retires', async ({ page
   )).toBe(1);
 
   expect(await page.evaluate(() => window.__app.releaseRpcResponses?.('collection.contract.session_grant.revoke'))).toBe(1);
-  await expect(firstRow).toHaveCount(0);
+  await expect(row).toHaveCount(0);
+  await expect(previousRow).toBeVisible();
   await expect(nextRevoke).toBeFocused();
+  expect(await page.evaluate(() => window.__app.rpcCallCount('collection.contract.session_grant.revoke'))).toBe(1);
 });
 
 test('Logs keeps manual refreshes focused, visible, and single-flight', async ({ page }) => {
@@ -1223,13 +1233,19 @@ test('Logs keeps manual refreshes focused, visible, and single-flight', async ({
 });
 
 
-for (const navigation of ['workspace Back', 'browser Back'] as const) {
-  test(`Run workspace restores filters, loaded pages, focus and scroll with ${navigation}`, async ({ page }) => {
-    await page.setViewportSize({ width: 390, height: 700 });
+for (const { navigation, width, height } of [
+  { navigation: 'workspace Back', width: 390, height: 700 },
+  { navigation: 'browser Back', width: 390, height: 700 },
+  { navigation: 'workspace Back', width: 1280, height: 500 },
+  { navigation: 'browser Back', width: 1280, height: 500 },
+] as const) {
+  test(`Run workspace restores filters, loaded pages, focus and scroll with ${navigation} at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height });
     await page.goto(`${HARNESS_URL}?journey=verification&logs=paged&logs_filters=1#logs`);
     await page.waitForFunction(() => window.__app?.ready === true);
     const status = page.locator('[data-recued-logs-filter="status"]');
-    await page.locator('[data-recued-logs-filter="origin"]').selectOption('user_self');
+    const origin = page.locator('[data-recued-logs-filter="origin"]');
+    await origin.selectOption('user_self');
     await page.locator(`[${LOGS_ACTION}="apply-filters"]`).click();
     await expect(page.locator(`[${LOGS_ACTION}="apply-filters"]`)).not.toHaveAttribute('aria-busy');
     await page.locator(`[${LOGS_ACTION}="load-more"]`).click();
@@ -1249,6 +1265,7 @@ for (const navigation of ['workspace Back', 'browser Back'] as const) {
     if (navigation === 'browser Back') await page.goBack();
     else await page.getByRole('link', { name: 'Back to history' }).click();
     await expect(page).toHaveURL(/#logs$/);
+    await expect(origin).toHaveValue('user_self');
     await expect(status).toHaveValue('failed');
     await expect(page.locator(`[${LOGS_ROW}]`)).toHaveCount(2);
     await expect(opener).toBeFocused();
@@ -1465,6 +1482,122 @@ for (const scope of ['#logs', '#logs/recipe/fixture%2Frun-management']) {
     expect(queries.at(-1)?.status).toBeUndefined();
   });
 }
+
+test('desktop Logs previews runs in place and returns to the originating Preview action from full review', async ({ page }) => {
+  const recordedError = 'Import was blocked by the write policy for <primary contacts>.';
+  await installManagementFixture(page, { recordedError });
+  await page.setViewportSize({ width: 1440, height: 740 });
+  await page.goto(`${HARNESS_URL}?logs_filters=1&hold_rpc=execution.get#logs`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  const rows = page.locator(`[${LOGS_ROW}]`);
+  await expect(rows).toHaveCount(4);
+  const origin = page.locator('[data-recued-logs-filter="origin"]');
+  const status = page.locator('[data-recued-logs-filter="status"]');
+  await origin.selectOption('user_self');
+  await page.locator(`[${LOGS_ACTION}="apply-filters"]`).click();
+  await expect(page.locator(`[${LOGS_ACTION}="apply-filters"]`)).not.toHaveAttribute('aria-busy');
+  await page.locator(`[${LOGS_LOAD_MORE}]`).click();
+  await expect(rows).toHaveCount(8);
+  await status.selectOption('failed');
+  const first = page.getByRole('button', { name: /^Preview Uncertain external change/ });
+  const second = page.getByRole('button', { name: /^Preview Failed import/ });
+  const pane = page.getByRole('region', { name: 'Run preview', exact: true });
+  const scroller = page.locator('[data-recued-webclient-content]');
+  const scroll = () => scroller.evaluate(node => node.scrollTop);
+  const calls = () => page.evaluate(() => window.__app.rpcCallCount('execution.get'));
+  const before = await calls();
+
+  await second.scrollIntoViewIfNeeded();
+  await first.click();
+  await expect(pane.getByText('Loading run preview…')).toBeVisible();
+  await expect(first).toHaveAttribute('aria-current', 'true');
+  await expect.poll(calls).toBe(before + 1);
+  await second.scrollIntoViewIfNeeded();
+  const listTop = await scroll();
+  expect(listTop).toBeGreaterThan(0);
+  await second.press('Enter');
+  const heading = pane.getByRole('heading', { name: 'Failed import', exact: true });
+  await expect(heading).toBeFocused();
+  await expect.poll(calls).toBe(before + 2);
+  expect(await page.evaluate(() => window.__app.releaseRpcResponses!('execution.get', 1))).toBe(1);
+  await expect(pane.getByText(recordedError, { exact: true })).toBeVisible();
+  await expect(pane.getByRole('heading', { name: 'Not allowed', exact: true })).toBeVisible();
+  await expect(pane.locator('[data-recued-logs-policy]')).toHaveText('denied');
+  expect(await page.evaluate(() => window.__app.releaseRpcResponses!('execution.get', 0))).toBe(1);
+  await page.evaluate(() => new Promise(requestAnimationFrame));
+  await expect(pane.getByText(recordedError, { exact: true })).toBeVisible();
+  await expect(second).toHaveAttribute('aria-current', 'true');
+  await expect(first).not.toHaveAttribute('aria-current');
+  await expect(page).toHaveURL(/#logs$/);
+  await expect(origin).toHaveValue('user_self');
+  await expect(status).toHaveValue('failed');
+  await expect(rows).toHaveCount(8);
+  expect(await scroll()).toBe(listTop);
+
+  await heading.press('ArrowLeft'); await expect(second).toBeFocused();
+  await second.press('ArrowRight'); await expect(heading).toBeFocused();
+  const beforeFullReview = await calls();
+  await pane.getByRole('link', { name: 'Open full review', exact: true }).press('Enter');
+  await expect(page).toHaveURL(/#logs\/history-failed$/);
+  await expect.poll(calls).toBe(beforeFullReview + 1);
+  expect(await page.evaluate(() => window.__app.releaseRpcResponses!('execution.get'))).toBe(1);
+  await expect(page.getByRole('region', { name: 'Run detail' })).toContainText(recordedError);
+  await expect(pane).toHaveCount(0);
+  await page.getByRole('link', { name: 'Back to history' }).click();
+  await expect(rows).toHaveCount(8);
+  await expect(origin).toHaveValue('user_self');
+  await expect(status).toHaveValue('failed');
+  await expect(second).toBeFocused();
+
+  const beforeClosing = await calls();
+  await second.press('Enter');
+  await expect(heading).toBeFocused();
+  await heading.press('Escape');
+  await expect(pane).toHaveCount(0);
+  await expect(second).toBeFocused();
+  await second.press('Enter');
+  await expect(heading).toBeFocused();
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(pane).toHaveCount(0);
+  await expect(second).toHaveCount(0);
+  await expect(page.getByRole('button', { name: /^Open run detail for Failed import/ })).toBeFocused();
+  await expect.poll(calls).toBe(beforeClosing + 2);
+  expect(await page.evaluate(() => window.__app.releaseRpcResponses!('execution.get'))).toBe(2);
+  await page.evaluate(() => new Promise(requestAnimationFrame));
+  await expect(pane).toHaveCount(0);
+});
+
+test('desktop Logs rejects a mismatched preview and retries the selected run', async ({ page }) => {
+  await installManagementFixture(page);
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.goto(`${HARNESS_URL}?journey=verification#logs`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => {
+    const fixture = window.__connectionsFixture!;
+    let wrongRun = true;
+    window.__connectionsFixture = (method, args) => {
+      if (method === 'execution.get' && wrongRun) {
+        wrongRun = false;
+        return fixture(method, { run_id: 'history-finished' });
+      }
+      return fixture(method, args);
+    };
+  });
+  await page.getByRole('button', { name: /^Preview Partially completed import/ }).click();
+  const pane = page.getByRole('region', { name: 'Run preview', exact: true });
+  await expect(pane.getByRole('alert')).toContainText('This run could not be confirmed');
+  await expect(page.locator(`[${LOGS_ROW}]`)).toHaveCount(4);
+  await pane.getByRole('button', { name: 'Retry preview' }).press('Enter');
+  await expect(pane.getByRole('heading', { name: 'Partially completed import', exact: true })).toBeFocused();
+  await expect(pane).toContainText('The run finished with some item failures.');
+  await expect(pane.getByRole('alert')).toHaveCount(0);
+  await page.locator('[data-recued-logs-filter="status"]').selectOption('failed');
+  const apply = page.locator(`[${LOGS_ACTION}="apply-filters"]`);
+  await apply.press('Enter');
+  await expect(page.locator(`[${LOGS_ROW}]`)).toHaveCount(1);
+  await expect(pane).toHaveCount(0);
+  await expect(apply).toBeFocused();
+});
 
 test('Run management refresh preserves the applied query, pages and newer draft', async ({ page }) => {
   await installManagementFixture(page);

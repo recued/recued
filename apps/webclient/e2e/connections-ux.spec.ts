@@ -1,11 +1,15 @@
 import { HARNESS_ORIGIN } from './helpers/harness-origin.js';
 import { expect, test, type Page } from '@playwright/test';
+import type { CloudFileListRequest, CloudFileSource, ConnectionView } from '@recued/contracts';
 import { installConnectionsUxFixture } from './fixtures/connections-ux.js';
 import { clickActionGlyph } from './helpers/action-glyph.js';
 import { installOAuthMaintenanceFixture } from './fixtures/oauth-maintenance.js';
 
 const origin = process.env.CONNECTIONS_UX_ORIGIN ?? HARNESS_ORIGIN;
 const route = (page: Page) => page.locator('[data-recued-connections-route]');
+const fileDetails = (page: Page) => route(page).getByRole('region', { name: 'File source details', exact: true });
+const appsWorkspace = (page: Page) => route(page).locator('[data-connections-inventory-workspace]');
+const appDetails = (page: Page) => route(page).getByRole('region', { name: 'Connection details', exact: true });
 const go = async (page: Page, hash: string) => {
   await page.goto(origin + '/full-app-harness.html?settle_reads=1&oauth=ready&connection=webhooks' + hash);
   await page.waitForFunction(() => window.__app?.ready === true);
@@ -129,6 +133,145 @@ test('connections and Add lead the page while the repair summary and administrat
   await expect(route(page).locator('.connections-row-name')).toHaveText('Work spreadsheets');
 });
 
+const openAppsWorkspace = async (page: Page): Promise<void> => {
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await go(page, '#chat');
+  await page.evaluate(() => {
+    const now = 1_700_000_000_000;
+    const rows: ConnectionView[] = Array.from({ length: 32 }, (_, index) => {
+      const number = String(index + 1).padStart(2, '0');
+      return {
+        kind: 'api', name: `workspace-${number}`, display_name: `Workspace API ${number}`,
+        auth_type: 'bearer', vendor: index === 30 ? 'hubspot' : 'google', base_url: 'https://api.example.test',
+        health: index === 31 ? { status: 'auth_failed' } : { status: 'ok', last_probed_at: now }, updated_at: now,
+        ...(number === '24' ? { bound_pack_slugs: ['workspace-inventory'] } : {}),
+      };
+    });
+    rows.push(
+      { kind: 'api', name: 'shared', display_name: 'Shared API', auth_type: 'bearer', base_url: 'https://api.example.test', updated_at: now },
+      { kind: 'mcp', name: 'shared', display_name: 'Shared MCP', endpoint: 'https://mcp.example.test', updated_at: now },
+    );
+    const base = window.__connectionsFixture!;
+    window.__connectionsFixture = async (method, input) => {
+      if (method === 'collection.connection.list') return { result: { connections: rows } };
+      if (method === 'packs.list') return { result: { packs: [{
+        slug: 'workspace-inventory', name: 'Workspace inventory pack', installed: true,
+      }] } };
+      if (method === 'collection.connection.probe') {
+        const { kind } = input as { kind: string };
+        const health = kind === 'api'
+          ? { status: 'unknown', last_error: 'http_status_500', last_probed_at: now }
+          : { status: 'ok', last_probed_at: now };
+        return { result: { health } };
+      }
+      return base(method, input);
+    };
+    window.__app.setHash('#connections/others');
+  });
+};
+
+test('desktop Apps & APIs restores the exact connection, filters, focus and scroll through Back and Forward', async ({ page }) => {
+  await openAppsWorkspace(page);
+  const workspace = appsWorkspace(page);
+  const roster = workspace.getByRole('region', { name: 'Connections', exact: true });
+  const details = appDetails(page);
+  const filters = roster.getByRole('group', { name: 'Filter connections', exact: true });
+  const query = filters.getByRole('searchbox', { name: 'Search connections', exact: true });
+  const vendor = filters.getByRole('combobox', { name: 'Vendor', exact: true });
+  const status = filters.getByRole('combobox', { name: 'Status', exact: true });
+  await expect(roster.getByRole('listitem')).toHaveCount(34);
+  await expect(roster.getByRole('heading', { name: 'MCP (1)', exact: true })).toBeVisible();
+  await query.fill('Workspace API');
+  await vendor.selectOption('google');
+  await status.selectOption('checked');
+  await expect(roster.getByRole('listitem')).toHaveCount(30);
+  await roster.getByRole('button', { name: /^Workspace API 23\b/ }).press('Enter');
+  await expect(details.getByRole('heading', { name: 'Workspace API 23', exact: true })).toBeFocused();
+  const selected = roster.getByRole('button', { name: /^Workspace API 24\b/ });
+  await selected.scrollIntoViewIfNeeded();
+  await selected.focus();
+  const scroll = () => workspace.evaluate(root => ({
+    roster: root.querySelector('[data-connection-roster-rows]')?.scrollTop,
+    page: root.closest('[data-recued-webclient-content]')?.scrollTop,
+  }));
+  const savedPosition = await scroll();
+  expect(savedPosition.roster).toBeGreaterThan(0);
+  await page.keyboard.press('Enter');
+  await expect(page).toHaveURL(/#connections\/others\/connection\/api\/workspace-24$/);
+  const heading = details.getByRole('heading', { name: 'Workspace API 24', exact: true });
+  await expect(heading).toBeFocused();
+  await expect(selected).toHaveAttribute('aria-current', 'true');
+  await expect(details.getByText('Bearer token', { exact: true })).toBeVisible();
+  await expect(details.getByText('2023-11-14 22:13 UTC', { exact: true })).toBeVisible();
+  await expect(details.getByRole('button', { name: 'Test connection', exact: true })).toBeVisible();
+  await expect(details.getByRole('link', { name: 'Workspace inventory pack', exact: true })).toBeVisible();
+  const rosterBounds = (await roster.boundingBox())!;
+  expect(rosterBounds.x + rosterBounds.width).toBeLessThan((await details.boundingBox())!.x);
+
+  await page.goBack();
+  await expect(page).toHaveURL(/#connections\/others$/);
+  await expect(selected).toBeFocused();
+  await expect(query).toHaveValue('Workspace API');
+  await expect(vendor).toHaveValue('google');
+  await expect(status).toHaveValue('checked');
+  await expect.poll(scroll).toEqual(savedPosition);
+  await page.goForward();
+  await expect(heading).toBeFocused();
+  await details.getByRole('button', { name: 'Close details', exact: true }).press('Enter');
+  await expect(selected).toBeFocused();
+  await expect.poll(scroll).toEqual(savedPosition);
+  await page.goForward();
+  await expect(heading).toBeFocused();
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(workspace).toHaveCount(0);
+  await expect(heading).toBeVisible();
+  await details.getByRole('button', { name: 'Back', exact: true }).press('Enter');
+  const mobileProbe = route(page).locator('[data-action="connections-probe"][data-name="workspace-24"]');
+  await expect(mobileProbe).toBeFocused();
+  await expect(mobileProbe).toBeInViewport();
+});
+
+test('desktop Apps & APIs keeps out-of-order tests with the exact connection while switching rows', async ({ page }) => {
+  await openAppsWorkspace(page);
+  const rowA = appsWorkspace(page).getByRole('button', { name: /^Shared API\b/ });
+  const rowB = appsWorkspace(page).getByRole('button', { name: /^Shared MCP\b/ });
+  const details = appDetails(page);
+  const probe = details.getByRole('button', { name: 'Test connection', exact: true });
+  const method = 'collection.connection.probe';
+  const initialCalls = await page.evaluate(rpc => {
+    window.__app.holdRpcResponses!(rpc);
+    return window.__app.rpcCallCount(rpc);
+  }, method);
+  await rowA.press('Enter');
+  await probe.press('Enter');
+  await expect(details.getByRole('button', { name: 'Testing…', exact: true })).toBeFocused();
+  await expect(rowA).toContainText('Testing…');
+  await page.goBack();
+  await expect(rowA).toBeFocused();
+  await expect(rowA).toContainText('Testing…');
+  await page.goForward();
+  await expect(details.getByRole('heading', { name: 'Shared API', exact: true })).toBeFocused();
+  await rowB.press('Enter');
+  await expect(probe).toBeEnabled();
+  await probe.press('Enter');
+  await expect(rowB).toContainText('Testing…');
+  await expect.poll(() => page.evaluate(rpc => window.__app.rpcCallCount(rpc), method)).toBe(initialCalls + 2);
+
+  await page.evaluate(rpc => window.__app.releaseRpcResponses!(rpc, 1), method);
+  await expect(details).toContainText('Last checked for mcp/shared: ok.');
+  await expect(rowA).toContainText('Testing…');
+  await expect(probe).toBeFocused();
+  await page.evaluate(rpc => window.__app.releaseRpcResponses!(rpc, 0), method);
+  await expect(rowA).not.toContainText('Testing…');
+  await expect(details).not.toContainText('HTTP 500');
+  await expect(probe).toBeFocused();
+  await rowA.press('Enter');
+  await expect(details).toContainText('Last checked for api/shared: needs attention.');
+  await expect(details).toContainText('HTTP 500');
+  await rowB.press('Enter');
+  await expect(details).toContainText('Last checked for mcp/shared: ok.');
+});
+
 test('mail broker setup carries its provider and required permissions and returns without losing choices', async ({ page }) => {
   await go(page, '#connections/mail'); await route(page).getByRole('button', { name: '+ Connect mailbox', exact: true }).click();
   await route(page).locator('[data-provider="gmail"]').click();
@@ -218,13 +361,115 @@ test('API authentication is a row action and HTTP errors never look like success
 test('Files lists local and cloud sources with direct browse and authentication actions', async ({ page }) => {
   await go(page, '#connections/file');
   await expect(route(page)).toContainText('documents'); await expect(route(page)).toContainText('Work Drive'); await expect(route(page)).toContainText('Archive bucket');
-  await expect(route(page).getByRole('link', { name: 'Browse files', exact: true }).first()).toHaveAttribute('href', '#data/files/remote%3Adrive-work');
+  await expect(route(page).getByRole('link', { name: 'Browse files', exact: true }).first()).toHaveAttribute('href', '#data/files/source/remote%3Adrive-work');
   await expect(route(page).getByRole('link', { name: 'Manage authentication', exact: true }).first()).toHaveAttribute('href', '#connections/others/switch-file-authentication/api/drive-work');
   await expect(route(page).getByRole('link', { name: 'Manage authentication', exact: true }).last()).toHaveAttribute('href', '#connections/others/review-access/api/s3-archive');
   await route(page).locator('.accounts-cloud-connect>summary').click();
   await expect(route(page).getByRole('link', { name: 'Amazon S3', exact: true })).toHaveAttribute('href', '#connections/others/enroll/s3');
   await route(page).getByRole('searchbox').fill('Work Drive'); await expect(route(page).locator('.accounts-row')).toHaveCount(1);
   await expect(route(page).getByRole('searchbox')).toBeFocused();
+});
+
+test('desktop Files opens the exact local and cloud sources and restores the workspace on Back', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await go(page, '#chat');
+  await page.evaluate(() => {
+    const base = window.__connectionsFixture!;
+    window.__connectionsFixture = async (method, input) => {
+      if (method === 'data.file.attachments.sources') {
+        const reply = await base(method, input);
+        const { sources } = reply!.result as { sources: CloudFileSource[] };
+        const projects = Array.from({ length: 32 }, (_, index): CloudFileSource => ({
+          source_id: `projects/${index + 1}`, label: `Work projects ${index + 1}`, provider: 'google',
+          authentication_connection: 'drive-work', last_synced_at: 1_700_000_000_000, stale: index === 31,
+        }));
+        return { result: { sources: [...sources, ...projects] } };
+      }
+      if (method === 'data.file.attachments.remote.list') {
+        const { source_id } = input as CloudFileListRequest;
+        return { result: { files: [{
+          record_id: 'file:remote:source-fixture', source_id,
+          filename: source_id === 'projects/24' ? 'Project 24 report.txt' : 'Other source.txt',
+          selection_revision: 'fixture',
+        }] } };
+      }
+      if (method === 'collection.list' && (input as { slug?: string } | undefined)?.slug === 'documents') {
+        return { result: { records: [] } };
+      }
+      return base(method, input);
+    };
+    window.__app.setHash('#connections/file/documents');
+  });
+  const workspace = route(page).locator('[data-accounts-workspace]');
+  const roster = workspace.getByRole('region', { name: 'File sources', exact: true });
+  const details = fileDetails(page);
+  const browse = details.getByRole('link', { name: 'Browse files', exact: true });
+  await expect(details.getByRole('heading', { name: 'documents', exact: true })).toBeVisible();
+  await expect(details.getByText('Local folder', { exact: true })).toBeVisible();
+  await expect(details.getByRole('button', { name: 'Re-sync', exact: true })).toBeVisible();
+  await expect(browse).toHaveAttribute('href', '#data/files/source/documents');
+  await browse.press('Enter');
+  await expect(page).toHaveURL(/#data\/files\/source\/documents$/);
+  await expect(page.locator('[data-collection-slug="documents"]')).toHaveAttribute('aria-pressed', 'true');
+  await page.goBack();
+  await expect(page).toHaveURL(/#connections\/file\/documents$/);
+  await expect(browse).toBeFocused();
+  await details.getByRole('button', { name: 'Close details', exact: true }).press('Enter');
+
+  const filters = roster.getByRole('group', { name: 'Filter connections', exact: true });
+  const query = filters.getByRole('searchbox', { name: 'Search connections', exact: true });
+  const provider = filters.getByRole('combobox', { name: 'Provider', exact: true });
+  const status = filters.getByRole('combobox', { name: 'Status', exact: true });
+  await query.fill('Work projects');
+  await provider.selectOption('google');
+  await status.selectOption('healthy');
+  await expect(roster.getByRole('listitem')).toHaveCount(31);
+  const selected = roster.getByRole('button', { name: /^Work projects 24\b/ });
+  await selected.scrollIntoViewIfNeeded();
+  await selected.press('Enter');
+  const heading = details.getByRole('heading', { name: 'Work projects 24', exact: true });
+  await expect(heading).toBeFocused();
+  await expect(details.getByText('Metadata available', { exact: true })).toBeVisible();
+  await expect(details.getByText('Last synced', { exact: true })).toBeVisible();
+  await expect(details.getByRole('button', { name: 'Remove', exact: true })).toHaveCount(0);
+  await expect(details.getByRole('link', { name: 'Manage authentication', exact: true }))
+    .toHaveAttribute('href', '#connections/others/switch-file-authentication/api/drive-work');
+  const rosterBounds = (await roster.boundingBox())!;
+  expect(rosterBounds.x + rosterBounds.width).toBeLessThan((await details.boundingBox())!.x);
+  const scroll = () => workspace.evaluate(root => ({
+    roster: root.querySelector('.accounts-rows')?.scrollTop,
+    page: root.closest('[data-recued-webclient-content]')?.scrollTop,
+  }));
+  await browse.scrollIntoViewIfNeeded();
+  await browse.focus();
+  const savedScroll = await scroll();
+  expect(savedScroll.roster).toBeGreaterThan(0);
+  await page.keyboard.press('Enter');
+  await expect(page).toHaveURL(/#data\/files\/source\/remote%3Aprojects%2F24$/);
+  await expect(page.getByText('Project 24 report.txt', { exact: true })).toBeVisible();
+  await page.goBack();
+  await expect(page).toHaveURL(/#connections\/file\/remote%3Aprojects%2F24$/);
+  await expect(browse).toBeFocused();
+  await expect(selected).toHaveAttribute('aria-current', 'true');
+  await expect(query).toHaveValue('Work projects');
+  await expect(provider).toHaveValue('google');
+  await expect(status).toHaveValue('healthy');
+  await expect.poll(scroll).toEqual(savedScroll);
+
+  await page.goBack();
+  await expect(page).toHaveURL(/#connections\/file$/);
+  await expect(selected).toBeFocused();
+  await expect.poll(scroll).toEqual(savedScroll);
+  await page.goForward();
+  await expect(heading).toBeFocused();
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(workspace).toHaveCount(0);
+  await expect(route(page).getByRole('heading', { name: 'Work projects 24', exact: true })).toBeVisible();
+  await route(page).getByRole('button', { name: 'Back', exact: true }).press('Enter');
+  const phoneBrowse = route(page).getByRole('link', { name: 'Browse files', exact: true })
+    .and(page.locator('[href="#data/files/source/remote%3Aprojects%2F24"]'));
+  await expect(phoneBrowse).toBeFocused();
+  await expect(phoneBrowse).toBeInViewport();
 });
 
 test('saving a connection retains the HTTP result of its follow-up check', async ({ page }) => {
@@ -263,11 +508,26 @@ test('saved app and API editor transitions retain keyboard focus', async ({ page
 });
 
 test('cloud sources remain usable when the independent local-folder inventory fails', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto(origin + '/full-app-harness.html?settle_reads=1&oauth=ready&local_files=failed#connections/file');
   await page.waitForFunction(() => window.__app?.ready === true);
   await expect(route(page)).toContainText('Local folders could not be loaded.');
-  await expect(route(page)).toContainText('Work Drive');
-  await expect(route(page).getByRole('link', { name: 'Browse files', exact: true }).first()).toBeVisible();
+  await route(page).getByRole('button', { name: /^Archive bucket\b/ }).click();
+  const details = fileDetails(page);
+  await expect(details.getByText('Sync needs refresh', { exact: true })).toBeVisible();
+  await expect(details.getByRole('link', { name: 'Manage authentication', exact: true }))
+    .toHaveAttribute('href', '#connections/others/review-access/api/s3-archive');
+  const browse = details.getByRole('link', { name: 'Browse files', exact: true });
+  await expect(browse).toHaveAttribute('href', '#data/files/source/remote%3Aarchive');
+  await page.evaluate(() => window.__app.holdRpcResponses?.('collection.listInstances'));
+  const refresh = route(page).getByRole('button', { name: 'Refresh file sources', exact: true });
+  await refresh.press('Enter');
+  await expect(refresh).toHaveAttribute('aria-busy', 'true');
+  await expect(browse).toBeVisible();
+  await page.evaluate(() => window.__app.releaseRpcResponses?.('collection.listInstances'));
+  await expect(refresh).toBeFocused();
+  await expect(refresh).toBeEnabled();
+  await expect(browse).toBeVisible();
   await expect(route(page)).not.toContainText('Add your first file source');
 });
 

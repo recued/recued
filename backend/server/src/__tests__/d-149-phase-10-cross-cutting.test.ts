@@ -297,7 +297,7 @@ describe('D-149 P10 § Must Hold I-12b — Referrer-Policy no-referrer on token-
     expect(res.getHeader('referrer-policy')).toBe('no-referrer');
   });
 
-  it('token-bearing handler render files all set referrer-policy no-referrer (source ratchet)', async () => {
+  it('token-bearing HTML response writers all set referrer-policy no-referrer (source ratchet)', async () => {
     // The five token-bearing kinds (scheduling / intake / drop / approval
     // / status) MUST emit `Referrer-Policy: no-referrer` because their
     // URLs carry the `?t=` secret — `same-origin` (the reception_page
@@ -312,7 +312,7 @@ describe('D-149 P10 § Must Hold I-12b — Referrer-Policy no-referrer on token-
       'scheduling-link-book.ts',
       'intake-form.ts',
       'drop-link.ts',
-      'approval-link.ts',
+      'reception-link-response.ts',
       'status-link.ts',
     ];
     for (const file of tokenBearingRenderFiles) {

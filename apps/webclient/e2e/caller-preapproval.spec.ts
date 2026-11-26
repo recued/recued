@@ -79,6 +79,80 @@ test('an AI app\'s page lists each recipe it runs without asking; "End all" ends
   expect(errors).toEqual([]);
 });
 
+test('desktop app approvals confirms End all and returns to the same grant view', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 620 });
+  await page.goto(`${HARNESS_URL}?contracts=paged&caller_preapprovals=1#contracts/k-claude/ops`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  const launcher = page.getByRole('button', { name: 'Runs without asking', exact: true });
+  const approvals = page.getByRole('region', { name: 'Runs without asking', exact: true });
+  const search = page.getByRole('searchbox', { name: 'Find an operation' });
+  const shell = page.locator('[data-recued-webclient-content]');
+  await expect(launcher).toBeInViewport({ ratio: 1 });
+  await expect(approvals).toBeHidden();
+  await search.fill('core.ai');
+  await expect(page.locator('[data-recued-contract-grants-cell][data-entry="core.ai.classify"]')).toBeVisible();
+  await expect(page.locator('[data-recued-contract-grants-cell][data-entry="primitive.account.search"]')).toHaveCount(0);
+  const before = await shell.evaluate((node) => {
+    node.scrollTop = 280;
+    return node.scrollTop;
+  });
+  expect(before).toBeGreaterThan(0);
+
+  await launcher.press('Enter');
+  await expect(approvals).toBeFocused();
+  await expect(search).toBeHidden();
+  const endAll = approvals.getByRole('button', { name: 'End all', exact: true });
+  await expect(endAll).toBeInViewport({ ratio: 1 });
+  await endAll.press('Enter');
+  const confirm = approvals.locator('[data-recued-caller-preapproval-confirm="all"]');
+  await expect(confirm).toBeFocused();
+  expect(await ended(page)).toEqual([]);
+  await approvals.getByRole('button', { name: 'Cancel', exact: true }).press('Enter');
+  await expect(endAll).toBeFocused();
+  expect(await ended(page)).toEqual([]);
+  await endAll.press('Enter');
+  await confirm.press('Enter');
+  const note = approvals.locator(NOTE);
+  await expect(note).toHaveText('Ended 2 standing approvals and 1 site pass. They ask again from now on.');
+  await expect(approvals.locator(ROW)).toHaveCount(0);
+  await expect(approvals.locator(PANEL)).toBeFocused();
+  expect(await ended(page)).toEqual([
+    { caller: CLAUDE, recipe_id: 'autorun-live-1' },
+    { caller: CLAUDE, recipe_id: 'file-bill' },
+  ]);
+
+  await page.getByRole('button', { name: 'Back to Ops', exact: true }).press('Enter');
+  await expect(launcher).toBeFocused();
+  await expect(approvals).toBeHidden();
+  await expect(search).toHaveValue('core.ai');
+  await expect(page).toHaveURL(/#contracts\/k-claude\/ops$/);
+  expect(await shell.evaluate(node => node.scrollTop)).toBe(before);
+  await launcher.press('Enter');
+  await expect(note).toBeVisible();
+  expect(await ended(page)).toHaveLength(2);
+});
+
+test('desktop app approvals keeps the End it confirmation focused after a refused request', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 620 });
+  await page.goto(`${HARNESS_URL}?caller_preapprovals=fail#contracts/k-claude`);
+  await page.getByRole('button', { name: 'Runs without asking', exact: true }).press('Enter');
+  const approvals = page.getByRole('region', { name: 'Runs without asking', exact: true });
+  const row = approvals.locator('[data-recued-caller-preapproval-row="ai_app:k-claude|autorun-live-1"]');
+  await row.getByRole('button', { name: 'End it', exact: true }).press('Enter');
+  const confirm = row.locator('[data-recued-caller-preapproval-confirm]');
+  await expect(confirm).toBeFocused();
+  expect(await ended(page)).toEqual([]);
+  await confirm.press('Enter');
+  await expect(row.getByRole('alert')).toContainText('Recued is busy');
+  await expect(confirm).toBeFocused();
+  expect(await ended(page)).toEqual([{ caller: CLAUDE, recipe_id: 'autorun-live-1' }]);
+  await confirm.press('Enter');
+  await expect(approvals.locator(NOTE)).toHaveText('Ended 1 standing approval. It asks again from now on.');
+  await expect(row).toHaveCount(0);
+  await expect(approvals.locator(ROW)).toHaveCount(1);
+  expect(await ended(page)).toHaveLength(2);
+});
+
 test('a recipe\'s page says who runs it without asking, after its runs and automation', async ({ page }) => {
   const errors = await open(page, 'recipes=installed&caller_preapprovals=1', '#recipes/autorun-live-1');
   const section = page.locator('[data-recued-recipe-preapprovals]');

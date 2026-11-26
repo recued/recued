@@ -2,8 +2,8 @@
  *
  *  Renders the upload form (multipart/form-data) + success / error /
  *  placeholder pages mirroring the intake-form renderer's shell so the
- *  visitor experience stays consistent across reception kinds. Public-
- *  mode: no scripts, no remote assets, no fingerprinting.
+ *  visitor experience stays consistent across reception kinds. The native
+ *  form also supports an optional same-origin resumable uploader.
  *
  *  Per Must Hold I-1: a degraded endpoint renders an identical shell
  *  with a placeholder copy — the visitor can't distinguish "rate-
@@ -21,6 +21,7 @@ import {
   type DropLinkVisitorFieldRequirement,
   type VisitorReceipt,
 } from '@recued/contracts';
+import { RECEPTION_PAGE_STYLE_SRC } from '../static-assets.js';
 import { htmlEscape } from './reception-page-render.js';
 import { renderVisitorReceiptBlock } from './visitor-receipt.js';
 
@@ -67,7 +68,7 @@ export interface DropLinkRenderInput {
 // `<meta>` tag: CSP nonces are robust in the header but spotty in meta. The
 // header carries `script-src 'nonce-<per-render>'` for the one uploader
 // `<script>` ('none' on the JS-free pages) + the rest of the strict policy.
-const renderHead = (title: string): string => `<!DOCTYPE html>
+const renderHead = (title: string, stylesheet = `${RECEPTION_PAGE_STATIC_PATH_PREFIX}style.css`): string => `<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -75,7 +76,7 @@ const renderHead = (title: string): string => `<!DOCTYPE html>
 <meta name="robots" content="noindex,nofollow">
 <title>${htmlEscape(title)}</title>
 <link rel="icon" href="${RECEPTION_PAGE_STATIC_PATH_PREFIX}favicon.ico">
-<link rel="stylesheet" href="${RECEPTION_PAGE_STATIC_PATH_PREFIX}style.css">
+<link rel="stylesheet" href="${htmlEscape(stylesheet)}">
 </head>`;
 
 /** D-149 P12 § A.20.7 — `trust_footer` comes from `buildTrustFooter`
@@ -123,7 +124,7 @@ const renderVisitorDescriptionField = (
   if (req === 'omit') return '';
   const required = req === 'required';
   const requiredAttr = required ? ' required' : '';
-  return `<div class="rcp-field">
+  return `<div class="rcp-field rcp-drop-description">
 <label for="rcp-visitor-description">Description${requireMark(required)}</label>
 <textarea id="rcp-visitor-description" name="visitor_description" maxlength="${DROP_LINK_VISITOR_DESCRIPTION_MAX}" rows="3"${requiredAttr}></textarea>
 </div>`;
@@ -145,10 +146,10 @@ const renderFileField = (
   allowed_mime_types: ReadonlyArray<DropLinkAllowedMimeType>,
 ): string => {
   const accept = allowed_mime_types.map((m) => htmlEscape(m)).join(',');
-  return `<div class="rcp-field">
+  return `<div class="rcp-field rcp-drop-file">
 <label for="rcp-blob">File <span class="rcp-required">*</span></label>
-<input id="rcp-blob" name="blob" type="file" accept="${accept}" required>
-<p class="rcp-meta">Up to ${htmlEscape(formatBytes(size_cap_bytes))}. Accepted types: ${htmlEscape(allowed_mime_types.join(', '))}.</p>
+<input id="rcp-blob" name="blob" type="file" accept="${accept}" aria-describedby="rcp-file-requirements" required>
+<p class="rcp-meta" id="rcp-file-requirements">Up to ${htmlEscape(formatBytes(size_cap_bytes))}. Accepted types: ${htmlEscape(allowed_mime_types.join(', '))}.</p>
 </div>`;
 };
 
@@ -178,17 +179,23 @@ export const renderDropLinkHtml = (input: DropLinkRenderInput): string => {
     input.instructions && input.instructions.length > 0
       ? `<p class="rcp-tagline">${htmlEscape(input.instructions)}</p>`
       : '';
+  const visitorFields = [
+    renderVisitorNameField(input.visitor_name_requirement),
+    renderVisitorEmailField(input.visitor_email_requirement),
+    renderVisitorDescriptionField(input.visitor_description_requirement),
+  ].filter(Boolean).join('\n');
+  const visitorDetails = visitorFields ? `<div class="rcp-drop-details">${visitorFields}</div>` : '';
   // D-172 step 5b/5c — the ONE resumable-uploader script: same-origin (NO
   // `crossorigin`, so SRI stays a same-origin no-cors check, not a CORS fetch),
   // nonce-gated by the response CSP, SRI-pinned. Progressive enhancement: the
-  // JS-free `<form>` above stays the upload path when this is absent / blocked.
+  // native multipart form stays the upload path when this is absent / blocked.
   const us = input.uploader_script;
   const uploaderScriptBlock = us
     ? `<script nonce="${htmlEscape(us.nonce)}" integrity="${htmlEscape(us.integrity)}" src="${htmlEscape(us.src)}"></script>`
     : '';
-  return `${renderHead(`Send a file to ${input.display_name}`)}
+  return `${renderHead(`Send a file to ${input.display_name}`, RECEPTION_PAGE_STYLE_SRC)}
 <body>
-<div class="rcp-shell">
+<div class="rcp-shell${visitorDetails ? ' rcp-drop-shell' : ''}">
 <div class="rcp-card">
 <div class="rcp-header">
 <div>
@@ -196,13 +203,15 @@ export const renderDropLinkHtml = (input: DropLinkRenderInput): string => {
 ${instructionsBlock}
 </div>
 </div>
-<form class="rcp-form" method="POST" enctype="multipart/form-data" action="/reception/drop/${htmlEscape(input.endpoint_id)}?t=${encodeURIComponent(input.bearer_secret)}">
+<form class="rcp-form rcp-drop-form" method="POST" enctype="multipart/form-data" action="/reception/drop/${htmlEscape(input.endpoint_id)}?t=${encodeURIComponent(input.bearer_secret)}">
 <input type="hidden" name="form_nonce" value="${htmlEscape(input.form_nonce)}">
-${renderVisitorNameField(input.visitor_name_requirement)}
-${renderVisitorEmailField(input.visitor_email_requirement)}
-${renderVisitorDescriptionField(input.visitor_description_requirement)}
+<div class="rcp-drop-fields">
 ${renderFileField(input.size_cap_bytes, input.allowed_mime_types)}
+${visitorDetails}
+</div>
+<div class="rcp-drop-actions">
 <button type="submit" class="rcp-button rcp-button-primary">${htmlEscape(input.submit_button_label)}</button>
+</div>
 </form>
 ${renderFooter(input.trust_footer ?? null)}
 </div>
@@ -225,7 +234,7 @@ export const renderDropLinkSuccessHtml = (input: {
    *  no receipt block). */
   receipt?: VisitorReceipt | null;
 }): string => {
-  return `${renderHead(`Upload received — ${input.display_name}`)}
+  return `${renderHead(`Upload received — ${input.display_name}`, RECEPTION_PAGE_STYLE_SRC)}
 <body>
 <div class="rcp-shell">
 <div class="rcp-card">

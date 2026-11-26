@@ -19,6 +19,71 @@ const expand = async (page: Page) => {
   await related(page).locator('summary').click(); await expect(contactLink(page)).toBeVisible(); await expect(projectLink(page)).toBeVisible();
 };
 
+test('the desktop Notes workspace restores the formatted note and its filtered list after a related contact visit', async ({ page }, info) => {
+  await page.setViewportSize({ width: 1280, height: 900 });
+  const f = await boot(page, false, '#data/note');
+  try {
+    const selected = page.locator('.work-entity-list-row-button[data-entity-id="note-one"]');
+    const query = page.getByRole('searchbox', { name: 'Search notes', exact: true });
+    const source = page.getByRole('combobox', { name: 'Source', exact: true });
+    await selected.click();
+    const pane = page.getByRole('region', { name: 'Linked note', exact: true });
+    await expect(pane).toBeVisible();
+    await source.selectOption('recued.note');
+    await query.fill('Linked');
+    await expect(page.locator('.work-entity-list-row-button[data-kind="note"]')).toHaveCount(1);
+    await expect(selected).toHaveAttribute('aria-current', 'true');
+    await pane.getByRole('button', { name: 'Formatted', exact: true }).click();
+    const outline = pane.locator('[data-note-section="outline"]');
+    await outline.locator('summary').click();
+    await outline.getByRole('button', { name: 'Section 20', exact: true }).click();
+    await expect(pane.getByRole('heading', { name: 'Section 20', exact: true })).toBeFocused();
+    await expect(outline.locator('summary')).toBeInViewport();
+    await pane.getByRole('button', { name: 'Find in note', exact: true }).click();
+    const find = pane.getByRole('searchbox', { name: 'Find in this note', exact: true });
+    await find.fill('Marker café');
+    await expect(pane.locator('[data-note-find-status]')).toHaveText('1 of 30 matches.');
+
+    await expand(page);
+    await contactLink(page).scrollIntoViewIfNeeded();
+    const content = pane.locator('.work-entity-note-content');
+    const top = await content.evaluate(node => node.scrollTop);
+    expect(top).toBeGreaterThan(0);
+    await expect(pane.getByRole('button', { name: 'Edit', exact: true })).toBeInViewport();
+    await page.screenshot({ path: info.outputPath('notes-workspace-desktop.png') });
+    await contactLink(page).click();
+    await expect(page).toHaveURL(/#data\/contact\/riley%40example\.test$/);
+    await page.getByRole('button', { name: '← Back to note', exact: true }).click();
+    await expect(pane).toHaveAttribute('data-note-format', 'formatted');
+    await expect(contactLink(page)).toBeFocused();
+    await expect(find).toHaveValue('Marker café');
+    await expect(outline).toHaveAttribute('open', '');
+    await expect(query).toHaveValue('Linked');
+    await expect(source).toHaveValue('recued.note');
+    await expect(selected).toHaveAttribute('aria-current', 'true');
+    expect(Math.abs(await content.evaluate(node => node.scrollTop) - top)).toBeLessThanOrEqual(1);
+
+    await page.setViewportSize({ width: 1280, height: 720 });
+    await outline.getByRole('button', { name: 'Section 20', exact: true }).click();
+    await expect(pane.getByRole('heading', { name: 'Section 20', exact: true })).toBeInViewport();
+    await contactLink(page).scrollIntoViewIfNeeded();
+    const dataScroll = page.locator('[data-recued-webclient-content]');
+    const shortWindowTop = await dataScroll.evaluate(node => node.scrollTop);
+    expect(shortWindowTop).toBeGreaterThan(0);
+    await contactLink(page).click();
+    await page.getByRole('button', { name: '← Back to note', exact: true }).click();
+    await expect(contactLink(page)).toBeFocused();
+    expect(Math.abs(await dataScroll.evaluate(node => node.scrollTop) - shortWindowTop)).toBeLessThanOrEqual(1);
+
+    await query.focus();
+    await page.setViewportSize({ width: 390, height: 900 });
+    const modal = page.getByRole('dialog', { name: 'Linked note', exact: true });
+    await expect(modal).toHaveAttribute('aria-modal', 'true');
+    await expect(modal.getByRole('heading', { name: 'Linked note', exact: true })).toBeFocused();
+    expect(f.writes).toEqual([]);
+  } finally { f.dispose(); }
+});
+
 test('loads names on expansion and returns from the exact contact with format, Find match, sections, scroll and focus intact', async ({ page }, testInfo) => {
   await page.setViewportSize({ width: 390, height: 900 }); const fixture = await boot(page);
   try {

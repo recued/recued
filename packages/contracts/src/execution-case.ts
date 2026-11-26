@@ -1335,7 +1335,7 @@ export interface ExecutionCaseLearnedEntry {
  *  typed. What a field for a password, a sign-in code or a card took is never kept: `secret` says
  *  there was one. */
 export interface ExecutionBrowserFlowStep {
-  do: 'type' | 'pick' | 'click' | 'press' | 'submit';
+  do: 'type' | 'pick' | 'click' | 'press' | 'seek' | 'submit';
   url: string;
   title: string;
   element: { role: string; label: string; selector?: string };
@@ -1355,6 +1355,12 @@ export interface ExecutionBrowserFlowStep {
   pick?: string;
   /** The key pressed, for a press. */
   key?: string;
+  /** Requested playback position in seconds, for a seek. */
+  at_seconds?: number;
+  /** An acknowledged double-click gesture, for a click. */
+  count?: 2;
+  /** The supplied text was delivered as a paste event. */
+  delivery?: 'paste';
   /** Epoch ms. */
   at: number;
 }

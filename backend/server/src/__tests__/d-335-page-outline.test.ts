@@ -91,7 +91,7 @@ describe('D-335 slice O — one line per block, what can be acted on as [label](
     const html = '<main><select ref="e1" multiple aria-label="Tags"><option value="a" selected>Alpha</option>'
       + '<optgroup label="Other"><option value="b" selected>Beta</option><option value="c">Gamma</option></optgroup></select></main>';
     const out = outlinePage(html);
-    expect(out.text).toBe('[select multiple: Tags = ["Alpha","Beta"]: Alpha | Beta | Gamma](e1)');
+    expect(out.text).toBe('[select multiple: Tags = ["Alpha","Other / Beta"]: Alpha | Other (Beta | Gamma)](e1)');
     expect(out.controls).toMatchObject([{ ref: 'e1', kind: 'list', names: ['Tags'] }]);
     expect(findControl(out.controls, 'Tags')).toMatchObject({ ref: 'e1' });
   });

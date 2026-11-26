@@ -307,24 +307,44 @@ describe('D-149 P3 § A.18 — token presentation + verify', () => {
         expect(res.getHeader('referrer-policy')).toBe('no-referrer');
         expect(res.getHeader('x-frame-options')).toBe('DENY');
         expect(res.body).toContain('This link is unavailable');
-        expect(res.body).toContain('Ask the business that sent it for a new link.');
+        expect(res.body).toContain('Ask the sender for a new link.');
         expect(res.body).toContain("script-src 'none'");
         expect(res.body).not.toMatch(/private-approval|private-token|<form|<script/);
       }
     } finally { env.db.close(); }
   });
 
-  it.each([undefined, 'application/json', '*/*', 'text/html;q=0,application/json'])('keeps expired approval API responses in JSON for Accept %s', async accept => {
+  it.each([undefined, 'application/json', '*/*', 'text/html;q=0,application/json'])('keeps expired link API responses in JSON for Accept %s', async accept => {
     const env = buildEnv();
     try {
       seedEnabledEndpoint(env.store, { endpoint_id: 'expired-approval', kind: 'approval_link', secret: 'bearer-A', expires_at: NOW - 1 });
+      seedEnabledEndpoint(env.store, { endpoint_id: 'expired-intake', kind: 'intake_form', secret: 'bearer-A', expires_at: NOW - 1 });
       const handler = createReceptionPortHandler({ getStore: () => env.store, getCache: () => env.cache,
         getRateLimiter: () => env.limiter, getPepper: () => PEPPER, now: () => NOW });
-      const res = fakeRes();
-      await handler(fakeReq('GET', '/reception/approve/expired-approval?t=bearer-A', { accept }), res);
-      expect(res.status).toBe(410);
-      expect(res.getHeader('content-type')).toMatch(/application\/json/);
-      expect(JSON.parse(res.body)).toEqual({ error: { code: 'gone' } });
+      for (const path of ['/reception/approve/expired-approval', '/reception/intake/expired-intake']) {
+        const res = fakeRes();
+        await handler(fakeReq('GET', `${path}?t=bearer-A`, { accept }), res);
+        expect(res.status).toBe(410);
+        expect(res.getHeader('content-type')).toMatch(/application\/json/);
+        expect(res.getHeader('vary')).toBe('Accept');
+        expect(JSON.parse(res.body)).toEqual({ error: { code: 'gone' } });
+      }
+    } finally { env.db.close(); }
+  });
+
+  it('returns JSON for resumable upload operations even when the client accepts HTML', async () => {
+    const env = buildEnv();
+    try {
+      seedEnabledEndpoint(env.store, { endpoint_id: 'closed-drop', kind: 'drop_link', secret: 'bearer-A', revoked: true });
+      const handler = createReceptionPortHandler({ getStore: () => env.store, getCache: () => env.cache,
+        getRateLimiter: () => env.limiter, getPepper: () => PEPPER, now: () => NOW });
+      for (const [method, path] of [['GET', '/uploads'], ['POST', '/uploads/fixture-upload/finalize']] as const) {
+        const res = fakeRes();
+        await handler(fakeReq(method, `/reception/drop/closed-drop${path}?t=bearer-A`, { accept: 'text/html' }), res);
+        expect(res.status).toBe(410);
+        expect(res.getHeader('content-type')).toMatch(/application\/json/);
+        expect(JSON.parse(res.body)).toEqual({ error: { code: 'gone' } });
+      }
     } finally { env.db.close(); }
   });
 

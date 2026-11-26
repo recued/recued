@@ -1,4 +1,4 @@
-import { readStoredMailDraftContent, type MailComposeDialogState, type MailDraft, type MailDraftContent, type MailReplyContext } from '@recued/contracts';
+import { readStoredMailDraftContent, parseMailFollowUpPreference, type MailFollowUpPreference, type MailComposeDialogState, type MailDraft, type MailDraftContent, type MailReplyContext } from '@recued/contracts';
 import { readSelectedContactContext, type SelectedContactContext } from '../contacts/contact-context.js';
 
 export interface MailRecoveryStorage {
@@ -21,6 +21,8 @@ export interface MailRecoveryEntry {
   status: MailRecoveryStatus;
   attempt?: string;
   proposalId?: string;
+  followUp?: MailFollowUpPreference | null;
+  followUpRequestId?: string;
 }
 export const MAIL_RECOVERY_LIMITS = { entries: 8, entryBytes: 256 * 1024, bytes: 1024 * 1024, age: 7 * 86_400_000 } as const;
 const PREFIX = 'recued.mail.compose-recovery.v1:';
@@ -78,6 +80,9 @@ export const parseMailRecovery = (value: unknown, now: number): MailRecoveryEntr
     if (saved.content.sender_mail_instance !== mailbox.slug) return null;
   }
   const contactContext = readSelectedContactContext(row.contactContext);
+  let followUp: MailFollowUpPreference | null | undefined;
+  if (row.followUp !== undefined) { try { followUp = row.followUp === null ? null : parseMailFollowUpPreference(row.followUp); } catch { return null; } }
+  if (row.followUpRequestId !== undefined && (typeof row.followUpRequestId !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(row.followUpRequestId))) return null;
   const matchesContact = contactContext?.email && values.to.some(value => value.trim().toLowerCase() === contactContext.email!.trim().toLowerCase());
   return { id: row.id, updatedAt: row.updatedAt, mailbox: { id: mailbox.id, slug: mailbox.slug, email: mailbox.email },
     dialog: { mode: dialog.mode as MailComposeDialogState['mode'],
@@ -87,6 +92,7 @@ export const parseMailRecovery = (value: unknown, now: number): MailRecoveryEntr
         subject: values.subject, body: values.body, sender_source: values.sender_source, in_reply_to: values.in_reply_to as string | null,
         ...(values.references ? { references: [...values.references as string[]] } : {}) } },
     brief: row.brief, replyContext, ...(matchesContact ? { contactContext: contactContext! } : {}), copyRecipientsOpen: row.copyRecipientsOpen, saved, ...(prior ? { prior } : {}), status: row.status as MailRecoveryStatus,
+    ...(followUp !== undefined ? { followUp } : {}), ...(typeof row.followUpRequestId === 'string' ? { followUpRequestId: row.followUpRequestId } : {}),
     ...(row.attempt ? { attempt: row.attempt as string } : {}), ...(row.proposalId ? { proposalId: row.proposalId as string } : {}) };
 };
 

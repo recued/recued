@@ -1,3 +1,4 @@
+import { isDeliveryReportHeader, parseDeliveryReport } from './delivery-report.js';
 /** Phase D (D-106) — IMAP provider (Commit 13).
  *
  *  Implements `MailProvider` against `imapflow`. One `ImapClient` per
@@ -40,6 +41,7 @@
  */
 
 import { EventEmitter } from 'node:events';
+import { parsedReplyAutomation } from './reply-automation.js';
 import { randomUUID } from 'node:crypto';
 import { simpleParser } from 'mailparser';
 import type { AddressObject, ParsedMail } from 'mailparser';
@@ -513,6 +515,8 @@ export const canonicalizeImap = async (
   },
 ): Promise<CanonicalMessage> => {
   const parsed = await simpleParser(source);
+  const isReport = isDeliveryReportHeader(parsed.headerLines.map(header => [header.key, header.line.slice(header.line.indexOf(':') + 1)] as const));
+  const deliveryReport = isReport ? await parseDeliveryReport(source) : undefined;
   const attachments = parsedAttachmentParts(parsed);
   const reconciliationHeaderKey = MAIL_RECONCILIATION_ID_HEADER.toLowerCase();
   const reconciliationHeaderCount = parsed.headerLines.filter(
@@ -544,6 +548,8 @@ export const canonicalizeImap = async (
     from: parsed.from ? firstAddress(parsed.from) : '',
     from_name: mailParsedFromName(parsed.from),
     headers: mailParsedHeaderMap(parsed),
+    reply_automation: parsedReplyAutomation(parsed),
+    ...(isReport ? { delivery_report: deliveryReport, delivery_report_unverified: !deliveryReport } : {}),
     to: addressToStringList(parsed.to),
     cc: addressToStringList(parsed.cc),
     subject: parsed.subject ?? '',

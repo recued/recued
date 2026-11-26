@@ -291,6 +291,7 @@ const buildProgressView = (doc: Document) => {
   const bar = doc.createElement('div');
   bar.className = 'rcp-upload-bar';
   bar.setAttribute('role', 'progressbar');
+  bar.setAttribute('aria-label', 'Upload progress');
   bar.setAttribute('aria-valuemin', '0');
   bar.setAttribute('aria-valuemax', '100');
   const fill = doc.createElement('div');
@@ -478,10 +479,9 @@ export const mountReceptionDropUploader = (
         : {}),
     };
 
-    // Insert the progress region once (after the form) + lock the inputs so the
-    // visitor can't re-submit or swap the file mid-upload.
+    // Keep progress and recovery feedback beside the same submit control.
     if (!mounted) {
-      form.insertAdjacentElement('afterend', progress.el);
+      (submit ?? form).insertAdjacentElement('afterend', progress.el);
       mounted = true;
     }
     form.setAttribute('data-uploading', '');

@@ -1,19 +1,28 @@
-import { isMentionOnlyEmail, type ContactRecord, type CollectionSearchGroup, type WorkEntitySearchRpcRequest, type WorkEntitySearchRpcResponse } from '@recued/contracts';
+import { isMentionOnlyEmail, PURSUIT_CLASS_ID, type ContactRecord, type CollectionSearchGroup, type WorkEntitySearchRpcRequest, type WorkEntitySearchRpcResponse, type YoursReadRequest, type YoursSnapshot } from '@recued/contracts';
 import { sourceRecordLinkDetails } from './source-record-link.js';
 import { serializeSourceRecordAddress, serializeShellRoute } from '../shell/route.js';
 import { recordLink } from '../shell/record-link.js';
 import { classifyRpcError } from '../shell/rpc-error-copy.js';
-import { limitRecordLinkQuery, type ExactRecordLinkMatch, type ExactRecordLinkState, type RecordLinkQuery } from './exact-record-link.js';
+import { assetRecordIdentity, limitRecordLinkQuery, type ExactRecordLinkMatch, type ExactRecordLinkState, type RecordLinkQuery } from './exact-record-link.js';
 import type { RecentWorkRecord } from './recent-work-records.js';
 import type { RecordLinkShortcutGroup } from './record-link-shortcuts.js';
-import type { WorkReaderLink, WorkRecordLink } from './task-note-source.js';
+import type { WorkRecordLink } from './task-note-source.js';
+import type { RecordLinkTarget } from './work-link-preview.js';
 
-export type LinkKind = WorkReaderLink['tab'];
-export const LINK_KINDS = ['contact', 'task', 'note', 'commitment', 'booking', 'project', 'mail', 'calendar'] as const;
-export const linkKindLabel = (kind: LinkKind): string => kind === 'contact' ? 'Contacts' : kind === 'task' ? 'Tasks' : kind === 'note' ? 'Notes' : kind === 'commitment' ? 'Commitments' : kind === 'booking' ? 'Bookings' : kind === 'project' ? 'Projects' : kind === 'mail' ? 'Mail' : 'Calendar';
-export interface LinkOption { key: string; target: WorkReaderLink; title: string; detail: string; account?: string; received_at?: number; shortcut?: RecentWorkRecord; exact?: ExactRecordLinkMatch }
+export type LinkKind = RecordLinkTarget['tab'];
+export const LINK_KINDS = ['contact', 'task', 'note', 'commitment', 'booking', 'project', 'mail', 'calendar', 'asset'] as const;
+const labels: Record<LinkKind, string> = {
+  contact: 'Contacts', task: 'Tasks', note: 'Notes', commitment: 'Commitments', booking: 'Bookings',
+  project: 'Projects', mail: 'Mail', calendar: 'Calendar', asset: 'Yours assets',
+};
+export const linkKindLabel = (kind: LinkKind): string => labels[kind];
+export interface LinkOption {
+  key: string; target: RecordLinkTarget; title: string; detail: string; account?: string;
+  received_at?: number; expectedIdentity?: string; shortcut?: RecentWorkRecord; exact?: ExactRecordLinkMatch;
+}
 export interface LinkPage { options: LinkOption[]; more: boolean; warnings?: string[] }
 export interface RecordLinkSearch {
+  assets?: (args: YoursReadRequest) => Promise<Pick<YoursSnapshot, 'assets' | 'total_assets' | 'classes'>>;
   collections?: (args: { query: string; per_group?: number; platforms?: Array<'mail' | 'calendar'> }) => Promise<{ groups: CollectionSearchGroup[]; unavailable_sources?: Array<{ platform: string; slug: string }> }>;
   contacts?: (args: { query: string; limit: number; offset: number }) => Promise<{ contacts: ContactRecord[]; total: number }>;
   work?: (args: WorkEntitySearchRpcRequest) => Promise<WorkEntitySearchRpcResponse>;
@@ -27,6 +36,30 @@ const option = (kind: WorkRecordLink['tab'], id: string, title: string, detail: 
 export const searchRecordLinks = async (kind: LinkKind, query: string, callers: RecordLinkSearch): Promise<LinkPage> => {
   const args = { query: query.trim(), offset: 0, limit: 20 };
   if (!args.query) return { options: [], more: false };
+  if (kind === 'asset') {
+    if (!callers.assets) throw new Error('Yours asset search is unavailable');
+    const { assets, total_assets, classes } = await callers.assets({
+      search: args.query, offset: args.offset, limit: args.limit, pursuits: 'exclude', mark_shown: false,
+    });
+    if (!Array.isArray(assets) || assets.length > args.limit || !Number.isSafeInteger(total_assets)
+      || total_assets < assets.length || total_assets > 0 && !assets.length) throw new Error('Invalid asset page');
+    const found = new Set<string>();
+    const options: LinkOption[] = [];
+    for (const asset of assets) {
+      if (!asset || !validId(asset.id) || !Number.isSafeInteger(asset.created_at) || asset.created_at < 0
+        || typeof asset.name !== 'string' || typeof asset.status !== 'string' || found.has(asset.id)) throw new Error('Invalid asset identity');
+      found.add(asset.id);
+      if (asset.deleted_at != null || asset.sync_state === 'tombstoned' || asset.class_id === PURSUIT_CLASS_ID) continue;
+      options.push({
+        key: JSON.stringify(['asset', asset.id]),
+        target: { tab: 'asset', id: asset.id, hash: serializeShellRoute('yours', 'asset', asset.id) },
+        title: asset.name.trim().slice(0, 240) || 'Asset',
+        detail: [classes?.find(row => row.id === asset.class_id)?.name, asset.status.replaceAll('_', ' ')].filter(Boolean).join(' · '),
+        expectedIdentity: assetRecordIdentity(asset.id, asset.created_at),
+      });
+    }
+    return { options, more: total_assets > assets.length };
+  }
   if (kind === 'contact') {
     if (!callers.contacts) throw new Error('Search unavailable');
     const result = await callers.contacts(args);
@@ -76,7 +109,8 @@ export const searchRecordLinks = async (kind: LinkKind, query: string, callers: 
 };
 
 /** Insert a complete URL token without changing text outside the selection. */
-export const insertRecordLinkText = (body: string, start: number, end: number, href: string, target: WorkReaderLink, max = -1) => {
+export const insertRecordLinkText = (body: string, start: number, end: number, href: string, target: RecordLinkTarget, max = -1) => {
+  if (target.tab === 'asset') return null;
   if ('id' in target ? !validId(target.id) || target.hash !== serializeShellRoute('data', target.tab, target.id)
     : !validId(target.collectionSlug) || !validId(target.recordId) || target.hash !== serializeSourceRecordAddress(target)) return null;
   const url = recordLink(href, target.hash);
@@ -113,11 +147,11 @@ export const linkInsertPreviewOptions = (view: LinkInsertState): LinkOption[] =>
 export const createRecordLinkInsert = (deps: {
   owner: () => string | null; kinds: readonly LinkKind[];
   search: (kind: LinkKind, query: string) => Promise<LinkPage>;
-  lookup?: { parse: (query: string) => RecordLinkQuery; read: (target: WorkReaderLink) => Promise<ExactRecordLinkState>; verify: (match: ExactRecordLinkMatch) => Promise<boolean> };
+  lookup?: { parse: (query: string) => RecordLinkQuery; read: (target: RecordLinkTarget) => Promise<ExactRecordLinkState>; verify: (match: ExactRecordLinkMatch) => Promise<boolean> };
   shortcuts?: (filter: LinkKind | 'all') => RecordLinkShortcutGroup[];
   verifyShortcut?: (record: RecentWorkRecord) => Promise<boolean>;
-  verify: (target: WorkReaderLink, receivedAt?: number) => Promise<boolean>;
-  insert: (target: WorkReaderLink) => string | null;
+  verify: (target: RecordLinkTarget, receivedAt?: number) => Promise<boolean>;
+  insert: (target: RecordLinkTarget) => string | null;
   prepareSelection?: (option: LinkOption) => Promise<ExactRecordLinkState>;
   insertBatch?: (references: readonly ExactRecordLinkMatch[]) => string | null;
   initialSelections?: () => readonly PreparedRecordLink[];

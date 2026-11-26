@@ -38,6 +38,8 @@ import {
   CONTRACT_GRANTS_AI_TOOLS_NOTE,
   CONTRACT_GRANTS_OLDER_KEY_NOTE,
   CONTRACT_GRANTS_OLDER_KEY_NOTE_ATTR,
+  CONTRACT_GRANTS_JOB_TOOLS_NOTE,
+  CONTRACT_GRANTS_JOB_TOOLS_NOTE_ATTR,
   CONTRACT_GRANTS_AI_TOOLS_NOTE_ATTR,
   CONTRACT_GRANTS_NEED_ATTR,
   CONTRACT_GRANTS_NEEDS_ATTR,
@@ -1591,6 +1593,42 @@ describe('D-327 follow-on — every switch says what it is, every AI tool what i
       const notes = collectByAttr(opsRootEl(panel), CONTRACT_GRANTS_OLDER_KEY_NOTE_ATTR);
       expect(notes.map((n) => n.textContent)).toEqual(shown ? [CONTRACT_GRANTS_OLDER_KEY_NOTE] : []);
     }
+  });
+
+  // D-402 (2026-11-23) — the job tools come with any browser tool an agreement switches on, and have no switch of their
+  //   own: the Ops and Recipes tabs, where the browser tools are, say so while one is on.
+  it('says an agreement\'s key starts and ends jobs while a browser tool is on, a Toolkit recipe or a browser op', async () => {
+    const recipe = (publisher_id: string, recipe_id: string, name: string) => ({ recipe_id, publisher_id,
+      source: 'pair-sync' as const, recipe: { metadata: { name, description: name } } });
+    const recipes = [recipe('recued-core', 'read-web-text', 'Read web text'), recipe('kitchen', 'read-web-text', 'My copy'),
+      recipe('recued-core', 'overdue-invoice-chase', 'Chase overdue invoices')];
+    const recipesOf = (panel: { recipesRoot: HTMLElement }): FakeEl => panel.recipesRoot as unknown as FakeEl;
+    const notes = (panel: { opsRoot: HTMLElement; recipesRoot: HTMLElement; entitiesRoot: HTMLElement }) => [
+      collectByAttr(opsRootEl(panel), CONTRACT_GRANTS_JOB_TOOLS_NOTE_ATTR).map((n) => n.textContent),
+      collectByAttr(recipesOf(panel), CONTRACT_GRANTS_JOB_TOOLS_NOTE_ATTR).map((n) => n.textContent),
+      collectByAttr(entitiesRootEl(panel), CONTRACT_GRANTS_JOB_TOOLS_NOTE_ATTR).length,
+    ];
+    const shown = [[CONTRACT_GRANTS_JOB_TOOLS_NOTE], [CONTRACT_GRANTS_JOB_TOOLS_NOTE], 0];
+    const none = [[], [], 0];
+    const { panel } = mountPanelWith({ keyAgreement: true, recipes });
+    await panel.whenLoaded();
+    expect(notes(panel)).toEqual(none);
+    // Another recipe, or the owner's own copy of a Toolkit recipe, is no browser tool.
+    await panel.toggleEntry('recipe.recued-core/overdue-invoice-chase');
+    await panel.toggleEntry('recipe.kitchen/read-web-text');
+    expect(notes(panel)).toEqual(none);
+    await panel.toggleEntry('recipe.recued-core/read-web-text');
+    expect(notes(panel)).toEqual(shown);
+    // They go with the last browser tool.
+    await panel.toggleEntry('recipe.recued-core/read-web-text');
+    expect(notes(panel)).toEqual(none);
+    await panel.toggleEntry(opGrantEntry('core.dom.open'));
+    expect(notes(panel)).toEqual(shown);
+    // An older contract's key keeps the tools it was made with, so it never says it.
+    const older = mountPanelWith({ keyKeepsItsTools: true, recipes, seed: { 'recipe.recued-core/read-web-text': true } });
+    await older.panel.whenLoaded();
+    expect(older.panel.getEffective('recipe.recued-core/read-web-text')).toBe('on');
+    expect(notes(older.panel)).toEqual(none);
   });
 
   it('lists what an AI tool needs, each one on or off, and a click switches it in place', async () => {

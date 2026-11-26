@@ -31,7 +31,12 @@ export const createRecordLinkInsertSurface = (deps: RecordLinkPickerServices & {
   let dialog: HTMLDialogElement | null = null, snapshot: Snapshot | null = null, supported: boolean | undefined;
   let timer: ReturnType<typeof setTimeout> | undefined, focusedSelection: string | undefined;
   let previewReturnKey: string | undefined, previewResultsTop = 0, showingPreview = false, selectionsExpanded = false;
-  const kinds = LINK_KINDS.filter(kind => kind === 'contact' ? deps.search.contacts && deps.readers.contact : kind === 'mail' || kind === 'calendar' ? deps.search.collections && deps.readers.source : deps.search.work && deps.readers.work);
+  const kinds = LINK_KINDS.filter(kind => {
+    if (kind === 'asset') return deps.picker && deps.search.assets && deps.readers.asset;
+    if (kind === 'contact') return deps.search.contacts && deps.readers.contact;
+    if (kind === 'mail' || kind === 'calendar') return deps.search.collections && deps.readers.source;
+    return deps.search.work && deps.readers.work;
+  });
   const cancelTimer = () => { if (timer !== undefined) clearTimeout(timer); timer = undefined; };
   const removeDialog = () => {
     const old = dialog; dialog = null;

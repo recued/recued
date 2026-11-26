@@ -49,6 +49,8 @@ describe('D-148 P1 — BRIDGE_ACTIONS closed list', () => {
       'describe',
       // D-335 slice AP — a file a page links to, fetched as the page fetches it.
       'download_file',
+      // v40 (Bridge 0.0.15) — a draggable element dropped onto another in the same document.
+      'drag',
       'extract_table',
       'fill',
       // D-335 slice X — a tab moved back, an element pointed at.
@@ -77,10 +79,14 @@ describe('D-148 P1 — BRIDGE_ACTIONS closed list', () => {
       'screenshot_page',
       // D-335 slice U — a page, a panel or an element scrolled a screen at a time.
       'scroll',
+      // v40 (Bridge 0.0.15) — a position within a native media player the page shows.
+      'seek_media',
       // D-335 slice J — sends the form an element is in.
       'submit',
       // D-335 slice AQ — one of the owner's files into a page's file field.
       'upload_file',
+      // v40 (Bridge 0.0.15) — one file field's whole selection in a single action.
+      'upload_files',
       'wait_for_element',
       'wait_for_selector',
     ]);

@@ -2,6 +2,30 @@ import { describe, expect, it } from 'vitest';
 import { parseSavedDataViewDefinition, sameSavedDataViewDefinition } from '../saved-data-views.js';
 
 describe('saved universal-search result types', () => {
+  it('retains Settings searches without storing setting values', () => {
+    const view = { tab: 'search' as const, query: 'quiet hours', result_type: 'setting' as const };
+    expect(parseSavedDataViewDefinition(view)).toEqual(view);
+    expect(sameSavedDataViewDefinition(view, { ...view, result_type: 'connection' })).toBe(false);
+    expect(parseSavedDataViewDefinition({ ...view, settings: [] })).toBeNull();
+  });
+  it('retains a Saved Views finder without storing the views it found', () => {
+    const view = { tab: 'search' as const, query: 'overdue', result_type: 'saved_view' as const };
+    expect(parseSavedDataViewDefinition(view)).toEqual(view);
+    expect(sameSavedDataViewDefinition(view, { ...view, result_type: 'task' })).toBe(false);
+    expect(parseSavedDataViewDefinition({ ...view, views: [] })).toBeNull();
+  });
+  it('retains Connections queries and type without snapshotting accounts or confusing them with mail content', () => {
+    const view = { tab: 'search' as const, query: 'work gmail', result_type: 'connection' as const };
+    expect(parseSavedDataViewDefinition(view)).toEqual(view);
+    expect(sameSavedDataViewDefinition(view, { ...view, result_type: 'mail' })).toBe(false);
+    expect(parseSavedDataViewDefinition({ ...view, connections: [] })).toBeNull();
+  });
+  it('retains Runs searches without storing result rows or confusing them with pending decisions', () => {
+    const view = { tab: 'search' as const, query: 'customer follow-up', result_type: 'run' as const };
+    expect(parseSavedDataViewDefinition(view)).toEqual(view);
+    expect(sameSavedDataViewDefinition(view, { ...view, result_type: 'decision' })).toBe(false);
+    expect(parseSavedDataViewDefinition({ ...view, runs: [] })).toBeNull();
+  });
   it('retains reminder status filters and refuses unknown statuses without widening the view', () => {
     const current = { tab: 'search' as const, query: 'clinic', result_type: 'reminder' as const, reminder_state: 'delivered' as const };
     expect(parseSavedDataViewDefinition(current)).toEqual(current);

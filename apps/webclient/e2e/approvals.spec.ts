@@ -12,6 +12,7 @@ for (const width of [280, 1280]) {
     await page.setViewportSize({ width, height: 800 });
     await page.goto(`${HARNESS_URL}?attention=pending&resource_review=records-batch#approvals`);
     await page.waitForFunction(() => window.__app?.ready === true);
+    if (width === 1280) await page.locator('[data-recued-approvals-queue-key="ask:ask-attention-1"]').click();
     const card = page.locator('[data-recued-approvals-focus="ask-attention-1"]');
     const review = card.getByRole('region', { name: 'Reviewed changes' });
     await expect(review).toBeVisible();
@@ -41,6 +42,7 @@ for (const width of [280, 1280]) {
     await page.setViewportSize({ width, height: 800 });
     await page.goto(`${HARNESS_URL}?attention=pending&ask_chat_plan=save#approvals`);
     await page.waitForFunction(() => window.__app?.ready === true);
+    if (width === 1280) await page.locator('[data-recued-approvals-queue-key="ask:ask-attention-1"]').click();
     const name = 'Change it in Chat: Send the customer follow-up?';
     const href = '#chat/session/chat-attention-1/plan/plan-attention-1';
     const card = page.locator('[data-recued-approvals-focus="ask-attention-1"]');

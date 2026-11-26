@@ -767,6 +767,7 @@ test.describe('Calendar month', () => {
   });
 
   test('pages a complete month, bounds dense-day previews and opens its full agenda without another read', async ({ page }, testInfo) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
     await openMonth(page);
     await expect(calendar(page).locator('.calendar-agenda-range')).toHaveText('October 2026');
     await expect(page.locator('.calendar-month-date')).toHaveCount(31);
@@ -776,6 +777,18 @@ test.describe('Calendar month', () => {
     const reads = await page.evaluate(() => window.__calendarAgenda.reads);
     expect(reads.filter(read => read.slug === 'local' && !read.allDay && read.from === Date.parse('2026-10-01T07:00:00Z')).map(read => read.offset)).toEqual([0, 100]);
     expect(reads.some(read => read.allDay && read.from === Date.parse('2026-10-01T00:00:00Z') && read.before === Date.parse('2026-11-01T00:00:00Z'))).toBe(true);
+    const content = page.locator('[data-recued-webclient-content]');
+    const busyDate = date(page, '2026-10-29');
+    await busyDate.scrollIntoViewIfNeeded();
+    const position = await content.evaluate(node => node.scrollTop);
+    await busyDate.click();
+    await expect(busyDate).toBeFocused();
+    await expect(selected(page).getByRole('button', { name: /Planning slot/ })).toHaveCount(103);
+    expect(await content.evaluate(node => node.scrollTop)).toBe(position);
+    await page.keyboard.press('ArrowLeft');
+    await expect(date(page, '2026-10-28')).toBeFocused();
+    await expect(selected(page).getByRole('button', { name: /Customer planning/ })).toHaveCount(1);
+    expect(await content.evaluate(node => node.scrollTop)).toBe(position);
     await cell(page, '2026-10-29').getByRole('button', { name: /Show all saved events/ }).click();
     await expect(selected(page).getByRole('heading')).toBeFocused();
     await expect(selected(page).getByRole('button', { name: /Planning slot/ })).toHaveCount(103);
@@ -837,6 +850,46 @@ test.describe('Calendar month', () => {
     await page.goBack(); await expect(event).toBeFocused();
     await expect(sources.getByRole('checkbox', { name: 'work', exact: true })).not.toBeChecked();
     expect(await scroll.evaluate(node => node.scrollTop)).toBe(position);
+  });
+
+  test('restores the scrolled day agenda and exact event focus on desktop after browser Back', async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await openMonth(page);
+    const sources = calendar(page).locator('details[data-calendar-agenda-sources]');
+    await sources.locator('summary').click();
+    await sources.getByRole('checkbox', { name: 'work', exact: true }).uncheck();
+    await sources.locator('summary').click();
+    await page.evaluate(() => window.__calendarEvent.moveSavedEvent(Date.parse('2026-10-29T19:00:00Z')));
+    await calendar(page).getByRole('button', { name: 'Refresh', exact: true }).click();
+    const chosen = date(page, '2026-10-29');
+    await expect(chosen).toHaveAttribute('aria-label', /104 saved events$/);
+    await chosen.press('Enter');
+    await expect(selected(page).getByRole('heading')).toBeFocused();
+    const event = selected(page).getByRole('button', { name: /Customer planning/ });
+    const dayScroll = selected(page).locator('[data-calendar-month-day-scroll]');
+    const content = page.locator('[data-recued-webclient-content]');
+    await event.scrollIntoViewIfNeeded();
+    const dayPosition = await dayScroll.evaluate(node => node.scrollTop);
+    const pagePosition = await content.evaluate(node => node.scrollTop);
+    expect(dayPosition).toBeGreaterThan(0);
+    await event.click();
+    await expect(page.locator('.calendar-event')).toContainText('Customer planning');
+    expect(decodeURIComponent(new URL(page.url()).hash)).toBe('#data/calendar/record/local/cal:local:event-1');
+    await page.goBack();
+    await expect(event).toBeFocused();
+    await expect(chosen).toHaveAttribute('aria-pressed', 'true');
+    expect(await dayScroll.evaluate(node => node.scrollTop)).toBe(dayPosition);
+    expect(await content.evaluate(node => node.scrollTop)).toBe(pagePosition);
+    await page.setViewportSize({ width: 1279, height: 800 });
+    await expect(dayScroll).toHaveCount(0);
+    await expect(event).toBeFocused();
+    await expect(event).toBeInViewport();
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await expect(dayScroll).toBeVisible();
+    await expect(event).toBeFocused();
+    await expect(event).toBeInViewport();
+    await sources.locator('summary').click();
+    await expect(sources.getByRole('checkbox', { name: 'work', exact: true })).not.toBeChecked();
   });
 
   test('marks partial counts, keeps ready events usable and drops late replies from an older month', async ({ page }) => {

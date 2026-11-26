@@ -226,6 +226,8 @@ export interface YoursSnapshot {
      *  start, who sent it, and the title of the booking the same invite made. One appointment, never three records. */
     appointment?: { title: string; start_at: number; is_all_day: boolean; organizer?: string; booking?: string } }>;
   episodes: Episode[];
+  /** When a visible episode anchor is on a different page, this is the offset of the returned episode page. */
+  episode_page_offset?: number;
   derived_episodes?: EpisodeInput[];
   recall_rates?: YoursRecallRate[];
   history_receipts?: Array<{ mailbox: string; cutoff: number; at: number; candidates: number }>;
@@ -272,7 +274,9 @@ export interface YoursSnapshot {
 export interface YoursReadRequest { asset_id?: string; occasion_id?: string; episode_id?: string; contact_id?: string; trace_id?: string; include_derived?: boolean; search?: string; asset_filter?: YoursAssetFilter; asset_sphere?: YoursAssetSphere; pursuits?: YoursPursuitsFilter; offset?: number; limit?: number; proposal_offset?: number; proposal_kind?: ProactiveProposalKind; include_closed?: boolean; include_asset_summaries?: boolean; mark_shown?: boolean;
   /** D-339 slice 7b — with `asset_id`, the open asset's 30-day `reading_trends`, for its page. Asked for
    *  by the page alone, so no other read pays for it; an older server ignores it. */
-  include_reading_trends?: boolean }
+  include_reading_trends?: boolean;
+  /** On the Episodes list, follow this stored episode if its date moved it away from the requested page. */
+  episode_anchor?: string }
 export interface YoursSpherePlacement { sphere?: Sphere; reason: string; pinned: boolean; source?: string }
 /** Owner UI controls. Grant creation remains in Contracts. These commands
  * cannot run recipes, mint grants, or accept a standing delegation. */

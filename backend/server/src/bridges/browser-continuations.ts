@@ -1,5 +1,5 @@
 import { IngredientError } from '@recued/ingredients';
-import { browserAddressKey } from '@recued/contracts';
+import { browserAddressesMatch, browserDestinationKey } from '@recued/contracts';
 import { browserPageOwner, browserTabKey } from './browser-routing.js';
 
 interface Binding { page: string; first_page: string; url: string; aliases: Set<string>; at: number; uncertain: boolean }
@@ -23,13 +23,16 @@ export const createBrowserContinuations = (now: () => number = Date.now) => {
       sweep();
       if (!output || typeof output !== 'object' || Array.isArray(output)) return;
       const out = output as Record<string, unknown>;
-      if (typeof out.page !== 'string' || typeof out.url !== 'string' || !browserAddressKey(out.url)) return;
+      if (typeof out.page !== 'string' || typeof out.url !== 'string') return;
+      const destination = browserDestinationKey(out.url);
+      if (destination === undefined) return;
       if (!browserPageOwner(out.page) && !/^\d{1,10}:[\w-]{1,128}$/.test(out.page)) return;
       const tabs = scopes.get(scope) ?? new Map<string, Binding>(); scopes.set(scope, tabs);
       const key = browserTabKey(out.page), existing = tabs.get(key);
       const aliases = existing?.aliases ?? new Set<string>();
-      aliases.add(browserAddressKey(out.url)!);
-      if (typeof alias === 'string' && browserAddressKey(alias)) aliases.add(browserAddressKey(alias)!);
+      aliases.add(destination);
+      const origin = typeof alias === 'string' ? browserDestinationKey(alias) : undefined;
+      if (origin !== undefined) aliases.add(origin);
       while (aliases.size > 32) aliases.delete(aliases.values().next().value!);
       tabs.set(key, { page: out.page, first_page: existing?.first_page ?? out.page, url: out.url, aliases, at: now(), uncertain: existing?.uncertain === true && !confirmedRead });
     },
@@ -39,8 +42,10 @@ export const createBrowserContinuations = (now: () => number = Date.now) => {
     },
     resolve(scope: string, address: string, bridge?: string): { page: string; url: string; moved: boolean } | undefined {
       sweep();
-      const key = browserAddressKey(address); if (!key) return;
+      const key = browserDestinationKey(address); if (!key) return;
       const matches = [...(scopes.get(scope)?.values() ?? [])].filter(binding => binding.aliases.has(key)
+        // A fragment change can redraw the same document. Resolve the requested route afresh.
+        && (!browserAddressesMatch(binding.url, address) || browserDestinationKey(binding.url) === key)
         && (!bridge || browserPageOwner(binding.page)?.bridge_id === bridge));
       if (!matches.length) return;
       if (matches.length > 1) throw new IngredientError('DOM_PAGE_NOT_MATCHING',
@@ -49,7 +54,7 @@ export const createBrowserContinuations = (now: () => number = Date.now) => {
       const binding = matches[0]!;
       if (binding.uncertain) throw new IngredientError('DOM_PAGE_NOT_MATCHING',
         `The last action on this tab is uncertain. Inspect ${binding.page} before continuing; no action was replayed.`, { executed: false, page: binding.page });
-      return { page: binding.page, url: binding.url, moved: binding.page !== binding.first_page || browserAddressKey(binding.url) !== key };
+      return { page: binding.page, url: binding.url, moved: binding.page !== binding.first_page || browserDestinationKey(binding.url) !== key };
     },
   };
 };

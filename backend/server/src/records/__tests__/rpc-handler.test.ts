@@ -89,7 +89,7 @@ describe('D-221 Records owner rpc', () => {
     // read method leaves the fifteen that matter most resting on a convention.
     const db = new Database(':memory:');
     const slice = makeRecordsRpcHandlers({ store: createRecordsStore(db) })!;
-    expect(slice.methods).toHaveLength(17);
+    expect(slice.methods).toHaveLength(21);
     for (const method of slice.methods) {
       await expect(
         (slice.handlers[method] as (args: unknown, client: WsClient) => Promise<unknown>)(

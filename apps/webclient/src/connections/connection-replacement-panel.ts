@@ -252,6 +252,7 @@ export const CONNECTION_REPLACEMENT_STYLES = `
 .connection-replacement .replacement-field-label { color: var(--fg-muted); font-size: 12px; font-weight: 600; }
 .connection-replacement select {
   box-sizing: border-box; width: 100%; min-width: 0; min-height: 36px; padding: 7px 10px;
+  overflow: hidden; text-overflow: ellipsis;
   font: inherit; color: var(--fg); background: var(--surface); border: 1px solid var(--border-strong); border-radius: 7px;
 }
 .connection-replacement .replacement-choices, .connection-replacement .replacement-changes,
@@ -262,7 +263,7 @@ export const CONNECTION_REPLACEMENT_STYLES = `
 .connection-replacement .replacement-choices .replacement-muted { padding-left: 26px; }
 .connection-replacement .replacement-check { display: flex; align-items: flex-start; gap: 8px; cursor: pointer; }
 .connection-replacement .replacement-check input { width: 18px; height: 18px; margin: 1px 0 0; flex: none; }
-.connection-replacement .replacement-identities { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 8px; }
+.connection-replacement .replacement-identities { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr)); gap: 8px; }
 .connection-replacement .replacement-identity {
   display: grid; gap: 2px; min-width: 0; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface);
 }

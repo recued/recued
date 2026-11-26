@@ -7,6 +7,7 @@ import type { ProactiveProposalStore } from './proactive-proposal-store.js';
 const validText = (value: unknown, maximum: number): value is string => typeof value === 'string' && value.trim().length > 0 && value.length <= maximum;
 const validTime = (value: unknown): value is number => typeof value === 'number' && Number.isSafeInteger(value) && Math.abs(value) <= 8.64e15;
 const normalize = (name: string) => name.normalize('NFKC').trim().replace(/\s+/gu, ' ').toLocaleLowerCase('en');
+const EPISODE_LIST_ORDER = "json_extract(p.value,'$.when.from') DESC,p.updated_at DESC,p.id";
 const list = <T>(db: Database.Database, table: string, limit: number, offset = 0): T[] => {
   if (!Number.isSafeInteger(limit) || limit < 1 || limit > 10000 || !Number.isSafeInteger(offset) || offset < 0) throw new Error('Invalid history page');
   return (db.prepare(`SELECT value FROM ${table} ORDER BY updated_at DESC,id LIMIT ? OFFSET ?`).all(limit, offset) as { value: string }[]).map(row => JSON.parse(row.value));
@@ -87,10 +88,18 @@ export const createProactiveHistoryStore = (db: Database.Database, proposals: Pr
         ${scope.occasion !== undefined ? "AND json_extract(p.value,'$.occasion_id')=@occasion" : ''}
         ${scope.subject !== undefined ? `AND EXISTS (SELECT 1 FROM json_each(p.value,'$.subjects') s
           WHERE json_extract(s.value,'$.collection')=@subject_collection AND json_extract(s.value,'$.id')=@subject_id)` : ''}
-        ORDER BY json_extract(p.value,'$.when.from') DESC,p.updated_at DESC,p.id LIMIT @limit OFFSET @offset`)
+        ORDER BY ${EPISODE_LIST_ORDER} LIMIT @limit OFFSET @offset`)
         .all({ hidden: hiddenEpisodes(), limit, offset, ...(scope.person !== undefined ? { person: scope.person } : {}), ...(scope.occasion !== undefined ? { occasion: scope.occasion } : {}),
           ...(scope.subject !== undefined ? { subject_collection: scope.subject.collection, subject_id: scope.subject.id } : {}) }) as { value: string }[])
         .map(row => JSON.parse(row.value));
+    },
+    /** The episode's position in the owner's unscoped list, using the same ordering and exclusions. */
+    listedEpisodeOffset: (id: string): number | null => {
+      const row = db.prepare(`SELECT position FROM (
+        SELECT p.id, ROW_NUMBER() OVER (ORDER BY ${EPISODE_LIST_ORDER}) - 1 AS position
+        FROM proactive_episodes p WHERE p.id NOT IN (SELECT value FROM json_each(?))
+      ) WHERE id=?`).get(hiddenEpisodes(), id) as { position: number } | undefined;
+      return row?.position ?? null;
     },
     /** D-343 (2026-11-15) — the closing records (`owner_record.v1`) of a day: each one whose window
      * starts in [from, until), from whichever conversation recorded it, the earliest first, with when

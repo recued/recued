@@ -131,6 +131,59 @@ test('rescheduling out of a filtered page refills its loaded prefix and focuses 
   } finally { fixture.dispose(); }
 });
 
+test('the desktop reminder pane keeps the latest row and returns focus when rescheduling it out of the filter', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 768 });
+  await page.clock.setFixedTime(new Date(REMINDER_WORKSPACE_NOW));
+  const f = await installReminderWorkspaceFixture(page, true);
+  const ids = Array.from({ length: 105 }, (_, index) => f.seed({
+    text: `Follow up ${index}`, at: REMINDER_WORKSPACE_NOW + 3_600_000 + index * 60_000,
+  }));
+  try {
+    await page.goto(`${HARNESS_URL}?journey=verification#data/reminder`);
+    await page.waitForFunction(() => window.__app?.ready === true);
+    const host = page.locator('[data-recued-reminders]');
+    const items = host.getByRole('list', { name: 'Reminders still to ring' }).getByRole('listitem');
+    const query = host.getByRole('searchbox', { name: 'Search reminders' });
+    const dates = host.getByRole('combobox', { name: 'Dates' });
+    await query.fill('Follow up');
+    await dates.selectOption('today');
+    await host.getByRole('button', { name: 'Apply filters', exact: true }).click();
+    await expect(items).toHaveCount(50);
+    await host.getByRole('button', { name: 'Load more', exact: true }).click();
+    await expect(items).toHaveCount(100);
+
+    const previous = host.getByRole('button', { name: 'Open reminder: Follow up 98', exact: true });
+    const selected = host.getByRole('button', { name: 'Open reminder: Follow up 99', exact: true });
+    const pane = host.getByRole('region', { name: 'Follow up 99', exact: true });
+    f.holdNextDetailRead(ids[98]!);
+    await previous.click();
+    await expect.poll(f.detailReadPending).toBe(true);
+    await selected.click();
+    await expect(pane.getByRole('heading', { name: 'Follow up 99', exact: true })).toBeFocused();
+    f.releaseDetailRead();
+    await expect.poll(() => f.detailReplies.includes(ids[98]!)).toBe(true);
+    await expect(selected).toHaveAttribute('aria-current', 'true');
+    await expect(previous).not.toHaveAttribute('aria-current');
+
+    await pane.getByRole('button', { name: 'Edit reminder', exact: true }).click();
+    await pane.getByRole('button', { name: 'Tomorrow at 9am', exact: true }).click();
+    await previous.click();
+    await expect(pane.getByRole('status').filter({ hasText: 'Save or discard' })).toBeVisible();
+    await expect(pane.locator('[data-recued-reminders-field="text"]')).toBeFocused();
+    await pane.getByRole('button', { name: 'Save', exact: true }).press('Enter');
+    await expect(pane).toHaveCount(0);
+    await expect(selected).toHaveCount(0);
+    await expect(items).toHaveCount(100);
+    await expect(items.last()).toContainText('Follow up 100');
+    const nearby = host.locator(`[data-recued-reminders-focus="row:${ids[98]}"]`);
+    await expect(nearby).toBeFocused();
+    await expect(nearby).toBeInViewport();
+    await expect(query).toHaveValue('Follow up');
+    await expect(dates).toHaveValue('today');
+    expect(f.get(ids[99]!)?.at).toBe(Date.parse('2026-11-02T14:00:00Z'));
+  } finally { f.dispose(); }
+});
+
 test('changes only the wording, keeps the exact repeated-hour instant, and retains the confirmed edit after a failed refresh', async ({ page }) => {
   await boot(page);
   await row(page).getByRole('button', { name: 'Edit reminder', exact: true }).click();

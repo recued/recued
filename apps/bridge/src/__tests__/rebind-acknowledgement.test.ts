@@ -24,9 +24,10 @@ const run = async (mode: Mode, fault: Fault = 'none') => {
     click() { clicks.push(this.row); },
   });
   const original = control(); let shown = [original];
-  const doc = { title: 'Form', documentElement: { hasAttribute: () => false }, defaultView: {},
+  const doc = Object.assign(new EventTarget(), { title: 'Form', documentElement: { hasAttribute: () => false },
+    defaultView: { getComputedStyle: () => ({ getPropertyValue: () => '' }) },
     querySelectorAll: (selector: string) => selector === 'button' ? shown : [],
-    querySelector: () => shown[0] ?? null, getElementById: () => null };
+    querySelector: () => shown[0] ?? null, getElementById: () => null });
   const print = (element: typeof original) => ({ tag: 'button', type: 'button', role: 'button', label: 'Save',
     text: 'Save', row: element.row.toLowerCase(), shows: 'Save', in: element.row });
   const refs = { next: 3, byRef: new Map([['e2', original]]), byElement: new WeakMap([[original, 'e2']]),
@@ -37,6 +38,7 @@ const run = async (mode: Mode, fault: Fault = 'none') => {
   }
   if (mode === 'missing') refs.byRef.clear();
   vi.stubGlobal('document', doc); vi.stubGlobal('location', { href: url });
+  vi.stubGlobal('recuedInertOf', undefined); vi.stubGlobal('recuedValidation', undefined);
   vi.stubGlobal('recuedPageRefs', refs);
   const api: BridgeBrowserApi = {
     async findTabByUrlPattern() { return null; }, async executeScript() { return null; },

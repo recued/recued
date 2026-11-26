@@ -1179,13 +1179,16 @@ export const mountLearningPanel = (
     const what = `the ${step.element.role} “${step.element.label}”`;
     switch (step.do) {
       case 'type':
-        return step.secret === true ? `Typed into ${what} (what was typed is not kept)` : `Typed “${step.value ?? ''}” into ${what}`;
+        return step.secret === true ? `Typed into ${what} (what was typed is not kept)`
+          : `${step.delivery === 'paste' ? 'Pasted' : 'Typed'} “${step.value ?? ''}” into ${what}`;
       case 'pick':
         return `Typed “${step.value ?? ''}” into ${what} and picked “${step.pick ?? ''}”`;
       case 'click':
-        return `Clicked ${what}`;
+        return `${step.count === 2 ? 'Double-clicked' : 'Clicked'} ${what}`;
       case 'press':
         return `Pressed ${step.key ?? 'a key'} in ${what}`;
+      case 'seek':
+        return `Sought ${what} to ${step.at_seconds}s`;
       case 'submit':
         return step.secret === true ? `Typed into ${what} (not kept) and sent its form`
           : step.value !== undefined ? `Typed “${step.value}” into ${what} and sent its form` : `Sent the form of ${what}`;

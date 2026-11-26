@@ -35,6 +35,9 @@ export interface PublicFetchOptions {
   readonly overflow: 'truncate' | 'fail';
   /** The whole exchange, redirects included. */
   readonly timeoutMs: number;
+  /** 2026-11-23 — at most this long with nothing new from the site, within `timeoutMs`: no answer yet, or no bytes since
+   *  the last. A download still arriving goes on; one that stalled is let go. Unset: only `timeoutMs` applies. */
+  readonly idleTimeoutMs?: number;
   readonly accept?: string;
   readonly userAgent?: string;
   /** At most this many redirects (default 5). */
@@ -177,7 +180,8 @@ const requestOnce = (url: URL, to: ResolvedAddress, method: 'GET' | 'HEAD', head
 });
 
 /** The response body, decompressed, at most `maxBytes`. */
-const readBody = async (response: http.IncomingMessage, options: PublicFetchOptions): Promise<{ body: Buffer; truncated: boolean }> => {
+const readBody = async (response: http.IncomingMessage, options: PublicFetchOptions,
+  onChunk: () => void = () => undefined): Promise<{ body: Buffer; truncated: boolean }> => {
   const encoding = String(response.headers['content-encoding'] ?? '').trim().toLowerCase();
   let stream: Readable = response;
   if (encoding === 'gzip' || encoding === 'x-gzip') stream = response.pipe(createGunzip());
@@ -187,6 +191,7 @@ const readBody = async (response: http.IncomingMessage, options: PublicFetchOpti
   let size = 0;
   try {
     for await (const chunk of stream) {
+      onChunk();
       const part = chunk as Buffer;
       if (size + part.length > options.maxBytes) {
         if (options.overflow === 'fail') {
@@ -210,6 +215,21 @@ export const publicFetch = async (address: string, options: PublicFetchOptions):
   const method = options.method ?? 'GET';
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), options.timeoutMs);
+  // 2026-11-23 (task L; the owner: "go ahead with L download fix too") — nothing new for `idleTimeoutMs` ends the fetch,
+  //   said as a stall: a 12.5 MB file still arriving was given up at its whole limit under a loaded machine.
+  let idled = false;
+  let idle: ReturnType<typeof setTimeout> | undefined;
+  const moved = (): void => {
+    if (options.idleTimeoutMs === undefined) return;
+    if (idle !== undefined) clearTimeout(idle);
+    idle = setTimeout(() => { idled = true; controller.abort(); }, options.idleTimeoutMs);
+  };
+  const stalled = (host: string): PublicFetchError => {
+    const seconds = options.idleTimeoutMs! / 1000;
+    return new PublicFetchError('timeout', `${host} sent nothing for ${Number.isInteger(seconds) ? String(seconds) : seconds.toFixed(1)} seconds.`,
+      { host });
+  };
+  moved();
   const redirects: string[] = [];
   let url = parseAddress(address);
   try {
@@ -224,10 +244,13 @@ export const publicFetch = async (address: string, options: PublicFetchOptions):
       try {
         response = await requestOnce(url, to, method, headers, controller.signal);
       } catch (error) {
-        if (controller.signal.aborted) throw new PublicFetchError('timeout', `${url.host} did not answer in time.`, { host: url.host });
+        if (controller.signal.aborted) {
+          throw idled ? stalled(url.host) : new PublicFetchError('timeout', `${url.host} did not answer in time.`, { host: url.host });
+        }
         throw new PublicFetchError('failed', `${url.host} could not be reached: ${error instanceof Error ? error.message : String(error)}`,
           { host: url.host });
       }
+      moved();
       const status = response.statusCode ?? 0;
       const location = response.headers.location;
       if (REDIRECTS.has(status) && typeof location === 'string' && location !== '') {
@@ -249,10 +272,13 @@ export const publicFetch = async (address: string, options: PublicFetchOptions):
         response.resume();
       } else {
         try {
-          read = await readBody(response, options);
+          read = await readBody(response, options, moved);
         } catch (error) {
           if (error instanceof PublicFetchError) throw error;
-          if (controller.signal.aborted) throw new PublicFetchError('timeout', `${url.host} did not finish answering in time.`, { host: url.host });
+          if (controller.signal.aborted) {
+            throw idled ? stalled(url.host)
+              : new PublicFetchError('timeout', `${url.host} did not finish answering in time.`, { host: url.host });
+          }
           throw new PublicFetchError('failed', `The answer from ${url.host} could not be read: ${error instanceof Error ? error.message : String(error)}`,
             { host: url.host });
         }
@@ -262,5 +288,6 @@ export const publicFetch = async (address: string, options: PublicFetchOptions):
     }
   } finally {
     clearTimeout(timer);
+    if (idle !== undefined) clearTimeout(idle);
   }
 };

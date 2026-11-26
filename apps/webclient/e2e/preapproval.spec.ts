@@ -192,7 +192,9 @@ test('retrying a lost draft save retains one draft and does not prepare a send',
   expect(await page.evaluate(() => window.__app.rpcCallCount('preapproval.decide'))).toBe(0);
 });
 test('manual recipe scheduling prepares one review before any activation or approval', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 720 });
   await page.goto(`${BASE}&recipes=installed#recipes`);
+  await page.locator('[data-recued-recipes-card="autorun-live-1"]').click();
   await page.locator('[data-recued-recipes-run-button]').first().click();
   const dialog = page.getByRole('dialog', { name: 'Run a Recipe' });
   await dialog.getByRole('tab', { name: 'Schedule' }).click();

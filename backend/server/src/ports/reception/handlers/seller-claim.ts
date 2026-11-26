@@ -16,6 +16,7 @@ import {
   type SellerClaimPayload,
   type SellerClaimStore,
 } from '../../../storage/seller-claim-store.js';
+import { RECEPTION_PAGE_STYLE_SRC } from '../static-assets.js';
 import { verifyReceptionSameOrigin } from './same-origin.js';
 
 export const RECEPTION_SELLER_CLAIM_PATH = '/reception/claim' as const;
@@ -24,6 +25,7 @@ export const SELLER_CLAIM_TOKEN_PLACEHOLDER = 'YOUR_RECUED_TOKEN' as const;
 
 const MAX_BODY_BYTES = 4 * 1024;
 const FORM_CONTENT_TYPE = 'application/x-www-form-urlencoded';
+const SELLER_CLAIM_CSP = "default-src 'none'; style-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'";
 
 const HTML_ESCAPE_TABLE: Readonly<Record<string, string>> = {
   '&': '&amp;',
@@ -47,13 +49,11 @@ const renderShell = (title: string, body: string): string => `<!DOCTYPE html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex,nofollow,noarchive">
 <meta name="referrer" content="no-referrer">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'">
+<meta http-equiv="Content-Security-Policy" content="${SELLER_CLAIM_CSP}">
 <title>${sellerClaimHtmlEscape(title)}</title>
-<style>
-:root{color-scheme:light dark;font-family:ui-sans-serif,system-ui,sans-serif}body{margin:0;background:#111827;color:#f9fafb}.shell{max-width:760px;margin:0 auto;padding:48px 20px}.card{background:#1f2937;border:1px solid #374151;border-radius:16px;padding:28px;box-shadow:0 18px 40px #0005}h1,h2{line-height:1.2}h1{margin-top:0}h2{font-size:1rem;margin-top:28px}.muted{color:#cbd5e1}.secret,.endpoint,pre{display:block;overflow-wrap:anywhere;background:#111827;border:1px solid #4b5563;border-radius:10px;padding:12px}pre{white-space:pre-wrap;overflow:auto}button{font:inherit;font-weight:650;color:#111827;background:#f9fafb;border:0;border-radius:10px;padding:11px 16px;cursor:pointer}.warning{color:#fde68a}.footer{margin-top:28px;font-size:.875rem;color:#9ca3af}
-</style>
+<link rel="stylesheet" href="${RECEPTION_PAGE_STYLE_SRC}">
 </head>
-<body><main class="shell"><section class="card">${body}</section></main></body>
+<body><main class="rcp-shell rcp-claim-shell"><div class="rcp-card">${body}</div></main></body>
 </html>
 `;
 
@@ -143,45 +143,55 @@ export const buildSellerClaimSetupSnippets = (
 
 export const renderSellerClaimPromptHtml = (claimSecret: string): string =>
   renderShell('Claim your Recued access', `
-<h1>Claim your Recued access</h1>
-<p class="muted">Reveal your customer token and setup instructions. This link works once.</p>
-<p class="warning">Keep the token private. Anyone holding it can use the access your seller granted.</p>
-<form method="post" action="${RECEPTION_SELLER_CLAIM_PATH}">
+<h1 class="rcp-name">Claim your Recued access</h1>
+<p class="rcp-tagline">Reveal your customer token and setup instructions. This link works once.</p>
+<p class="rcp-claim-warning">Keep the token private. Anyone holding it can use the access your seller granted.</p>
+<form class="rcp-form" method="post" action="${RECEPTION_SELLER_CLAIM_PATH}">
 <input type="hidden" name="claim_secret" value="${sellerClaimHtmlEscape(claimSecret)}">
-<button type="submit">Reveal access token</button>
+<button class="rcp-button rcp-button-primary" type="submit">Reveal access token</button>
 </form>
-<p class="footer">Opening this page does not consume the link. Revealing the token does.</p>`);
+<footer class="rcp-footer">Opening this page does not consume the link. Revealing the token does.</footer>`);
 
 export const renderSellerClaimResultHtml = (payload: SellerClaimPayload): string => {
   const endpoints = [
-    payload.mcp_url !== null
-      ? `<h2>MCP endpoint</h2><code class="endpoint">${sellerClaimHtmlEscape(payload.mcp_url)}</code>`
-      : '',
-    payload.llm_gateway_base_url !== null
-      ? `<h2>OpenAI-compatible base URL</h2><code class="endpoint">${sellerClaimHtmlEscape(payload.llm_gateway_base_url)}</code>`
-      : '',
-  ].join('');
+    { label: 'MCP endpoint', url: payload.mcp_url },
+    { label: 'OpenAI-compatible base URL', url: payload.llm_gateway_base_url },
+  ].map(({ label, url }) => url === null ? '' : `
+  <div>
+    <dt class="rcp-meta">${sellerClaimHtmlEscape(label)}</dt>
+    <dd><code class="rcp-claim-value">${sellerClaimHtmlEscape(url)}</code></dd>
+  </div>`).join('');
   const snippets = buildSellerClaimSetupSnippets(payload)
-    .map((snippet) => snippet.format === 'notice'
-      ? `<h2>${sellerClaimHtmlEscape(snippet.title)}</h2>
-<p class="muted">${sellerClaimHtmlEscape(snippet.content)}</p>`
-      : `<h2>${sellerClaimHtmlEscape(snippet.title)}</h2>
-<pre><code>${sellerClaimHtmlEscape(snippet.content)}</code></pre>`)
+    .map((snippet) => `<details class="rcp-claim-example">
+  <summary>${sellerClaimHtmlEscape(snippet.title)}</summary>
+  ${snippet.format === 'notice'
+    ? `<p class="rcp-meta">${sellerClaimHtmlEscape(snippet.content)}</p>`
+    : `<pre><code>${sellerClaimHtmlEscape(snippet.content)}</code></pre>`}
+</details>`)
     .join('\n');
-  return renderShell('Your Recued access', `
-<h1>Your Recued access</h1>
-<p class="warning">Copy this token now. This claim page cannot show it again.</p>
-<code class="secret">${sellerClaimHtmlEscape(payload.bearer_plaintext)}</code>
-${endpoints}
-<p class="muted">In the examples below, replace ${SELLER_CLAIM_TOKEN_PLACEHOLDER} with the token above.</p>
+  const setup = snippets ? `<section class="rcp-claim-setup" aria-labelledby="rcp-claim-setup-heading">
+<h2 class="rcp-claim-heading" id="rcp-claim-setup-heading">Client setup</h2>
+<p class="rcp-meta">Replace <code>${SELLER_CLAIM_TOKEN_PLACEHOLDER}</code> in the examples with your access token.</p>
 ${snippets}
-<p class="footer">The seller controls this token's grants and can close or reissue access.</p>`);
+</section>` : '';
+  return renderShell('Your Recued access', `
+<h1 class="rcp-name">Your Recued access</h1>
+<div class="rcp-claim-layout">
+<section class="rcp-claim-access" aria-labelledby="rcp-claim-access-heading">
+<h2 class="rcp-claim-heading" id="rcp-claim-access-heading">Access token</h2>
+<p class="rcp-claim-warning">Copy this token now. This claim page cannot show it again.</p>
+<code class="rcp-claim-value">${sellerClaimHtmlEscape(payload.bearer_plaintext)}</code>
+${endpoints ? `<dl class="rcp-claim-endpoints">${endpoints}</dl>` : ''}
+</section>
+${setup}
+</div>
+<footer class="rcp-footer">The seller controls this token's grants and can close or reissue access.</footer>`);
 };
 
 export const renderSellerClaimUnavailableHtml = (): string =>
   renderShell('Claim link unavailable', `
-<h1>Claim link unavailable</h1>
-<p class="muted">This link is invalid, expired, revoked, or already used. Ask the seller for a new claim link.</p>`);
+<h1 class="rcp-name">Claim link unavailable</h1>
+<p class="rcp-tagline">This link is invalid, expired, revoked, or already used. Ask the seller for a new claim link.</p>`);
 
 const writeHtml = (res: ServerResponse, body: string, status: number): void => {
   res.statusCode = status;
@@ -189,10 +199,7 @@ const writeHtml = (res: ServerResponse, body: string, status: number): void => {
   res.setHeader('cache-control', 'no-store, max-age=0');
   res.setHeader('pragma', 'no-cache');
   res.setHeader('referrer-policy', 'no-referrer');
-  res.setHeader(
-    'content-security-policy',
-    "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
-  );
+  res.setHeader('content-security-policy', SELLER_CLAIM_CSP);
   res.setHeader('x-content-type-options', 'nosniff');
   res.setHeader('x-frame-options', 'DENY');
   res.setHeader('content-length', String(Buffer.byteLength(body, 'utf8')));

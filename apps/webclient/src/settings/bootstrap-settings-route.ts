@@ -477,6 +477,7 @@ export interface BootstrapSettingsRouteOptions {
   initialSectionId?: string | null;
   /** Exact finder destination from `#settings/<section>/find/<setting>`. */
   initialSettingId?: string | null;
+  searchReturn?: { hash: string; destinationHash: string; retire?: () => void };
   /** Address seam for in-page rail navigation. The rail used to switch
    *  sections with a pure attribute flip, so the URL kept naming whichever
    *  settings hash the user arrived on — Seller's own `#settings/seller/<sub>`
@@ -1627,9 +1628,20 @@ export const bootstrapSettingsRoute = (
   const routeRoot = doc.createElement('div');
   routeRoot.setAttribute(SETTINGS_ROUTE_ROOT_ATTR, '');
 
+  let searchBack: HTMLAnchorElement | null = null;
+  const retireSearchReturn = () => { searchBack?.remove(); searchBack = null; opts.searchReturn?.retire?.(); };
+  const notifyAddressChange = (hash: string, mode: 'push' | 'replace') => {
+    if (opts.searchReturn && hash !== opts.searchReturn.destinationHash) retireSearchReturn();
+    opts.onAddressChange?.(hash, mode);
+  };
   const heading = doc.createElement('h1');
   heading.textContent = 'Settings';
   routeRoot.appendChild(heading);
+  if (opts.searchReturn) {
+    searchBack = doc.createElement('a'); searchBack.href = opts.searchReturn.hash;
+    searchBack.textContent = 'Back to search'; searchBack.className = 'rx-btn rx-btn-outline';
+    searchBack.setAttribute('data-settings-search-return', ''); routeRoot.appendChild(searchBack);
+  }
   const finderHost = doc.createElement('div');
   routeRoot.appendChild(finderHost);
 
@@ -2087,7 +2099,7 @@ export const bootstrapSettingsRoute = (
       document: doc,
       scrollRoot: opts.root,
       ...(opts.onAddressChange !== undefined
-        ? { onNavigate: opts.onAddressChange }
+        ? { onNavigate: notifyAddressChange }
         : {}),
       ...(opts.initialSellerAddress !== undefined
         ? { initialAddress: opts.initialSellerAddress }
@@ -3535,7 +3547,7 @@ export const bootstrapSettingsRoute = (
       // The rail is real navigation, so it owes the address bar a history
       // entry — otherwise Back from a section's own deep link (a Seller
       // sub-page) skips the section the user actually came from.
-      opts.onAddressChange?.(serializeShellRoute('settings', sv.id), 'push');
+      notifyAddressChange(serializeShellRoute('settings', sv.id), 'push');
     });
     item.addEventListener('focus', scheduleNavigationReveal);
     navEl.appendChild(item);
@@ -3556,7 +3568,7 @@ export const bootstrapSettingsRoute = (
 
   const finder = mountSettingsFinder({ host: finderHost, content: viewsHost, document: doc,
     activateSection: section => activateSubview(section, { scroll: false }),
-    onOpen: entry => opts.onAddressChange?.(settingsFinderHash(entry), 'push'),
+    onOpen: entry => notifyAddressChange(settingsFinderHash(entry), 'push'),
   });
   if (opts.initialSettingId) finder.restore(opts.initialSettingId, opts.initialSectionId ?? undefined);
 
@@ -3681,6 +3693,7 @@ export const bootstrapSettingsRoute = (
     navigateToSection: (sectionId: string | null): boolean => {
       if (disposed) return false;
       finder.cancelReveal();
+      retireSearchReturn();
       const target = sectionId === null || sectionId.trim().length === 0
         ? subviews[0]?.id ?? null
         : subviews.find((sv) => sv.id === sectionId)?.id ?? null;
@@ -3688,7 +3701,11 @@ export const bootstrapSettingsRoute = (
       activateSubview(target, { scroll: false });
       return true;
     },
-    navigateToSetting: (settingId, sectionId) => !disposed && finder.reveal(settingId, sectionId),
+    navigateToSetting: (settingId, sectionId) => {
+      if (disposed) return false;
+      if (opts.searchReturn && (settingId !== opts.initialSettingId || sectionId !== opts.initialSectionId)) retireSearchReturn();
+      return finder.reveal(settingId, sectionId);
+    },
     dispose: () => {
       if (disposed) return;
       disposed = true;

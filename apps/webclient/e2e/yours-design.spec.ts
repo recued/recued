@@ -5,6 +5,7 @@ import { clickActionGlyph } from './helpers/action-glyph.js';
 installFullAppHooks();
 
 test('Connection recovery retries a failed Yours read, preserves a draft and detaches after leaving', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 720 });
   await page.goto(`${HARNESS_URL}?yours=demo&yours_asset_search_fail_once=1#yours/assets/search/passport`);
   await page.waitForFunction(() => window.__app?.ready === true);
   const route = page.locator('[data-recued-yours]');
@@ -13,8 +14,9 @@ test('Connection recovery retries a failed Yours read, preserves a draft and det
   const failedReads = await page.evaluate(() => window.__app.rpcCallCount('yours.read'));
   await reconnect();
   await expect.poll(() => page.evaluate(() => window.__app.rpcCallCount('yours.read'))).toBeGreaterThan(failedReads);
-  const asset = route.getByRole('link', { name: 'Ana’s passport', exact: true }); await expect(asset).toBeVisible();
-  await asset.click(); await expect(route.getByRole('heading', { name: 'Ana’s passport', exact: true })).toBeVisible();
+  await route.getByRole('group', { name: 'Asset list', exact: true }).getByRole('button', { name: 'Ana’s passport', exact: true }).click();
+  await route.getByRole('region', { name: 'Asset preview', exact: true }).getByRole('link', { name: 'Open asset', exact: true }).click();
+  await expect(route.getByRole('button', { name: 'Edit asset', exact: true })).toBeVisible();
   await route.getByRole('button', { name: 'Add fact', exact: true }).click();
   await route.getByLabel('Fact name', { exact: true }).fill('length'); await route.getByLabel('Value', { exact: true }).fill('25 meters');
   const reads = await page.evaluate(() => window.__app.rpcCallCount('yours.read'));
@@ -29,11 +31,13 @@ test('Connection recovery retries a failed Yours read, preserves a draft and det
 });
 
 test('A text fact preserves its exact value and returns to the filtered asset list', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 720 });
   await page.goto(`${HARNESS_URL}?yours=summaries&yours_asset_filter_pages#yours/assets/filter/missing_facts/search/Workshop/page/2`);
   const route = page.locator('[data-recued-yours]');
   const row = route.locator('[data-yours-asset]').last();
   const id = await row.getAttribute('data-yours-asset');
-  await row.getByRole('link', { name: 'Open asset', exact: true }).click();
+  await row.getByRole('button').click();
+  await route.getByRole('region', { name: 'Asset preview', exact: true }).getByRole('link', { name: 'Open asset', exact: true }).click();
   await expect(route.getByRole('navigation', { name: 'Yours', exact: true }).getByRole('link', { name: 'Assets', exact: true })).toHaveAttribute('aria-current', 'page');
   await expect(route.getByRole('button', { name: 'Delete asset', exact: true })).toHaveCount(0);
   await route.getByRole('button', { name: 'Add fact', exact: true }).click();
@@ -54,7 +58,7 @@ test('A text fact preserves its exact value and returns to the filtered asset li
   await expect(page).toHaveURL(/#yours\/assets\/filter\/missing_facts\/search\/Workshop\/page\/2$/u);
   await expect(route.getByLabel('Find assets', { exact: true })).toHaveValue('Workshop');
   await expect(route.getByLabel('Show assets', { exact: true })).toHaveValue('missing_facts');
-  await expect(route.locator(`[data-yours-asset="${id}"]`).getByRole('link', { name: 'Open asset', exact: true })).toBeFocused();
+  await expect(route.locator(`[data-yours-asset="${id}"]`).getByRole('button')).toBeFocused();
 });
 
 test('A failed fact save retains the draft and retries only that fact', async ({ page }) => {

@@ -42,6 +42,7 @@ import {
 } from '@recued/contracts';
 import { e } from '@recued/ui-shared';
 
+import { focusListTarget } from '../shell/list-preview-continuity.js';
 import { humanizeRpcError } from '../shell/rpc-error-copy.js';
 import { serializeLogsRunAddress, serializeSourceRecordAddress } from '../shell/route.js';
 import {
@@ -60,6 +61,7 @@ export const MAIL_FACTS_HOST_ATTR = 'data-recued-mail-facts';
 export const MAIL_FACTS_FILTER_ATTR = 'data-recued-mail-facts-filter';
 export const MAIL_FACTS_FOCUS_ATTR = 'data-recued-mail-facts-focus';
 export const MAIL_FACTS_ROW_ATTR = 'data-recued-mail-fact-row';
+const MAIL_FACT_READER_ATTR = 'data-mail-fact-reader';
 /** Every action this tab handles starts with this. */
 export const MAIL_FACTS_ACTION_PREFIX = 'mail-facts-';
 
@@ -90,6 +92,12 @@ export interface MailFactsSurfaceDeps {
   readonly render: () => void;
   /** The address after the tab changed. */
   readonly onAddressChange: () => void;
+  readonly desktopWorkspace?: () => boolean;
+  readonly navigation?: {
+    readonly document: Document;
+    readonly owner: object;
+    readonly scrollHost: () => Element | null;
+  };
   /** D-325 — one thing opened by its address (a bill, a delivery Today linked to). */
   readonly onThingOpened?: (thing_id: string) => void;
 }
@@ -130,7 +138,11 @@ export interface MailFactsSurface {
   /** A save, a switch or a start is under way. */
   hasInFlightWork(): boolean;
   captureFocus(active: Element | null | undefined): string | null;
-  restoreFocus(root: ParentNode, key: string | null): void;
+  captureViewport(root: ParentNode): MailFactsViewport | null;
+  restoreFocus(root: ParentNode, key: string | null, viewport?: MailFactsViewport | null, layoutReady?: boolean): void;
+  rememberLink(event: MouseEvent, root: ParentNode): void;
+  closeReaderFromKeyboard(target: Element | null): boolean;
+  workspaceChanged(active: Element | null): void;
   dispose(): void;
 }
 
@@ -247,6 +259,78 @@ interface FactsState {
   readonly types: readonly MailFactTypeSpec[];
 }
 
+interface MailFactsViewport {
+  readonly pageTop: number | undefined;
+  readonly listTop: number | undefined;
+  readonly reader: { readonly id: string; readonly top: number } | null;
+}
+
+interface MailFactsVisit {
+  readonly hash: string;
+  readonly facts: FactsState;
+  readonly pages: number;
+  readonly selectedId: string | null;
+  readonly openData: ReadonlySet<string>;
+  readonly viewport: MailFactsViewport | null;
+  readonly focus: string;
+}
+
+// The History entry only carries an ID. Mail and filters stay in this document
+// and belong to the current server connection.
+const mailFactsVisits = new WeakMap<Document, WeakMap<object, Map<number, MailFactsVisit>>>();
+let mailFactsVisitSequence = 0;
+const MAIL_FACTS_VISIT_LIMIT = 8;
+const HISTORY_VISIT_KEY = 'recuedMailFactsVisit';
+
+const mailFactsHistory = (navigation: NonNullable<MailFactsSurfaceDeps['navigation']>) => {
+  const { document, owner } = navigation;
+  let byOwner = mailFactsVisits.get(document);
+  if (byOwner === undefined) mailFactsVisits.set(document, byOwner = new WeakMap());
+  let visits = byOwner.get(owner);
+  if (visits === undefined) byOwner.set(owner, visits = new Map());
+  return visits;
+};
+
+const readMailFactsVisit = (navigation: MailFactsSurfaceDeps['navigation']): MailFactsVisit | undefined => {
+  const view = navigation?.document.defaultView;
+  if (!navigation || !view) return undefined;
+  try {
+    const id = view.history.state?.[HISTORY_VISIT_KEY];
+    const visit = typeof id === 'number' ? mailFactsHistory(navigation).get(id) : undefined;
+    return visit?.hash === view.location.hash ? visit : undefined;
+  } catch {
+    return undefined;
+  }
+};
+
+const rememberMailFactsVisit = (
+  navigation: MailFactsSurfaceDeps['navigation'],
+  state: Omit<MailFactsVisit, 'hash'>,
+): void => {
+  const view = navigation?.document.defaultView;
+  if (!navigation || !view) return;
+  try {
+    const { history, location } = view;
+    const visits = mailFactsHistory(navigation);
+    const previous = history.state;
+    const previousId = previous?.[HISTORY_VISIT_KEY];
+    const id = typeof previousId === 'number' && visits.get(previousId)?.hash === location.hash
+      ? previousId
+      : ++mailFactsVisitSequence;
+    const existingState = previous !== null && typeof previous === 'object' ? previous : {};
+    history.replaceState({ ...existingState, [HISTORY_VISIT_KEY]: id }, '');
+    // Keep recent trips without retaining every paginated history indefinitely.
+    visits.delete(id);
+    visits.set(id, { ...state, hash: location.hash });
+    for (const key of visits.keys()) {
+      if (visits.size <= MAIL_FACTS_VISIT_LIMIT) break;
+      visits.delete(key);
+    }
+  } catch {
+    // Normal links still work in hosts with restricted History access.
+  }
+};
+
 const select = (
   key: FilterKey,
   label: string,
@@ -360,16 +444,24 @@ const renderAi = (row: MailFactRow, owned: readonly MailFactTypeSpec[]): string 
   return '';
 };
 
-const renderFact = (
+const factState = (row: MailFactRow) =>
+  row.thing?.variables[MAIL_FACT_STATE_VARIABLE] ?? row.fact.variables[MAIL_FACT_STATE_VARIABLE];
+
+const renderFactStatus = (row: MailFactRow): string => {
+  const now = factState(row);
+  const notice = row.fact.variables[MAIL_FACT_NOTICE_VARIABLE];
+  const state = typeof now === 'string'
+    ? `<span class="mail-facts-state"><span class="mail-facts-sr">${row.thing !== null ? 'State now: ' : 'State: '}</span>${e(humanize(now))}</span>`
+    : '';
+  return state + (typeof notice === 'string' ? `<span class="mail-facts-notice">${e(humanize(notice))}</span>` : '');
+};
+
+const renderFactValues = (
   row: MailFactRow,
   templates: readonly MailTemplate[],
   owned: readonly MailFactTypeSpec[],
-  actionAttr: string,
-  dataOpen: boolean,
 ): string => {
   const own = row.fact.variables[MAIL_FACT_STATE_VARIABLE];
-  const now = row.thing?.variables[MAIL_FACT_STATE_VARIABLE] ?? own;
-  const notice = row.fact.variables[MAIL_FACT_NOTICE_VARIABLE];
   const template = row.fact.template_id === null
     ? null
     : templates.find((candidate) => candidate.template_id === row.fact.template_id);
@@ -378,18 +470,8 @@ const renderFact = (
     : template !== undefined && template !== null
       ? `Read by ${template.name}`
       : 'Read by a template since deleted';
-  const data = row.fact.data;
-  const hasData = data !== null && data !== undefined
-    && !(typeof data === 'object' && Object.keys(data as object).length === 0);
   return `
-    <div class="mail-facts-heading">
-      <span class="data-pill">${e(typeName(row.fact.type, owned))}</span>
-      ${typeof now === 'string'
-        ? `<span class="mail-facts-state"><span class="mail-facts-sr">${row.thing !== null ? 'State now: ' : 'State: '}</span>${e(humanize(now))}</span>`
-        : ''}
-      ${typeof notice === 'string' ? `<span class="mail-facts-notice">${e(humanize(notice))}</span>` : ''}
-    </div>
-    ${row.thing !== null && typeof own === 'string' && own !== now
+    ${row.thing !== null && typeof own === 'string' && own !== factState(row)
       ? `<p class="mail-facts-subtle">This email said: ${e(humanize(own))}</p>`
       : ''}
     ${renderValues(row, owned)}
@@ -397,13 +479,17 @@ const renderFact = (
     ${unpaired(row)
       ? `<p class="mail-facts-unpaired">Unpaired: not joined to a ${e(typeName(row.fact.type, owned).toLowerCase())} and not used by recipes. It may be the same one a template of yours read from this email, and Recued cannot tell which.</p>`
       : ''}
-    <p class="mail-facts-subtle">${e(readBy)}</p>
-    ${hasData
-      ? `<details class="mail-facts-data"${dataOpen ? ' open' : ''}>
-          <summary ${actionAttr}="mail-facts-data-toggle" data-fact-id="${e(row.fact.fact_id)}" ${MAIL_FACTS_FOCUS_ATTR}="data:${e(row.fact.fact_id)}">Data</summary>
-          <pre>${e(JSON.stringify(data, null, 2))}</pre>
-        </details>`
-      : ''}`;
+    <p class="mail-facts-subtle">${e(readBy)}</p>`;
+};
+
+const renderRawData = (row: MailFactRow, actionAttr: string, open: boolean, label: string): string => {
+  const data = row.fact.data;
+  if (data == null || typeof data === 'object' && Object.keys(data).length === 0) return '';
+  const id = e(row.fact.fact_id);
+  return `<details class="mail-facts-data"${open ? ' open' : ''}>
+    <summary ${actionAttr}="mail-facts-data-toggle" data-fact-id="${id}" ${MAIL_FACTS_FOCUS_ATTR}="data:${id}">${label}</summary>
+    <pre>${e(JSON.stringify(data, null, 2))}</pre>
+  </details>`;
 };
 
 const renderMail = (row: MailFactRow): string => {
@@ -458,20 +544,71 @@ const renderRow = (
   actionAttr: string,
   openData: ReadonlySet<string>,
 ): string => `
-  <li class="mail-facts-row" ${MAIL_FACTS_ROW_ATTR}="${e(row.fact.fact_id)}"${unpaired(row) ? ' data-unpaired="true"' : ''}${waitingForAi(row) ? ' data-ai="waiting"' : ''}>
+  <li class="mail-facts-row" tabindex="-1" ${MAIL_FACTS_FOCUS_ATTR}="row:${e(row.fact.fact_id)}" ${MAIL_FACTS_ROW_ATTR}="${e(row.fact.fact_id)}"${unpaired(row) ? ' data-unpaired="true"' : ''}${waitingForAi(row) ? ' data-ai="waiting"' : ''}>
     <div class="mail-facts-cell mail-facts-cell-mail">
       <span class="mail-facts-cell-label">Matched mail</span>
       ${renderMail(row)}
     </div>
     <div class="mail-facts-cell mail-facts-cell-fact">
       <span class="mail-facts-cell-label">Fact</span>
-      ${renderFact(row, templates, owned, actionAttr, openData.has(row.fact.fact_id))}
+      <div class="mail-facts-heading">
+        <span class="data-pill">${e(typeName(row.fact.type, owned))}</span>
+        ${renderFactStatus(row)}
+      </div>
+      ${renderFactValues(row, templates, owned)}
+      ${renderRawData(row, actionAttr, openData.has(row.fact.fact_id), 'Data')}
     </div>
     <div class="mail-facts-cell mail-facts-cell-runs">
       <span class="mail-facts-cell-label">Triggered recipes</span>
       ${renderRuns(row)}
     </div>
   </li>`;
+
+const renderCompactRow = (row: MailFactRow, state: FactsState, actionAttr: string, selected: boolean): string => {
+  const id = e(row.fact.fact_id);
+  const status = factState(row);
+  const statusLabel = typeof status === 'string' ? humanize(status) : waitingForAi(row) ? 'Reading with AI' : unpaired(row) ? 'Unpaired' : '';
+  const subject = row.email === null ? 'Email unavailable' : row.email.subject || '(no subject)';
+  return `<li class="mail-facts-compact-row" ${MAIL_FACTS_ROW_ATTR}="${id}">
+    <button type="button" class="mail-facts-row-button" ${actionAttr}="mail-facts-open-fact" data-fact-id="${id}"
+      ${MAIL_FACTS_FOCUS_ATTR}="row:${id}"${selected ? ' aria-current="true"' : ''}${state.updating ? ' aria-disabled="true"' : ''}>
+      <span class="mail-facts-compact-summary">
+        <span class="mail-facts-compact-subject" title="${e(subject)}">${e(subject)}</span>
+        ${statusLabel ? `<span class="data-pill" title="${e(statusLabel)}">${e(statusLabel)}</span>` : ''}
+      </span>
+      <span class="mail-facts-compact-meta mail-facts-subtle">
+        <span>${e(typeName(row.fact.type, state.types))}</span>
+        <span>${e(dateTime(row.email?.at ?? row.fact.email_at))}</span>
+      </span>
+    </button>
+  </li>`;
+};
+
+const renderFactReader = (row: MailFactRow, state: FactsState, actionAttr: string, openData: ReadonlySet<string>): string => {
+  const id = e(row.fact.fact_id);
+  return `<section class="mail-facts-reader work-entity-reader--inline" aria-label="Fact details">
+    <header class="mail-facts-reader-header">
+      <h3 tabindex="-1" ${MAIL_FACTS_FOCUS_ATTR}="reader:${id}">${e(typeName(row.fact.type, state.types))}</h3>
+      <button type="button" class="data-button" ${actionAttr}="mail-facts-close-fact" ${MAIL_FACTS_FOCUS_ATTR}="close-fact">Close fact</button>
+    </header>
+    <div class="mail-facts-reader-body" ${MAIL_FACT_READER_ATTR}="${id}">
+      <section class="mail-facts-reader-section">
+        <h4>Extracted values</h4>
+        <div class="mail-facts-heading">${renderFactStatus(row)}</div>
+        ${renderFactValues(row, state.templates, state.types)}
+      </section>
+      <section class="mail-facts-reader-section">
+        <h4>Source email</h4>
+        ${renderMail(row)}
+      </section>
+      <section class="mail-facts-reader-section">
+        <h4>Triggered recipes</h4>
+        ${renderRuns(row)}
+      </section>
+      ${renderRawData(row, actionAttr, openData.has(row.fact.fact_id), 'Raw data')}
+    </div>
+  </section>`;
+};
 
 const hasFilters = (state: FactsState): boolean =>
   state.email !== null || state.thing !== null || FILTER_KEYS.some((key) => state.filters[key] !== undefined);
@@ -485,7 +622,13 @@ const thingHeading = (state: FactsState): string => {
   return `${typeName(thing.type, state.types)}${label !== undefined ? `: ${label}` : ''}`;
 };
 
-const renderFacts = (state: FactsState, actionAttr: string, available: boolean, openData: ReadonlySet<string>): string => {
+const renderFacts = (
+  state: FactsState,
+  actionAttr: string,
+  available: boolean,
+  openData: ReadonlySet<string>,
+  workspace?: { readonly selectedId: string | null },
+): string => {
   if (!available) {
     return `<p class="mail-facts-subtle">This server cannot list mail facts.</p>`;
   }
@@ -498,12 +641,23 @@ const renderFacts = (state: FactsState, actionAttr: string, available: boolean, 
           ? 'No facts match.'
           : 'No facts yet. Recued reads them from saved mail, including your first sync: parcels, orders, bills and bookings that senders mark up in a standard way, requests you mail to your own +tag address, and anything a template of yours reads.'}</p>`
       : `
-        <div class="mail-facts-columns" aria-hidden="true">
+        ${workspace === undefined ? `<div class="mail-facts-columns" aria-hidden="true">
           <span>Matched mail</span><span>Fact</span><span>Triggered recipes</span>
-        </div>
+        </div>` : ''}
         <ul class="mail-facts-list" role="list">
-          ${state.rows.map((row) => renderRow(row, state.templates, state.types, actionAttr, openData)).join('')}
+          ${state.rows.map((row) => workspace === undefined
+            ? renderRow(row, state.templates, state.types, actionAttr, openData)
+            : renderCompactRow(row, state, actionAttr, row.fact.fact_id === workspace.selectedId)).join('')}
         </ul>`;
+  const footer = state.next !== null || state.rows.length > 0
+    ? `<div class="data-list-footer">
+        <span class="data-list-count" role="status" tabindex="-1" ${MAIL_FACTS_FOCUS_ATTR}="list-count">${state.rows.length} ${state.rows.length === 1 ? 'fact' : 'facts'} shown</span>
+        ${state.next !== null ? `<button type="button" class="data-button" ${actionAttr}="mail-facts-load-more"
+          ${MAIL_FACTS_FOCUS_ATTR}="load-more"${state.loadingMore || state.loading || (state.error !== null && state.failedPage === null) ? ' aria-disabled="true"' : ''}${state.loadingMore ? ' aria-busy="true"' : ''}>
+          ${state.loadingMore ? 'Loading…' : 'Load more'}
+        </button>` : ''}
+      </div>` : '';
+  const selected = workspace === undefined ? undefined : state.rows.find((row) => row.fact.fact_id === workspace.selectedId);
   return `
     ${state.thing !== null
       ? `<div class="mail-facts-email-filter" data-mail-facts-thing="${e(state.thing)}">
@@ -525,16 +679,14 @@ const renderFacts = (state: FactsState, actionAttr: string, available: boolean, 
           <button type="button" class="data-button" ${actionAttr}="mail-facts-retry" ${MAIL_FACTS_FOCUS_ATTR}="retry"${state.loading || state.loadingMore ? ' aria-disabled="true" aria-busy="true"' : ''}>${state.loading || state.loadingMore ? 'Retrying…' : 'Try again'}</button></p>`
       : ''}
     ${state.loaded && state.updating ? '<p class="mail-facts-subtle" aria-live="polite">Updating…</p>' : ''}
-    ${body}
-    ${state.next !== null || state.rows.length > 0
-      ? `<div class="data-list-footer">
-          <span class="data-list-count" role="status" tabindex="-1" ${MAIL_FACTS_FOCUS_ATTR}="list-count">${state.rows.length} ${state.rows.length === 1 ? 'fact' : 'facts'} shown</span>
-          ${state.next !== null ? `<button type="button" class="data-button" ${actionAttr}="mail-facts-load-more"
-            ${MAIL_FACTS_FOCUS_ATTR}="load-more"${state.loadingMore || state.loading || (state.error !== null && state.failedPage === null) ? ' aria-disabled="true"' : ''}${state.loadingMore ? ' aria-busy="true"' : ''}>
-            ${state.loadingMore ? 'Loading…' : 'Load more'}
-          </button>` : ''}
+    ${workspace !== undefined && state.rows.length > 0
+      ? `<div class="mail-facts-workspace work-entity-list-workspace">
+          <div class="mail-facts-workspace-list">${body}${footer}</div>
+          ${selected === undefined
+            ? '<p class="mail-facts-reader-empty work-entity-reader--inline">Select a fact to review it.</p>'
+            : renderFactReader(selected, state, actionAttr, openData)}
         </div>`
-      : ''}`;
+      : `${body}${footer}`}`;
 };
 
 // ── The surface ─────────────────────────────────────────────────────────────
@@ -562,8 +714,10 @@ const queryOf = (state: FactsState, before?: MailFactRowsCursor): MailFactRowsQu
 
 export const createMailFactsSurface = (deps: MailFactsSurfaceDeps): MailFactsSurface => {
   const { callers } = deps;
+  const visit = readMailFactsVisit(deps.navigation);
+  const desktop = () => deps.desktopWorkspace?.() === true;
   let view: MailFactView = 'facts';
-  let facts: FactsState = {
+  let facts: FactsState = visit?.facts ?? {
     rows: [],
     next: null,
     loaded: false,
@@ -579,17 +733,41 @@ export const createMailFactsSurface = (deps: MailFactsSurfaceDeps): MailFactsSur
     types: [],
   };
   let seq = 0;
-  let pages = 0;
+  let pages = visit?.pages ?? 0;
+  let selectedId = visit?.selectedId ?? null;
+  let returning = visit;
+  let skipInitialRead = visit !== undefined && !visit.facts.loading;
   let disposed = false;
   let pendingFocus: string | null = null;
   /** Read replies can redirect only a control that still owns this view's focus. */
   let pendingReadFocus: { key: string; from: readonly string[]; view: MailFactView } | null = null;
   const pageFocusKey = (rows: readonly MailFactRow[], next: MailFactRowsCursor | null): string => {
+    if (desktop() && rows[0]) return `row:${rows[0].fact.fact_id}`;
     const mail = rows.find(row => row.email !== null);
     return mail !== undefined ? `mail:${mail.fact.fact_id}` : next !== null ? 'load-more' : 'list-count';
   };
   /** The facts whose Data the owner opened: kept open across live refreshes. */
-  const openData = new Set<string>();
+  const openData = new Set(visit?.openData);
+
+  const captureViewport = (root: ParentNode): MailFactsViewport | null => {
+    if (!root.querySelector?.(`[${MAIL_FACTS_HOST_ATTR}="facts"]`)) return null;
+    const list = root.querySelector?.('.mail-facts-workspace-list .mail-facts-list');
+    const pane = root.querySelector?.(`[${MAIL_FACT_READER_ATTR}]`);
+    const id = pane?.getAttribute(MAIL_FACT_READER_ATTR);
+    return {
+      pageTop: deps.navigation?.scrollHost()?.scrollTop,
+      listTop: list?.scrollTop,
+      reader: pane && id != null ? { id, top: pane.scrollTop } : null,
+    };
+  };
+
+  const closeReader = (): boolean => {
+    if (selectedId === null) return false;
+    pendingFocus = `row:${selectedId}`;
+    selectedId = null;
+    deps.render();
+    return true;
+  };
 
   const templates: MailFactTemplates = createMailFactTemplates({
     callers,
@@ -646,6 +824,7 @@ export const createMailFactsSurface = (deps: MailFactsSurfaceDeps): MailFactsSur
         templates: named,
         types: owned,
       };
+      if (selectedId !== null && !page.rows.some(row => row.fact.fact_id === selectedId)) selectedId = null;
       pages = 1;
       if (retry) pendingReadFocus = { key: pageFocusKey(page.rows, facts.next), from: ['retry'], view: 'facts' };
     } catch (error) {
@@ -703,20 +882,28 @@ export const createMailFactsSurface = (deps: MailFactsSurfaceDeps): MailFactsSur
     </div>`;
 
   return {
-    render: () => `
-      <section class="mail-facts" ${MAIL_FACTS_HOST_ATTR}="${view}">
+    render: () => {
+      const workspace = view === 'facts' && desktop() ? { selectedId } : undefined;
+      return `<section class="mail-facts" ${MAIL_FACTS_HOST_ATTR}="${view}">
         <header class="mail-facts-header">
           <h2 class="data-section-title">Mail facts</h2>
+          ${workspace === undefined ? '' : renderViews()}
         </header>
-        ${renderViews()}
+        ${workspace === undefined ? renderViews() : ''}
         ${view === 'facts'
-          ? `<p class="mail-facts-intro">What Recued read from your mail: each fact, the email it came from, and the recipes it started.</p>
-            ${renderFacts(facts, deps.actionAttr, callers.listFacts !== undefined, openData)}`
+          ? `${workspace === undefined ? '<p class="mail-facts-intro">What Recued read from your mail: each fact, the email it came from, and the recipes it started.</p>' : ''}
+            ${renderFacts(facts, deps.actionAttr, callers.listFacts !== undefined, openData, workspace)}`
           : view === 'templates' ? templates.render() : senders.render()}
-      </section>`,
+      </section>`;
+    },
 
-    refresh: (silent = false) =>
-      view === 'facts' ? loadFacts(silent) : view === 'templates' ? templates.refresh(silent) : senders.refresh(silent),
+    refresh: async (silent = false) => {
+      if (view === 'facts' && skipInitialRead) {
+        skipInitialRead = false;
+        return;
+      }
+      await (view === 'facts' ? loadFacts(silent) : view === 'templates' ? templates.refresh(silent) : senders.refresh(silent));
+    },
 
     handleAction: (action, target) => {
       if (!action.startsWith(MAIL_FACTS_ACTION_PREFIX)) return false;
@@ -727,6 +914,15 @@ export const createMailFactsSurface = (deps: MailFactsSurfaceDeps): MailFactsSur
         templates.handleAction(action, target);
       } else if (view === 'senders') {
         senders.handleAction(action, target);
+      } else if (action === 'mail-facts-open-fact') {
+        const id = target.getAttribute('data-fact-id');
+        if (desktop() && id !== null && !facts.updating && facts.rows.some(row => row.fact.fact_id === id)) {
+          selectedId = id;
+          pendingFocus = `reader:${id}`;
+          deps.render();
+        }
+      } else if (action === 'mail-facts-close-fact') {
+        closeReader();
       } else if (action === 'mail-facts-data-toggle') {
         // The browser opens or shuts it; the set keeps it so across repaints.
         const id = target.getAttribute('data-fact-id') ?? '';
@@ -742,6 +938,7 @@ export const createMailFactsSurface = (deps: MailFactsSurfaceDeps): MailFactsSur
       } else if (action === 'mail-facts-show-all') {
         const wasThing = facts.thing !== null;
         facts = { ...facts, email: null, thing: null, rows: [], next: null, loaded: false };
+        selectedId = null;
         pendingFocus = 'filter:type';
         if (wasThing) deps.onAddressChange();
         void loadFacts(false);
@@ -768,6 +965,7 @@ export const createMailFactsSurface = (deps: MailFactsSurfaceDeps): MailFactsSur
         }
       }
       facts = { ...facts, filters: next };
+      selectedId = null;
       pendingFocus = `filter:${key}`;
       void loadFacts(false);
       return true;
@@ -779,6 +977,7 @@ export const createMailFactsSurface = (deps: MailFactsSurfaceDeps): MailFactsSur
       : view === 'facts' && facts.thing !== null ? ['thing', facts.thing] : [view]),
 
     openAddress: (segments) => {
+      if (visit !== undefined) return;
       const wanted = segments[0];
       // `#data/mail_fact/thing/<id>`: Today's link to one item opens that item.
       if (wanted === 'thing' && segments[1] !== undefined && segments[1].length > 0) {
@@ -798,6 +997,7 @@ export const createMailFactsSurface = (deps: MailFactsSurfaceDeps): MailFactsSur
 
     showEmail: async (email, subject) => {
       view = 'facts';
+      selectedId = null;
       pendingFocus = 'show-all';
       facts = {
         ...facts,
@@ -825,26 +1025,71 @@ export const createMailFactsSurface = (deps: MailFactsSurfaceDeps): MailFactsSur
       return typeof key === 'string' && key.length > 0 ? key : null;
     },
 
-    restoreFocus: (root, key) => {
+    captureViewport,
+
+    restoreFocus: (root, key, viewport = null, layoutReady = true) => {
       if (disposed) return;
+      // Data's initial loading paint has different toolbar height. Apply the
+      // saved offset after the normal layout has settled.
+      const arrival = layoutReady ? returning : undefined;
+      if (arrival) returning = undefined;
+      const position = arrival?.viewport ?? viewport;
+      const list = root.querySelector?.('.mail-facts-workspace-list .mail-facts-list');
+      if (list) {
+        if (pendingFocus?.startsWith('filter:')) list.scrollTop = 0;
+        else if (position?.listTop !== undefined) list.scrollTop = position.listTop;
+      }
+      const pane = root.querySelector?.(`[${MAIL_FACT_READER_ATTR}]`);
+      if (pane && position?.reader?.id === pane.getAttribute(MAIL_FACT_READER_ATTR)) pane.scrollTop = position.reader.top;
+      const scrollHost = position?.pageTop === undefined ? null : deps.navigation?.scrollHost();
+      if (scrollHost && position?.pageTop !== undefined) scrollHost.scrollTop = position.pageTop;
       const request = pendingReadFocus;
       pendingReadFocus = null;
       const readOwned = request !== null && request.view === view && key !== null && request.from.includes(key);
-      const wanted = pendingFocus ?? (readOwned ? request.key : key);
+      const wanted = arrival?.focus ?? pendingFocus ?? (readOwned ? request.key : key);
       if (wanted === null) return;
       const control = (value: string): HTMLElement | null | undefined => root.querySelector?.(
         `[${MAIL_FACTS_FOCUS_ATTR}="${value.replace(/["\\]/g, '\\$&')}"]`,
       ) as HTMLElement | null | undefined;
-      const found = control(wanted) ?? (readOwned
-        ? (view === 'facts' ? control('list-count') : null) ?? control(`view:${view}`) : null);
+      const previousId = position?.reader?.id;
+      const readerFocus = wanted === 'close-fact' || wanted.startsWith('reader:')
+        || wanted.startsWith('mail:') || wanted.startsWith('run:') || wanted.startsWith('data:');
+      const found = control(wanted) ?? (readerFocus && previousId !== undefined ? control(`row:${previousId}`) : null)
+        ?? (arrival || readOwned || readerFocus && previousId !== undefined
+          ? (view === 'facts' ? control('list-count') : null) ?? control(`view:${view}`) : null);
       if (found !== null && found !== undefined) {
         // Putting focus back after a repaint must not move the page; moving it
         // somewhere new (the box a clicked value opens) must bring it into view.
-        found.focus?.({ preventScroll: pendingFocus === null && !readOwned });
+        if (arrival || pendingFocus === null && !readOwned) focusListTarget(found);
+        else found.focus?.({ preventScroll: false });
         pendingFocus = null;
       } else if (pendingFocus !== null && !facts.loading && !facts.loadingMore) {
         pendingFocus = null;
       }
+    },
+
+    rememberLink: (event, root) => {
+      if (view !== 'facts' || !facts.loaded || event.button !== 0 || event.defaultPrevented
+        || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+      const anchor = (event.target as Element | null)?.closest?.('a[href]');
+      const focus = anchor?.getAttribute(MAIL_FACTS_FOCUS_ATTR);
+      if (!focus || !(focus.startsWith('mail:') || focus.startsWith('run:'))) return;
+      rememberMailFactsVisit(deps.navigation, {
+        facts: { ...facts, loadingMore: false },
+        pages, selectedId, openData: new Set(openData), viewport: captureViewport(root), focus,
+      });
+    },
+
+    closeReaderFromKeyboard: (target) => desktop()
+      && target?.closest?.('.mail-facts-reader, .mail-facts-row-button[aria-current="true"]') != null && closeReader(),
+
+    workspaceChanged: (active) => {
+      if (view !== 'facts') return;
+      if (desktop()) {
+        const focusedRow = active?.closest?.(`[${MAIL_FACTS_ROW_ATTR}]`)?.getAttribute(MAIL_FACTS_ROW_ATTR);
+        if (focusedRow != null) selectedId = focusedRow;
+      }
+      deps.render();
     },
 
     dispose: () => {
@@ -936,6 +1181,54 @@ export const MAIL_FACTS_STYLES = `
 [${MAIL_FACTS_HOST_ATTR}] .mail-facts-views .data-button[aria-pressed="true"] {
   border-color: var(--accent); color: var(--accent); background: var(--accent-weak);
 }
+[${MAIL_FACTS_HOST_ATTR}="facts"] .mail-facts-header:has(.mail-facts-views) {
+  display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:8px 16px;
+}
+[${MAIL_FACTS_HOST_ATTR}="facts"] .mail-facts-header .mail-facts-views { margin:0; }
+[${MAIL_FACTS_HOST_ATTR}] .mail-facts-workspace {
+  /* Reserve room for the Data heading, collection controls, and filters. */
+  --mail-facts-pane-height:clamp(16rem, calc(100dvh - var(--wc-header-height,64px) - var(--wc-connection-banner-h,0px) - 23.5rem), 42rem);
+}
+[${MAIL_FACTS_HOST_ATTR}] .mail-facts-workspace-list {
+  display:flex; flex-direction:column; min-width:0; max-height:var(--mail-facts-pane-height);
+}
+[${MAIL_FACTS_HOST_ATTR}] .mail-facts-workspace-list .mail-facts-list {
+  min-height:0; overflow:auto; padding:3px; scrollbar-width:thin;
+}
+[${MAIL_FACTS_HOST_ATTR}] .mail-facts-workspace-list .data-list-footer { flex-shrink:0; }
+[${MAIL_FACTS_HOST_ATTR}] .mail-facts-compact-row { min-width:0; }
+[${MAIL_FACTS_HOST_ATTR}] .mail-facts-row-button {
+  display:grid; gap:4px; width:100%; min-width:0; padding:8px 10px;
+  border:1px solid var(--border); border-radius:var(--wc-radius,9px); background:var(--surface);
+  color:var(--fg); font:inherit; font-size:13px; line-height:1.35; text-align:start; cursor:pointer;
+}
+[${MAIL_FACTS_HOST_ATTR}] .mail-facts-row-button:hover { border-color:var(--border-strong); background:var(--surface-subtle); }
+[${MAIL_FACTS_HOST_ATTR}] .mail-facts-row-button[aria-current="true"] {
+  background:var(--accent-weak); box-shadow:inset 3px 0 var(--accent);
+}
+[${MAIL_FACTS_HOST_ATTR}] .mail-facts-compact-summary { display:grid; grid-template-columns:minmax(0,1fr) fit-content(45%); align-items:center; gap:8px; }
+[${MAIL_FACTS_HOST_ATTR}] .mail-facts-compact-summary > * { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+[${MAIL_FACTS_HOST_ATTR}] .mail-facts-compact-subject { font-weight:600; }
+[${MAIL_FACTS_HOST_ATTR}] .mail-facts-compact-meta { display:flex; flex-wrap:wrap; gap:1px 8px; overflow-wrap:anywhere; }
+[${MAIL_FACTS_HOST_ATTR}] .mail-facts-workspace > .mail-facts-reader {
+  display:flex; flex-direction:column; max-height:var(--mail-facts-pane-height); overflow:hidden; background:var(--surface);
+}
+[${MAIL_FACTS_HOST_ATTR}] .mail-facts-reader-empty { margin:0; padding:16px; color:var(--muted); }
+[${MAIL_FACTS_HOST_ATTR}] .mail-facts-reader-header {
+  display:flex; align-items:center; justify-content:space-between; gap:12px; flex-shrink:0;
+  padding:12px 16px; border-bottom:1px solid var(--border);
+}
+[${MAIL_FACTS_HOST_ATTR}] .mail-facts-reader-header h3 { margin:0; font-size:18px; min-width:0; overflow-wrap:anywhere; }
+[${MAIL_FACTS_HOST_ATTR}] .mail-facts-reader-header .data-button { flex-shrink:0; }
+[${MAIL_FACTS_HOST_ATTR}] .mail-facts-reader-body {
+  display:grid; grid-auto-rows:max-content; gap:16px; padding:16px; min-height:0; min-width:0; overflow:auto; scrollbar-width:thin;
+}
+[${MAIL_FACTS_HOST_ATTR}] .mail-facts-reader-section { display:grid; gap:4px; min-width:0; overflow-wrap:anywhere; }
+[${MAIL_FACTS_HOST_ATTR}] .mail-facts-reader-section + .mail-facts-reader-section { padding-top:12px; border-top:1px solid var(--border); }
+[${MAIL_FACTS_HOST_ATTR}] .mail-facts-reader-section h4 { margin:0; font-size:14px; }
+[${MAIL_FACTS_HOST_ATTR}] .mail-facts-reader .mail-facts-heading:empty { display:none; }
+[${MAIL_FACTS_HOST_ATTR}] .mail-facts-reader .mail-facts-heading .mail-facts-notice { margin:0; padding:1px 8px; border-radius:999px; }
+[${MAIL_FACTS_HOST_ATTR}] .mail-facts-reader .mail-facts-data pre { max-height:none; overflow:visible; }
 ${MAIL_FACT_TEMPLATES_STYLES(MAIL_FACTS_HOST_ATTR)}
 [${MAIL_FACTS_HOST_ATTR}] .mail-facts-subjects { margin: 0; padding-left: 18px; font-size: 13px; overflow-wrap: anywhere; }
 @media (max-width: 720px) {

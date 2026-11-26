@@ -119,6 +119,7 @@ import {
 } from '../shell/hierarchical-navigation.js';
 import { serializeShellRoute } from '../shell/route.js';
 import { humanizeRpcError } from '../shell/rpc-error-copy.js';
+import { focusListTarget, readListScroll, restoreListScroll, type ListScrollPosition } from '../shell/list-preview-continuity.js';
 
 /** Static config for the ★ ref-picker backing the recipe filter. */
 const RECIPE_PICKER_CONFIG: RefPicker.RefPickerRenderConfig = {
@@ -151,6 +152,16 @@ export const AUTOMATION_ROUTE_RETRY_ATTR = 'data-recued-automation-retry';
 export const AUTOMATION_ROUTE_EMPTY_ATTR = 'data-recued-automation-empty';
 export const AUTOMATION_ROUTE_DETAIL_HEADING_ATTR =
   'data-recued-automation-detail-heading';
+const AUTO_RUN_WORKSPACE_ATTR = 'data-recued-auto-run-workspace';
+const TRIGGER_WORKSPACE_ATTR = 'data-recued-trigger-workspace';
+const SCHEDULE_WORKSPACE_ATTR = 'data-recued-schedule-workspace';
+const AUTOMATION_DESKTOP_MEDIA = '(min-width: 1280px) and (hover: hover) and (pointer: fine)';
+const RULE_WORKSPACES = {
+  'auto-run': { attr: AUTO_RUN_WORKSPACE_ATTR, label: 'Auto-run details', hint: 'Select an auto-run rule to review it.' },
+  triggers: { attr: TRIGGER_WORKSPACE_ATTR, label: 'Trigger details', hint: 'Select a trigger to review it.' },
+  schedules: { attr: SCHEDULE_WORKSPACE_ATTR, label: 'Schedule details', hint: 'Select a schedule to review it.' },
+};
+type RuleWorkspaceSection = keyof typeof RULE_WORKSPACES;
 /** R21 — one sub-nav tab per section. Value = the section HASH token
  *  (`auto-run` / `triggers` / `schedules`); `data-active` marks the
  *  visible one. */
@@ -226,6 +237,7 @@ interface AutomationActionFocus {
   verb: string;
   section: AutomationSectionKind;
   rule_id: string;
+  enabled?: boolean;
 }
 
 interface AutomationDeleteConfirmation {
@@ -347,6 +359,36 @@ export interface PromptListMemory {
   returnHash: string; destinationHash: string; activeSection: AutomationSectionToken;
   statusFilter: AutomationStatusFilter; chipFilter: AutomationChip | null; query: string; focusId: string; top: number;
 }
+
+interface AutomationRuleReturn {
+  owner: string;
+  listHash: string;
+  detailHash: string;
+  section: AutomationSectionToken;
+  recipeFilter: string | null;
+  statusFilter: AutomationStatusFilter;
+  originFilter: AutomationOriginFilter;
+  chipFilter: AutomationChip | null;
+  focus: AutomationActionFocus;
+  workspacePosition?: AutomationWorkspacePosition;
+}
+
+interface AutomationWorkspacePosition {
+  readonly page: ListScrollPosition;
+  readonly rows: ListScrollPosition | undefined;
+}
+
+// History entries can outlive a shell or server connection.
+const automationHistoryOwners = new WeakMap<object, string>();
+const automationHistoryOwner = (caller: object): string => {
+  let owner = automationHistoryOwners.get(caller);
+  if (owner === undefined) {
+    owner = Math.random().toString(36).slice(2);
+    automationHistoryOwners.set(caller, owner);
+  }
+  return owner;
+};
+
 export interface BootstrapAutomationRouteOptions {
   root: HTMLElement;
   reminderRecovery?: ReminderRecoveryStore;
@@ -520,6 +562,7 @@ export interface AutomationRoute {
   hasInFlightWork(): boolean;
   /** Contextual shell guard for Automation commands that cannot be recalled. */
   inFlightWorkPrompt(): string | null;
+  navigateDeepLink(hash: string): boolean;
   dispose(): void;
 }
 
@@ -533,6 +576,7 @@ const AUTOMATION_ROUTE_STYLES = `
   padding: 28px 24px 48px;
   color: var(--fg);
 }
+[${AUTOMATION_ROUTE_HOST_ATTR}] .automation-page-header { display: contents; }
 [${AUTOMATION_ROUTE_HOST_ATTR}] .automation-header {
   display: flex;
   align-items: flex-start;
@@ -1211,6 +1255,158 @@ const AUTOMATION_ROUTE_STYLES = `
 [${AUTOMATION_ROUTE_HOST_ATTR}] .automation-create-surface [data-prompt-schedules] { margin-top: 24px; }
 [${AUTOMATION_ROUTE_HOST_ATTR}] .automation-create-surface .prompt-schedule-toolbar { margin-bottom: 0; }
 [${AUTOMATION_ROUTE_HOST_ATTR}] .automation-group-heading { margin: 0 0 14px; font-size: 17px; font-weight: 650; letter-spacing: -.02em; }
+[${AUTOMATION_ROUTE_HOST_ATTR}] .automation-header-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: end;
+  gap: 8px;
+  grid-area: 1 / 3;
+}
+[${AUTOMATION_ROUTE_HOST_ATTR}] .automation-rule-workspace {
+  --automation-pane-height: clamp(16rem, calc(100dvh - var(--wc-header-height, 64px) - var(--wc-connection-banner-h, 0px) - 14rem), 48rem);
+  display: grid;
+  grid-template-columns: minmax(16rem, 36%) minmax(0, 1fr);
+  align-items: start;
+  gap: var(--wc-space-lg, 24px);
+}
+.automation-rule-workspace > * { min-width: 0; }
+.automation-rule-workspace > [${AUTOMATION_ROUTE_SECTION_ATTR}] {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px 12px;
+}
+.automation-rule-workspace [${AUTOMATION_ROUTE_SECTION_ATTR}] > .automation-section-title {
+  display: flex;
+  align-items: center;
+  min-height: var(--wc-control-h, 40px);
+  margin: 0;
+}
+.automation-rule-workspace [${AUTOMATION_ROUTE_SECTION_ATTR}] > .automation-section-actions { margin: 0; }
+.automation-rule-workspace [${AUTOMATION_ROUTE_SECTION_ATTR}] > :not(.automation-section-title, .automation-section-actions),
+.automation-rule-workspace [${AUTOMATION_ROUTE_SECTION_ATTR}] > .automation-section-actions:has(.automation-create-surface, .automation-load-error) {
+  grid-column: 1 / -1;
+}
+.automation-rule-workspace [${AUTOMATION_ROUTE_SECTION_ATTR}] > .automation-list {
+  max-height: calc(var(--automation-pane-height) - var(--wc-control-h, 40px) - 8px);
+  overflow: auto;
+  scrollbar-width: thin;
+  padding: 3px;
+}
+[${AUTOMATION_ROUTE_HOST_ATTR}] .automation-rule-workspace[${AUTO_RUN_WORKSPACE_ATTR}] {
+  --automation-pane-height: clamp(16rem, calc(100dvh - var(--wc-header-height, 64px) - var(--wc-connection-banner-h, 0px) - 9rem), 48rem);
+}
+[${AUTO_RUN_WORKSPACE_ATTR}] > [${AUTOMATION_ROUTE_SECTION_ATTR}] {
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: auto auto minmax(0, 1fr);
+  align-items: stretch;
+  max-block-size: var(--automation-pane-height);
+}
+[${AUTO_RUN_WORKSPACE_ATTR}] > [${AUTOMATION_ROUTE_SECTION_ATTR}] > .automation-list { max-height: none; }
+[${AUTOMATION_ROUTE_HOST_ATTR}] [${AUTO_RUN_WORKSPACE_ATTR}] > [${AUTOMATION_ROUTE_SECTION_ATTR}] > div.automation-filter {
+  display: grid;
+  align-items: stretch;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 8rem);
+  gap: 4px 10px;
+  margin: 0;
+}
+[${AUTOMATION_ROUTE_HOST_ATTR}] [${AUTO_RUN_WORKSPACE_ATTR}] .automation-filter > .ref-picker {
+  grid-area: 2 / 1;
+  min-width: 0;
+}
+[${AUTO_RUN_WORKSPACE_ATTR}] .automation-filter > .automation-filter-label { grid-area: 1 / 1; }
+[${AUTOMATION_ROUTE_HOST_ATTR}] [${AUTO_RUN_WORKSPACE_ATTR}] .automation-filter-field {
+  display: contents;
+}
+[${AUTO_RUN_WORKSPACE_ATTR}] .automation-filter-field > .automation-filter-label { grid-area: 1 / 2; }
+[${AUTOMATION_ROUTE_HOST_ATTR}] [${AUTO_RUN_WORKSPACE_ATTR}] .automation-filter-field > .automation-filter-select {
+  grid-area: 2 / 2;
+  inline-size: 100%;
+  min-width: 0;
+  font: inherit;
+  border-radius: var(--wc-radius, 9px);
+}
+.automation-rule-workspace .automation-rule-index { display: block; padding: 0; opacity: 1; }
+.automation-rule-workspace .automation-rule-select {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+  padding: 9px 11px;
+  border: 0;
+  border-radius: inherit;
+  background: transparent;
+  color: var(--fg);
+  font: inherit;
+  text-align: start;
+  cursor: pointer;
+}
+.automation-rule-workspace .automation-rule-select:hover { background: var(--surface-subtle); }
+.automation-rule-workspace .automation-rule-select[aria-current="true"] {
+  background: var(--accent-weak);
+  box-shadow: inset 3px 0 var(--accent);
+}
+.automation-rule-workspace .automation-rule-select:focus-visible { outline-offset: -2px; }
+[${SCHEDULE_WORKSPACE_ATTR}] .automation-rule-select { gap: 3px; padding-block: 8px; line-height: 1.35; }
+.automation-rule-workspace .automation-rule-index-heading {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: baseline;
+}
+.automation-rule-workspace .automation-rule-index-heading strong,
+.automation-rule-workspace .automation-rule-summary {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.automation-rule-workspace .automation-rule-summary,
+.automation-rule-workspace .automation-rule-index-meta { font-size: 12px; color: var(--muted); }
+.automation-rule-workspace .automation-rule-index-meta { display: flex; flex-wrap: wrap; gap: 3px 8px; }
+.automation-rule-workspace .automation-rule-index-error {
+  margin: 0;
+  padding: 2px 11px 8px;
+  font-size: 12px;
+  color: var(--danger);
+  overflow-wrap: anywhere;
+}
+.automation-rule-workspace .automation-rule-inspector,
+.automation-rule-workspace .automation-rule-inspector-empty {
+  border: 1px solid var(--border);
+  border-radius: var(--wc-radius-lg, 10px);
+  background: var(--surface);
+}
+.automation-rule-workspace .automation-rule-inspector-empty { margin: 0; padding: 16px; color: var(--muted); }
+.automation-rule-workspace .automation-rule-inspector {
+  grid-auto-rows: max-content;
+  max-height: var(--automation-pane-height);
+  overflow: auto;
+  scrollbar-width: thin;
+  gap: 0;
+}
+.automation-rule-workspace .automation-rule-inspector > :is(header, section, details, p) {
+  padding: 12px 16px;
+  border: 0;
+  border-radius: 0;
+  border-bottom: 1px solid var(--border);
+}
+.automation-rule-workspace .automation-rule-inspector > :last-child { border-bottom: 0; }
+.automation-rule-workspace .automation-rule-inspector header {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  align-items: center;
+  gap: 8px 16px;
+}
+.automation-rule-workspace .automation-rule-inspector .automation-detail-section > h3 { margin-bottom: 6px; }
+.automation-rule-workspace .automation-rule-inspector .automation-detail-facts { grid-template-columns: minmax(5rem, max-content) minmax(0, 1fr); }
+.automation-rule-workspace .automation-rule-inspector > [data-recued-automation-back] { margin: 12px 16px; }
+.automation-rule-workspace .automation-rule-inspector > p { margin: 0; overflow-wrap: anywhere; }
+.automation-rule-inspector > .automation-detail-grid { gap: 0; align-items: stretch; border-bottom: 1px solid var(--border); }
+.automation-rule-inspector > .automation-detail-grid > section { padding: 12px 16px; border: 0; border-radius: 0; }
+.automation-rule-inspector > .automation-detail-grid > section + section { border-inline-start: 1px solid var(--border); }
 [${AUTOMATION_ROUTE_HOST_ATTR}] [data-recued-automation-section-panel] > [data-prompt-schedules] { margin-top: 32px; }
 [${AUTOMATION_ROUTE_HOST_ATTR}] .automation-alarm-notice { box-sizing: border-box; grid-column: 1/-1; order: 2; margin: 0; padding: 14px 18px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); font-size: 13px; line-height: 1.6; }
 @media (max-width: 680px) {
@@ -1446,7 +1642,7 @@ const renderSection = (args: {
   retryToken: AutomationSectionToken;
   retryable: boolean;
   title: string;
-  hint: string;
+  hint?: string;
   rows: string[];
   loading: boolean;
   error: string | undefined;
@@ -1456,6 +1652,7 @@ const renderSection = (args: {
   emptyText: string;
   /** R21 — pre-built section-action HTML (the Add affordance). */
   actions?: string;
+  filters?: string;
 }): string => {
   let body: string;
   if (args.error !== undefined) {
@@ -1484,9 +1681,10 @@ const renderSection = (args: {
     : '';
   return `
     <section ${AUTOMATION_ROUTE_SECTION_ATTR}="${args.section}">
-      <h2 class="automation-section-title">${e(args.title)}</h2>
-      <p class="automation-section-hint">${e(args.hint)}</p>
+      <h2 class="automation-section-title"${args.hint === undefined ? ' tabindex="-1"' : ''}>${e(args.title)}</h2>
+      ${args.hint === undefined ? '' : `<p class="automation-section-hint">${e(args.hint)}</p>`}
       ${args.actions ?? ''}
+      ${args.filters ?? ''}
       ${mutationLine}
       ${body}
     </section>
@@ -1509,11 +1707,22 @@ export const bootstrapAutomationRoute = (
       'bootstrapAutomationRoute: no document available - pass `opts.document` for non-browser environments',
     );
   }
+  const view = doc.defaultView;
+  const desktopMedia = view?.matchMedia?.(AUTOMATION_DESKTOP_MEDIA);
   const listMemory = opts.promptListMemory?.value;
-  const promptReturn = !opts.initialPromptId && listMemory && listMemory.returnHash === doc.defaultView?.location.hash ? listMemory : undefined;
-  let promptReturnInteracted = false, promptInteractions = 0;
-  const markPromptReturnInteraction = () => { promptReturnInteracted = true; promptInteractions++; };
-  opts.root.addEventListener('pointerdown', markPromptReturnInteraction, true); opts.root.addEventListener('keydown', markPromptReturnInteraction, true);
+  const promptReturn = !opts.initialPromptId && listMemory && listMemory.returnHash === view?.location.hash ? listMemory : undefined;
+  const historyOwner = automationHistoryOwner(opts.schedulesListCaller ?? opts.root);
+  const historyReturn: AutomationRuleReturn | undefined = view?.history?.state?.recuedAutomationRuleReturn;
+  const ruleReturn = !opts.initialPromptId && !opts.initialPromptDraft && !promptReturn
+    && historyReturn?.owner === historyOwner
+    && (opts.initialDetailId ? historyReturn.detailHash : historyReturn.listHash) === view?.location.hash
+    ? historyReturn
+    : undefined;
+  let ruleReturnFocus = opts.initialDetailId ? undefined : ruleReturn?.focus;
+  let routeInteractions = 0;
+  const recordRouteInteraction = () => { routeInteractions++; };
+  opts.root.addEventListener('pointerdown', recordRouteInteraction, true);
+  opts.root.addEventListener('keydown', recordRouteInteraction, true);
 
   if (doc.head.querySelector(`style[${AUTOMATION_ROUTE_STYLES_MARKER}]`) === null) {
     const style = doc.createElement('style');
@@ -1550,10 +1759,11 @@ export const bootstrapAutomationRoute = (
   let promptState: PromptSchedulesPanelState = { rows: [], loaded: false, error: '' };
   let comingUpSelections = new Map<string, PromptSchedule>();
   let comingUpOpening: string | undefined, comingUpError = '';
+  let clampedAgendaTop: number | undefined;
   let renderPromptOverview = (): void => {};
   const promptPanel = opts.rehearsalCall ? mountPromptSchedulesPanel({ host: promptHost, call: opts.rehearsalCall as PromptScheduleClient,
     ...(opts.initialPromptId ? { selection: { id: opts.initialPromptId, ...(opts.initialPromptSelection?.id === opts.initialPromptId ? { identity: opts.initialPromptSelection.identity } : {}) } } : {}),
-    canFocusSelection: () => !promptReturnInteracted && (doc.activeElement === doc.body || doc.activeElement === doc.documentElement || opts.root.contains?.(doc.activeElement) === true),
+    canFocusSelection: () => routeInteractions === 0 && (doc.activeElement === doc.body || doc.activeElement === doc.documentElement || opts.root.contains?.(doc.activeElement) === true),
     initialQuery: promptReturn?.query,
     openSchedule: row => openSavedPrompt(row),
     hideCreate: true, recovery: opts.promptRecovery, onCreateClosed: keptId => {
@@ -1600,9 +1810,12 @@ export const bootstrapAutomationRoute = (
   /** D-319 §5.4 — the one list's filter (On / Off / Needs you / Failing), or
    *  none; the recipes being switched on; and the section a rule's Details
    *  were opened from, which Back returns to. */
-  let chipFilter: AutomationChip | null = promptReturn?.chipFilter ?? null;
+  let chipFilter: AutomationChip | null = promptReturn
+    ? promptReturn.chipFilter
+    : ruleReturn?.chipFilter ?? null;
   let switchOnBusy = new Set<string>();
-  let detailReturnSection: AutomationSectionToken | null = null;
+  let detailReturnSection: AutomationSectionToken | null =
+    opts.initialDetailId ? ruleReturn?.section ?? null : null;
   /** False until a `dishes.list` caller has actually answered — an absent
    *  caller must not render as "no dishes yet". */
   let dishesWired = false;
@@ -1628,6 +1841,54 @@ export const bootstrapAutomationRoute = (
     && opts.initialDetailId.length > 0
       ? opts.initialDetailId
       : null;
+  // A detail opened from a desktop workspace owns that list's history entry.
+  // Direct links and details opened from Overview keep the full rule page.
+  let workspaceVisit = detailId !== null && ruleReturn?.workspacePosition ? ruleReturn : undefined;
+  let workspaceCanGoBack = workspaceVisit !== undefined;
+  let workspaceCloseRequested = false;
+  let initialWorkspacePosition = workspaceVisit?.workspacePosition;
+  const openTriggerMatches = new Set<string>();
+  const workspaceSection = (): RuleWorkspaceSection | null => {
+    if (opts.initialPromptId || opts.initialPromptDraft) return null;
+    return activeSection === 'auto-run' || activeSection === 'triggers' || activeSection === 'schedules'
+      ? activeSection : null;
+  };
+  const showRuleWorkspace = (): boolean =>
+    workspaceSection() !== null && desktopMedia?.matches === true
+    && (detailId === null || workspaceVisit !== undefined);
+  const workspaceListElement = () => routeRoot.querySelector?.<HTMLElement>(
+    `.automation-rule-workspace [${AUTOMATION_ROUTE_SECTION_ATTR}] > .automation-list`,
+  );
+  const workspaceInspectorElement = () => routeRoot.querySelector?.<HTMLElement>(
+    `.automation-rule-workspace .automation-rule-inspector`,
+  );
+  const captureWorkspacePosition = (): AutomationWorkspacePosition => {
+    const index = workspaceListElement();
+    return { page: readListScroll(opts.root), rows: index ? readListScroll(index) : undefined };
+  };
+  const restoreWorkspacePosition = (position: AutomationWorkspacePosition): void => {
+    const index = workspaceListElement();
+    if (index) restoreListScroll(index, position.rows);
+    restoreListScroll(opts.root, position.page);
+  };
+  let agendaDayTimer: number | undefined;
+  const clearAgendaDayTimer = (): void => {
+    if (agendaDayTimer !== undefined) view?.clearTimeout?.(agendaDayTimer);
+    agendaDayTimer = undefined;
+  };
+  const scheduleAgendaDayRefresh = (now: number | undefined): void => {
+    if (now === undefined) {
+      clearAgendaDayTimer();
+      return;
+    }
+    if (agendaDayTimer !== undefined) return;
+    const midnight = new Date(now);
+    midnight.setHours(24, 0, 0, 0);
+    agendaDayTimer = view?.setTimeout?.(() => {
+      agendaDayTimer = undefined;
+      if (!disposed && activeSection === 'coming-up' && desktopMedia?.matches === true) render();
+    }, midnight.getTime() - now);
+  };
   const automationAddress = (
     section: AutomationSectionToken,
     detail: string | null,
@@ -1652,10 +1913,9 @@ export const bootstrapAutomationRoute = (
   // recipe-filter combobox. Null = the full cross-pack view; a recipe id
   // narrows the recipe-bound sections and hides the global push-source
   // section. The deep-link seeds it; the picker mutates it in-memory.
-  let recipeFilter: string | null =
-    opts.initialRecipeFilter !== undefined && opts.initialRecipeFilter.length > 0
-      ? opts.initialRecipeFilter
-      : null;
+  let recipeFilter: string | null = ruleReturn
+    ? ruleReturn.recipeFilter
+    : opts.initialRecipeFilter || null;
   let recipePicker: RefPicker.RefPickerHandle | null = null;
   // One-shot guard: resolve a deep-link filter's label (id→name) into the
   // picker exactly once, the first time recipe names load. Re-syncing on
@@ -1666,6 +1926,9 @@ export const bootstrapAutomationRoute = (
   // the post-mutation re-list can't wash a failure away (codex MEDIUM
   // fold). Cleared per section on the next successful mutation there.
   let mutationErrors: AutomationLoadErrors = {};
+  const autoRunMutationErrors = new Map<string, string>();
+  const triggerMutationErrors = new Map<string, string>();
+  const scheduleMutationErrors = new Map<string, string>();
   let loading = false;
   // An explicit load Retry owns focus through the busy repaint. Success
   // advances to the selected section tab; failure returns to Retry. Moving
@@ -1728,7 +1991,7 @@ export const bootstrapAutomationRoute = (
   ): string => {
     if (busyVerbFor(section, rule_id) !== 'toggle') return label;
     if (label === 'Re-arm') return 'Re-arming…';
-    return toggleTo ? 'Resuming…' : 'Pausing…';
+    return (busyActions.get(rule_id)?.enabled ?? toggleTo) ? 'Resuming…' : 'Pausing…';
   };
 
   const confirmingDeleteFor = (
@@ -1902,7 +2165,8 @@ export const bootstrapAutomationRoute = (
         busy.has(candidate.rule_id))
       ?? null;
     if (focus === null) return;
-    const owner = findActionFocusTarget(focus);
+    const owner = findActionFocusTarget(focus) ?? (showRuleWorkspace() && sectionTokenForKind(focus.section) === activeSection
+      ? findActionFocusTarget({ ...focus, verb: 'detail' }) : null);
     owner?.focus?.({ preventScroll: true });
     owner?.scrollIntoView?.({ block: 'nearest' });
   };
@@ -1938,14 +2202,15 @@ export const bootstrapAutomationRoute = (
     recipeFilter === null || recipe_id === recipeFilter;
 
   // R21 filters — status (all sections) + origin (Triggers only).
-  let statusFilter: AutomationStatusFilter = promptReturn?.statusFilter ?? 'all';
+  let statusFilter: AutomationStatusFilter = promptReturn?.statusFilter
+    ?? ruleReturn?.statusFilter ?? 'all';
   const openSavedPrompt = (row: PromptSchedule, top = opts.root.scrollTop): void => {
     const destinationHash = promptScheduleHref(row.schedule_id);
     if (opts.promptListMemory) opts.promptListMemory.value = { returnHash: doc.defaultView?.location.hash ?? '#automation/schedules',
       destinationHash, activeSection, statusFilter, chipFilter, query: promptPanel?.getQuery() ?? '', focusId: row.schedule_id, top };
     if (opts.openPromptSchedule) opts.openPromptSchedule(row); else if (doc.defaultView) doc.defaultView.location.hash = destinationHash;
   };
-  let originFilter: AutomationOriginFilter = 'all';
+  let originFilter: AutomationOriginFilter = ruleReturn?.originFilter ?? 'all';
   const matchesStatus = (armed: ArmedState): boolean =>
     statusFilter === 'all' || armed === statusFilter;
 
@@ -2503,23 +2768,23 @@ export const bootstrapAutomationRoute = (
   const triggerItems = (): RuleItem[] =>
     triggers.filter((t) => matchesFilter(t.recipe_id)).map(triggerItem);
 
+  const triggerState = (trigger: EventTrigger) => trigger.enabled ? 'on' : trigger.last_error ? 'tripped' : 'off';
+  const triggerStateLabel = (trigger: EventTrigger) => trigger.enabled ? 'On' : trigger.last_error ? 'Auto-disabled' : 'Paused';
+  const triggerStart = (trigger: EventTrigger) => RunModal.describeMailFactTrigger(trigger, mailFactTemplates, mailFactTypes);
+
   const triggerItem = (t: EventTrigger): RuleItem => {
-      const armed: ArmedState = t.enabled
-        ? 'on'
-        : t.last_error
-          ? 'tripped'
-          : 'off';
+      const armed = triggerState(t);
       const fromRecipe = t.origin === 'recipe';
       // D-315 — a trigger on facts read from mail says what it watches in
       // words: its kind, values, "only when" and template.
-      const fact = RunModal.describeMailFactTrigger(t, mailFactTemplates, mailFactTypes);
+      const fact = triggerStart(t);
       return { recipe_id: t.recipe_id, dish_id: t.dish_id ?? null, armed, html: renderRow({
         section: 'event_trigger',
         rule_id: t.trigger_id,
         title: nameFor(t.recipe_id),
         titleHref: recipeHref(t.recipe_id),
         armed,
-        stateLabel: t.enabled ? 'On' : armed === 'tripped' ? 'Auto-disabled' : 'Paused',
+        stateLabel: triggerStateLabel(t),
         // Any other trigger in words too — its filter included ("when a
         // calendar invite arrives", not `data.file.received.*.created` beside
         // `record.mime_type = text/calendar`). The raw pattern and filter stay
@@ -2730,55 +2995,62 @@ export const bootstrapAutomationRoute = (
 
   /** The timer's next line: its next run, or for one that waits for data, its
    *  next check (which runs it only if there is something to run on). */
-  const timerNextMeta = (a: AutoRunStatusEntry): string => {
+  const timerNextTiming = (a: AutoRunStatusEntry): { waitsForData: boolean; at: number | null } => {
     const { recipe, overlay } = timerSubject(a);
-    return recipe !== undefined && timerWaitsForData(recipe, overlay)
-      ? `next check ${formatDateTime(timerNextCheck(a, recipe, overlay, opts.serverTimeZone?.()))}`
-      : `next ${formatDateTime(timerNext(a))}`;
+    return {
+      waitsForData: recipe !== undefined && timerWaitsForData(recipe, overlay),
+      at: timerNextCheck(a, recipe, overlay, opts.serverTimeZone?.()),
+    };
   };
+
+  const timerNextMeta = (a: AutoRunStatusEntry): string => {
+    const { waitsForData, at } = timerNextTiming(a);
+    return `${waitsForData ? 'next check' : 'next'} ${formatDateTime(at)}`;
+  };
+
+  const autoRunState = (a: AutoRunStatusEntry): { armed: ArmedState; label: string; toggleLabel: string } => {
+    if (!a.enabled) return { armed: 'off', label: 'Paused', toggleLabel: 'Resume' };
+    if (a.auto_disabled) return { armed: 'tripped', label: `Tripped (${a.consecutive_failures} failures)`, toggleLabel: 'Re-arm' };
+    return { armed: 'on', label: 'On', toggleLabel: 'Pause' };
+  };
+
+  const autoRunTitle = (a: AutoRunStatusEntry): string => {
+    const recipe = a.recipe_name ?? a.recipe_id;
+    return a.dish_name ? `${recipe} — ${a.dish_name}` : recipe;
+  };
+
+  const autoRunCadence = (a: AutoRunStatusEntry): string =>
+    `${timerCadence(a) ?? `every ${formatInterval(a.interval_ms)}`}${a.dynamic ? ' (dynamic)' : ''}`;
 
   const autoRunItems = (): RuleItem[] =>
     autoRun
       .filter((a) => matchesFilter(a.recipe_id))
       .map((a): RuleItem => {
-      const armed: ArmedState = !a.enabled
-        ? 'off'
-        : a.auto_disabled
-          ? 'tripped'
-          : 'on';
-      const stateLabel = !a.enabled
-        ? 'Paused'
-        : a.auto_disabled
-          ? `Tripped (${a.consecutive_failures} failures)`
-          : 'On';
-      return { recipe_id: a.recipe_id, dish_id: a.dish_id ?? null, armed, html: renderRow({
-        section: 'auto_run',
-        rule_id: autoRunId(a),
-        title: a.dish_name ? `${a.recipe_name ?? a.recipe_id} — ${a.dish_name}` : a.recipe_name ?? a.recipe_id,
-        titleHref: recipeHref(a.recipe_id),
-        armed,
-        stateLabel,
-        detail: `<span>${e(timerCadence(a) ?? `every ${formatInterval(a.interval_ms)}`)}${a.dynamic ? ' (dynamic)' : ''}</span>`,
-        meta: [
-          armed === 'on' ? timerNextMeta(a) : 'next —',
-          `last ${formatDateTime(a.last_finished_at)}`,
-        ],
-        error: a.last_failure_reason,
-        // A tripped circuit re-arms with the same "turn it on" gesture.
-        toggleTo: !a.enabled || a.auto_disabled,
-        toggleLabel: !a.enabled
-          ? 'Resume'
-          : a.auto_disabled
-            ? 'Re-arm'
-            : 'Pause',
-        canDelete: false,
-        canDetail: true,
-        ...(a.preapproval ? { preapproval: a.preapproval } : {}),
-        busy: busy.has(autoRunId(a)),
-        busyVerb: busyVerbFor('auto_run', autoRunId(a)),
-        confirmingDelete: false,
-      }) };
-    });
+        const { armed, label, toggleLabel } = autoRunState(a);
+        const id = autoRunId(a);
+        return { recipe_id: a.recipe_id, dish_id: a.dish_id ?? null, armed, html: renderRow({
+          section: 'auto_run',
+          rule_id: id,
+          title: autoRunTitle(a),
+          titleHref: recipeHref(a.recipe_id),
+          armed,
+          stateLabel: label,
+          detail: `<span>${e(autoRunCadence(a))}</span>`,
+          meta: [
+            armed === 'on' ? timerNextMeta(a) : 'next —',
+            `last ${formatDateTime(a.last_finished_at)}`,
+          ],
+          error: a.last_failure_reason,
+          toggleTo: armed !== 'on',
+          toggleLabel,
+          canDelete: false,
+          canDetail: true,
+          ...(a.preapproval ? { preapproval: a.preapproval } : {}),
+          busy: busy.has(id),
+          busyVerb: busyVerbFor('auto_run', id),
+          confirmingDelete: false,
+        }) };
+      });
 
   // ── D-319 §5.4 — the one list, and "Coming up" ────────────────────
 
@@ -2872,6 +3144,7 @@ export const bootstrapAutomationRoute = (
     for (const s of schedules) {
       if (!matchesFilter(s.recipe_id) || !s.enabled || s.next_run_at === null || !dishOn(s.dish_id)) continue;
       out.push({
+        id: `schedule:${s.schedule_id}`,
         at: s.next_run_at,
         recipe_name: nameFor(s.recipe_id),
         href: recipeHref(s.recipe_id),
@@ -2888,6 +3161,7 @@ export const bootstrapAutomationRoute = (
       if (at === null) continue;
       const cadence = timerCadence(a) ?? `every ${intervalInWords(a.interval_ms)}`;
       out.push({
+        id: `timer:${autoRunId(a)}`,
         at,
         recipe_name: nameFor(a.recipe_id),
         href: recipeHref(a.recipe_id),
@@ -2897,9 +3171,9 @@ export const bootstrapAutomationRoute = (
     }
     for (const prompt of overviewPrompts()) {
       if (!prompt.enabled || prompt.next_run_at === null) continue;
-      out.push({ at: prompt.next_run_at, recipe_name: prompt.title,
+      out.push({ id: prompt.schedule_id, at: prompt.next_run_at, recipe_name: prompt.title,
         href: promptScheduleHref(prompt.schedule_id), dish_name: null,
-        prompt: { id: prompt.schedule_id, conversationHref: serializeChatSessionAddress({ sessionId: prompt.session_id }) },
+        conversationHref: serializeChatSessionAddress({ sessionId: prompt.session_id }),
         what: `Prompt · ${promptSearchTimingText(prompt)}` });
     }
     return out;
@@ -3015,10 +3289,20 @@ export const bootstrapAutomationRoute = (
     }
   };
 
-  const syncHash = (intent: HierarchicalHistoryIntent = 'auto'): void => {
-    automationHistory.navigate(automationAddress(activeSection, detailId), {
-      intent,
-    });
+  const syncHash = (
+    intent: HierarchicalHistoryIntent = 'auto',
+    returnTo?: AutomationRuleReturn,
+  ) => automationHistory.navigate(automationAddress(activeSection, detailId), {
+    intent,
+    state: returnTo && { recuedAutomationRuleReturn: returnTo },
+  });
+
+  const markRuleListEntry = (returnTo: AutomationRuleReturn): void => {
+    try {
+      view?.history.replaceState({ ...view.history.state, recuedAutomationRuleReturn: returnTo }, '');
+    } catch {
+      // Embedded History may be unavailable.
+    }
   };
 
   const subNav = (): string => `
@@ -3115,7 +3399,141 @@ export const bootstrapAutomationRoute = (
       </div>`;
   };
 
-  const activeSectionHtml = (): string => {
+  const workspaceRow = (row: {
+    section: 'auto_run' | 'event_trigger' | 'schedule';
+    id: string;
+    title: string;
+    armed: ArmedState;
+    label: string;
+    summary: string;
+    meta: string;
+    error?: string;
+  }): string => `
+    <li class="automation-rule-index" ${AUTOMATION_ROUTE_ROW_ATTR}="${row.section}:${e(row.id)}" data-armed="${row.armed}">
+      <button type="button" class="automation-rule-select" ${ACTION_ATTR}="detail:${row.section}" ${ROW_ID_ATTR}="${e(row.id)}"
+        ${detailId === row.id ? 'aria-current="true"' : ''}>
+        <span class="automation-rule-index-heading">
+          <strong title="${e(row.title)}">${e(row.title)}</strong>
+          <span ${AUTOMATION_ROUTE_STATE_ATTR} data-armed="${row.armed}">${e(row.label)}</span>
+        </span>
+        <span class="automation-rule-summary" title="${e(row.summary)}">${e(row.summary)}</span>
+        ${row.meta === '' ? '' : `<span class="automation-rule-index-meta">${row.meta}</span>`}
+      </button>
+      ${row.error === undefined ? '' : `<p class="automation-rule-index-error" role="alert">${e(row.error)}</p>`}
+    </li>`;
+
+  const compactAutoRunRow = (timer: AutoRunStatusEntry): string => {
+    const id = autoRunId(timer);
+    const state = autoRunState(timer);
+    const verb = busyVerbFor('auto_run', id);
+    const progress = verb === 'toggle' ? mutationToggleLabel('auto_run', id, state.toggleLabel, state.armed !== 'on')
+      : verb === 'preapproval-remove-confirm' ? 'Removing pre-approval…'
+      : '';
+    return workspaceRow({
+      section: 'auto_run', id, title: autoRunTitle(timer), ...state, summary: autoRunCadence(timer),
+      meta: (progress ? `<strong>${e(progress)}</strong>` : '')
+        + (timer.preapproval ? preapprovalBadge(timer.preapproval.execution_status) : ''),
+      error: autoRunMutationErrors.get(id),
+    });
+  };
+
+  const compactTriggerRow = (trigger: EventTrigger): string => {
+    const id = trigger.trigger_id;
+    const armed = triggerState(trigger);
+    const title = nameFor(trigger.recipe_id);
+    const starts = triggerStart(trigger) ?? eventTriggerInWords(trigger);
+    const pollers = watchesForTrigger(trigger);
+    const verb = busyVerbFor('event_trigger', id);
+    const progress = verb === 'toggle' ? mutationToggleLabel('event_trigger', id, '', !trigger.enabled)
+      : verb === 'delete-confirm' ? 'Removing…'
+      : verb === 'preapproval-remove-confirm' ? 'Removing pre-approval…'
+      : pollers.some(watch => busyVerbFor('watch', watch.watch_key) !== undefined) ? 'Updating polling…'
+      : '';
+    const pollingAttention = pollers.some(watch => watchDisplay(watch).armed === 'tripped');
+    return workspaceRow({
+      section: 'event_trigger', id, title, armed, label: triggerStateLabel(trigger), summary: starts,
+      meta: `<span>Last fired ${e(formatDateTime(trigger.last_fired_at))}</span>
+        ${progress ? `<strong>${e(progress)}</strong>` : ''}
+        ${pollingAttention ? '<span class="automation-row-error">Polling needs attention</span>' : ''}
+        ${trigger.preapproval ? preapprovalBadge(trigger.preapproval.execution_status) : ''}`,
+      error: triggerMutationErrors.get(id),
+    });
+  };
+
+  const compactScheduleRow = (schedule: ServerSchedule): string => {
+    const id = schedule.schedule_id;
+    const state = scheduleState(schedule);
+    const lateBy = detailLateness(schedule);
+    const nextRun = schedule.enabled && schedule.next_run_at !== null
+      ? formatClientDateTime(schedule.next_run_at, { includeSeconds: false })
+      : null;
+    const when = nextRun === null ? 'No next run' : lateBy === null
+      ? `Next run ${nextRun}` : `Due ${nextRun} · ${formatLateness(lateBy)}`;
+    const verb = busyVerbFor('schedule', id);
+    const progress = verb === 'toggle' ? mutationToggleLabel('schedule', id, '', !schedule.enabled)
+      : verb === 'delete-confirm' ? 'Removing…'
+      : verb === 'preapproval-remove-confirm' ? 'Removing pre-approval…'
+      : oneOffEditor?.id === id && oneOffEditor.panel.pending() ? 'Updating time…'
+      : '';
+    return workspaceRow({
+      section: 'schedule', id, title: nameFor(schedule.recipe_id), ...state,
+      summary: schedule.mode === 'one_shot' ? 'Runs once' : describeCron(schedule.cron_expression),
+      meta: `<span>${e(when)}</span>
+        ${progress ? `<strong>${e(progress)}</strong>` : ''}
+        ${schedule.preapproval ? preapprovalBadge(schedule.preapproval.execution_status) : ''}`,
+      error: scheduleMutationErrors.get(id),
+    });
+  };
+
+  const visibleWorkspaceTriggers = (): EventTrigger[] =>
+    triggers.filter(t => triggerVisible(t) || busyVerbFor('event_trigger', t.trigger_id) !== undefined);
+
+  const visibleWorkspaceSchedules = (): ServerSchedule[] =>
+    schedules.filter(s => busy.has(s.schedule_id)
+      || (matchesFilter(s.recipe_id) && matchesStatus(scheduleState(s).armed)));
+
+  const visibleWorkspaceAutoRuns = (): AutoRunStatusEntry[] =>
+    autoRun.filter(timer => busy.has(autoRunId(timer))
+      || (matchesFilter(timer.recipe_id) && matchesStatus(autoRunState(timer).armed)));
+
+  const hiddenRuleAlerts = (
+    rowErrors: ReadonlyMap<string, string>,
+    visibleRuleIds: () => string[] | false,
+    ruleTitle: (id: string) => string,
+  ): string => {
+    if (rowErrors.size === 0) return '';
+    const visible = new Set(visibleRuleIds() || []);
+    return [...rowErrors].filter(([id]) => !visible.has(id)).map(([id, error]) =>
+      `<p class="automation-load-error" role="alert">${e(ruleTitle(id))}: ${e(error)}</p>`,
+    ).join('');
+  };
+
+  const hiddenWorkspaceAlerts = (section: RuleWorkspaceSection): string => {
+    switch (section) {
+      case 'auto-run': return hiddenRuleAlerts(autoRunMutationErrors,
+        () => errors.auto_run === undefined && visibleWorkspaceAutoRuns().map(autoRunId),
+        (id) => {
+          const timer = autoRun.find(timer => autoRunId(timer) === id);
+          return timer ? autoRunTitle(timer) : id;
+        });
+      case 'triggers': return hiddenRuleAlerts(triggerMutationErrors,
+        () => errors.triggers === undefined && errors.watches === undefined && visibleWorkspaceTriggers().map(t => t.trigger_id),
+        (id) => {
+          const trigger = triggers.find(t => t.trigger_id === id);
+          return trigger ? nameFor(trigger.recipe_id) : id;
+        });
+      case 'schedules': return hiddenRuleAlerts(scheduleMutationErrors,
+        () => errors.schedules === undefined && visibleWorkspaceSchedules().map(s => s.schedule_id),
+        (id) => {
+          const schedule = schedules.find(s => s.schedule_id === id);
+          return schedule ? nameFor(schedule.recipe_id) : id;
+        });
+    }
+  };
+
+  const missedRunsCard = (): string => renderMissedRunsCard(missedRuns, { busy: missedRunsBusy, error: missedRunsError });
+
+  const activeSectionHtml = (inWorkspace = false, agendaNow?: number): string => {
     const filtered = recipeFilter !== null;
     switch (activeSection) {
       case 'all': {
@@ -3172,7 +3590,7 @@ export const bootstrapAutomationRoute = (
         const promptError = recipeFilter === null ? promptState.error : '';
         return (comingUpOpening ? '<p class="automation-section-hint" role="status">Checking this scheduled prompt…</p>' : '')
           + (comingUpError ? `<p class="automation-load-error" role="alert" tabindex="-1" data-coming-up-prompt-error>${e(comingUpError)}</p>` : '')
-          + (entries.length > 0 ? renderComingUp(entries)
+          + (entries.length > 0 ? renderComingUp(entries, undefined, agendaNow)
           : loading || readingPrompts ? '<p class="automation-section-hint" role="status">Loading upcoming runs…</p>'
             : promptError ? '' : renderComingUp([], filtered ? 'This Recipe has no upcoming runs.' : undefined))
           + (readingPrompts && entries.length > 0 ? '<p class="automation-section-hint" role="status">Loading scheduled prompts…</p>' : '')
@@ -3185,12 +3603,15 @@ export const bootstrapAutomationRoute = (
           retryToken: 'auto-run',
           retryable: opts.autoRunListCaller !== undefined,
           title: 'Auto-run',
-          hint: 'Recipes that wake up on their own every so often and decide whether to do anything.',
-          rows: autoRunRows(),
+          ...(inWorkspace ? { filters: filterBar() }
+            : { hint: 'Recipes that wake up on their own every so often and decide whether to do anything.' }),
+          rows: inWorkspace ? visibleWorkspaceAutoRuns().map(compactAutoRunRow) : autoRunRows(),
           loading,
           error: errors.auto_run,
-          mutationError: mutationErrors.auto_run,
-          emptyText: filtered
+          mutationError: inWorkspace ? undefined : mutationErrors.auto_run,
+          emptyText: inWorkspace && autoRun.length > 0 && (filtered || statusFilter !== 'all')
+            ? 'No auto-run rules match these filters.'
+            : filtered
             ? 'This Recipe does not run on its own.'
             : 'You have no Recipes that run on their own.',
         });
@@ -3222,15 +3643,18 @@ export const bootstrapAutomationRoute = (
             ? opts.triggersListCaller !== undefined
             : opts.watchListCaller !== undefined,
           title: 'Triggers',
-          hint: 'Recipes that run when your things change: mail, calendar, files, '
+          ...(!inWorkspace ? { hint: 'Recipes that run when your things change: mail, calendar, files, '
             + 'contacts. Each row shows what checks for changes, if anything does. '
-            + 'Some services tell Recued themselves, so they need no checking.',
+            + 'Some services tell Recued themselves, so they need no checking.' } : {}),
           // R21: the residual poll loops (no rendered trigger row claims
           // them) follow the trigger rows so a tripped loop stays visible.
-          rows: [...triggerRows(), ...residualWatchRows()],
+          rows: [
+            ...(inWorkspace ? visibleWorkspaceTriggers().map(compactTriggerRow) : triggerRows()),
+            ...residualWatchRows(),
+          ],
           loading,
           error: errors.triggers ?? errors.watches,
-          mutationError: mutationErrors.triggers ?? mutationErrors.watches,
+          mutationError: inWorkspace ? mutationErrors.watches : mutationErrors.triggers ?? mutationErrors.watches,
           emptyText: filtered
             ? 'Nothing sets this Recipe off.'
             : 'Nothing sets a Recipe off yet. Add one here, or from a Recipe in the library.',
@@ -3240,23 +3664,20 @@ export const bootstrapAutomationRoute = (
         // D-266 — the missed-run card sits ABOVE the list, not inside a
         // row: it is one question about the outage, not an annotation on
         // each schedule. Empty string when nothing is waiting.
-        return renderMissedRunsCard(missedRuns, {
-          busy: missedRunsBusy,
-          error: missedRunsError,
-        }) + renderSection({
+        return (inWorkspace ? '' : missedRunsCard()) + renderSection({
           section: 'schedule',
           retryToken: 'schedules',
           retryable: opts.schedulesListCaller !== undefined,
           title: 'Schedules',
-          hint: 'Recipes that repeat, and one-off runs that have not happened yet.',
-          rows: scheduleRows(),
+          ...(!inWorkspace ? { hint: 'Recipes that repeat, and one-off runs that have not happened yet.' } : {}),
+          rows: inWorkspace ? visibleWorkspaceSchedules().map(compactScheduleRow) : scheduleRows(),
           loading,
           error: errors.schedules,
-          mutationError: mutationErrors.schedules,
+          mutationError: inWorkspace ? undefined : mutationErrors.schedules,
           emptyText: filtered
             ? 'This Recipe has no schedule.'
             : 'No schedules yet. Add one here, or from a Recipe in the library.',
-          actions: sectionActions('schedules'),
+          actions: detailId === null ? sectionActions('schedules') : '',
         });
     }
   };
@@ -3266,9 +3687,9 @@ export const bootstrapAutomationRoute = (
   // section+id, so the delegated handler and post-mutation re-list work
   // unchanged; the detail re-renders with fresh data). No new rpc — the
   // list entries carry everything shown; full run history lives in Logs.
-  const renderDetail = (): string => {
+  const renderDetail = (inWorkspace = false): string => {
     const back = `<button type="button" class="automation-button"
-      data-recued-automation-back>Back to ${e(SECTION_LABEL[detailReturnSection ?? activeSection])}</button>`;
+      data-recued-automation-back>${inWorkspace ? 'Close details' : `Back to ${e(SECTION_LABEL[detailReturnSection ?? activeSection])}`}</button>`;
     const facts = (pairs: Array<[string, string]>): string =>
       `<dl class="automation-detail-facts">${pairs
         .map(([k, v]) => `<dt>${e(k)}</dt><dd>${v}</dd>`)
@@ -3282,11 +3703,12 @@ export const bootstrapAutomationRoute = (
       state: { label: string; armed: ArmedState },
     ): string => `<header class="automation-detail-header">
       <div class="automation-detail-identity">
-        <p class="automation-detail-kind">${e(kind)}</p>${heading(title)}
+        ${inWorkspace ? '' : `<p class="automation-detail-kind">${e(kind)}</p>`}${heading(title)}
       </div>
       <p class="automation-detail-state" data-armed="${state.armed}">
-        <span>State</span><strong>${e(state.label)}</strong>
+        ${inWorkspace ? '' : '<span>State</span>'}<strong>${e(state.label)}</strong>
       </p>
+      ${inWorkspace ? back : ''}
     </header>`;
     const section = (label: string, content: string): string =>
       `<section class="automation-detail-section" aria-label="${e(label)}">
@@ -3296,11 +3718,13 @@ export const bootstrapAutomationRoute = (
     if (activeSection === 'schedules') {
       const s = schedules.find((x) => x.schedule_id === detailId);
       if (s !== undefined) {
+        const mutationError = inWorkspace ? scheduleMutationErrors.get(s.schedule_id) : undefined;
         body = `
           ${header('Schedule', `<a href="${e(recipeHref(s.recipe_id))}">${e(nameFor(s.recipe_id))}</a>`, scheduleState(s))}
           <div class="automation-detail-grid">
           ${section('Timing', facts([
-            ['Cadence', scheduleCadence(s)],
+            ['Cadence', inWorkspace && s.mode === 'one_shot' && s.enabled && s.next_run_at === s.run_at ? 'Once' : scheduleCadence(s)],
+            ...(inWorkspace && s.time_zone ? [['Time zone', e(s.time_zone)] as [string, string]] : []),
             // D-266 — an overdue schedule must not show a future-looking
             // "Next run"; say what was due and how late it is.
             ...(detailLateness(s) === null
@@ -3334,9 +3758,10 @@ export const bootstrapAutomationRoute = (
                   && canPreapprove('next_schedule')
                 ? `<button type="button" class="automation-button" ${ACTION_ATTR}="preapprove:schedule" ${ROW_ID_ATTR}="${e(s.schedule_id)}">Look at the next run</button>` : ''}
             ${opts.schedulesRescheduleCaller && s.reschedule_revision && s.reschedule_identity
-              ? `<button type="button" class="automation-button" data-recued-reschedule-one-off="${e(s.schedule_id)}"${busy.has(s.schedule_id) || oneOffEditor?.id === s.schedule_id ? ' disabled' : ''}>Reschedule</button>` : ''}
+              ? `<button type="button" class="automation-button" data-recued-reschedule-one-off="${e(s.schedule_id)}"${busy.has(s.schedule_id) || oneOffEditor?.id === s.schedule_id || oneOffEditor?.panel.pending() ? ' disabled' : ''}>Reschedule</button>` : ''}
             <span class="automation-detail-remove">${renderDeleteButtons('schedule', s.schedule_id)}</span>
-          </div>`)}`;
+          </div>
+          ${mutationError === undefined ? '' : `<p class="automation-row-error">${e(mutationError)}</p>`}`)}`;
       }
     } else if (activeSection === 'dishes' && detailId !== null) {
       const d = dishes.find((x) => x.dish_id === detailId);
@@ -3405,34 +3830,34 @@ export const bootstrapAutomationRoute = (
     } else if (activeSection === 'triggers') {
       const t = triggers.find((x) => x.trigger_id === detailId);
       if (t !== undefined) {
-        const armed = t.enabled ? 'on' : t.last_error ? 'tripped' : 'off';
-        const fact = RunModal.describeMailFactTrigger(t, mailFactTemplates, mailFactTypes);
+        const fact = triggerStart(t);
+        const starts = fact ?? eventTriggerInWords(t);
         const poll = pollStatusBlock(t);
-        body = `
-          ${header('Trigger', `<a href="${e(recipeHref(t.recipe_id))}">${e(nameFor(t.recipe_id))}</a>`, { label: t.enabled ? 'On' : armed === 'tripped' ? 'Auto-disabled' : 'Paused', armed })}
-          <div class="automation-detail-grid">
-          ${section('Recent activity', `${facts([
+        const error = t.last_error ? `<p class="automation-row-error">${inWorkspace ? '<strong>Last error</strong> ' : ''}${e(t.last_error)}</p>` : '';
+        const mutationError = triggerMutationErrors.get(t.trigger_id);
+        const activity = section('Recent activity', `${facts([
             ['Origin', e(t.origin === 'recipe' ? 'From a Recipe, looked after by Recued' : 'Manual')],
             ['Last fired', e(formatDateTime(t.last_fired_at))],
-          ])}
-          ${t.last_error ? `<p class="automation-row-error">${e(t.last_error)}</p>` : ''}`)}
-          ${section('Conditions', facts([
-            ...(fact !== null
-              ? [['Starts on', e(fact)] as [string, string]]
-              : [
-                  ['Starts when', e(eventTriggerInWords(t))] as [string, string],
-                  ['Pattern', `<code>${e(t.pattern)}</code>`] as [string, string],
-                  // The narrowing the words above read, exactly as it matches.
-                  ...(t.filter && Object.keys(t.filter).length > 0
-                    ? [['Filter', `<code>${e(Object.entries(t.filter)
-                      .map(([k, v]) => `${k} = ${String(v)}`).join(', '))}</code>`] as [string, string]]
-                    : []),
-                ]),
-            ...(fact === null && t.fields && t.fields.length > 0
-              ? [['Fields', e(t.fields.join(' / '))] as [string, string]]
-              : []),
-          ]))}
-          </div>
+          ])}${inWorkspace ? '' : error}`);
+        const exactConditions: Array<[string, string]> = [];
+        if (fact === null) {
+          exactConditions.push(['Pattern', `<code>${e(t.pattern)}</code>`]);
+          if (t.filter && Object.keys(t.filter).length > 0) {
+            const text = Object.entries(t.filter).map(([key, value]) => `${key} = ${String(value)}`).join(', ');
+            exactConditions.push(['Filter', `<code>${e(text)}</code>`]);
+          }
+          if (t.fields && t.fields.length > 0) exactConditions.push(['Fields', e(t.fields.join(' / '))]);
+        }
+        const conditions = inWorkspace
+          ? section('What starts it', `${error}<p>${e(starts)}</p>
+            ${mutationError === undefined ? '' : `<p class="automation-row-error">${e(mutationError)}</p>`}
+            ${exactConditions.length > 0 ? `<details data-trigger-matching-rules${openTriggerMatches.has(t.trigger_id) ? ' open' : ''}><summary>Matching rules</summary>${facts(exactConditions)}</details>` : ''}`)
+          : section('Conditions', facts([[fact === null ? 'Starts when' : 'Starts on', e(starts)], ...exactConditions]));
+        body = `
+          ${header('Trigger', `<a href="${e(recipeHref(t.recipe_id))}">${e(nameFor(t.recipe_id))}</a>`, {
+            label: triggerStateLabel(t), armed: triggerState(t),
+          })}
+          ${inWorkspace ? conditions : `<div class="automation-detail-grid">${activity}${conditions}</div>`}
           ${poll ? section('Checking for changes', poll) : ''}
           ${section('Controls', `
           <div class="automation-row-actions">
@@ -3442,46 +3867,54 @@ export const bootstrapAutomationRoute = (
                   && canPreapprove('next_trigger')
                 ? `<button type="button" class="automation-button" ${ACTION_ATTR}="preapprove:event_trigger" ${ROW_ID_ATTR}="${e(t.trigger_id)}">Look at the next run</button>` : ''}
             ${t.origin === 'recipe' ? '' : `<span class="automation-detail-remove">${renderDeleteButtons('event_trigger', t.trigger_id)}</span>`}
-          </div>`)}`;
+          </div>`)}
+          ${inWorkspace ? activity : ''}`;
       }
     } else {
       const a = autoRun.find((x) => autoRunId(x) === detailId);
       if (a !== undefined) {
-        const tripped = a.enabled && a.auto_disabled;
+        const id = autoRunId(a);
+        const state = autoRunState(a);
+        const title = inWorkspace ? autoRunTitle(a) : a.recipe_name ?? a.recipe_id;
+        const cadence = inWorkspace ? autoRunCadence(a) : `every ${formatInterval(a.interval_ms)}${a.dynamic ? ' (dynamic)' : ''}`;
+        const next = inWorkspace && state.armed === 'on' ? timerNextTiming(a) : { waitsForData: false, at: a.next_run_at };
+        const activity: Array<[string, string]> = [['Last finished', e(formatDateTime(a.last_finished_at))]];
+        if (inWorkspace) activity.push(['Last failure', e(formatDateTime(a.last_failure_at))]);
+        const mutationError = inWorkspace ? autoRunMutationErrors.get(id) : undefined;
         body = `
-          ${header('Auto-run', `<a href="${e(recipeHref(a.recipe_id))}">${e(a.recipe_name ?? a.recipe_id)}</a>`, { label: !a.enabled ? 'Paused' : tripped ? `Tripped (${a.consecutive_failures} failures)` : 'On', armed: !a.enabled ? 'off' : tripped ? 'tripped' : 'on' })}
+          ${header('Auto-run', `<a href="${e(recipeHref(a.recipe_id))}">${e(title)}</a>`, state)}
           <div class="automation-detail-grid">
           ${section('Timing', facts([
-            ['Cadence', e(`every ${formatInterval(a.interval_ms)}${a.dynamic ? ' (dynamic)' : ''}`)],
-            ['Next run', e(a.enabled && !a.auto_disabled ? formatDateTime(a.next_run_at) : '—')],
+            ['Cadence', e(cadence)],
+            [next.waitsForData ? 'Next check' : 'Next run', e(state.armed === 'on' ? formatDateTime(next.at) : '—')],
           ]))}
-          ${section('Recent activity', `${facts([
-            ['Last finished', e(formatDateTime(a.last_finished_at))],
-          ])}
+          ${section('Recent activity', `${facts(activity)}
           ${a.last_failure_reason ? `<p class="automation-row-error">${e(a.last_failure_reason)}</p>` : ''}`)}
           </div>
           ${section('Controls', `
+          ${mutationError === undefined ? '' : `<p class="automation-row-error" role="alert">${e(mutationError)}</p>`}
           <div class="automation-row-actions">
-            ${a.enabled && !a.auto_disabled && Object.keys(a.variables ?? {}).length > 0
-              ? `<button type="button" class="automation-button" ${ACTION_ATTR}="configure:auto_run" ${ROW_ID_ATTR}="${e(autoRunId(a))}"${mutationBusyAttrs('auto_run', autoRunId(a), 'configure')}>Configure</button>`
+            ${state.armed === 'on' && Object.keys(a.variables ?? {}).length > 0
+              ? `<button type="button" class="automation-button" ${ACTION_ATTR}="configure:auto_run" ${ROW_ID_ATTR}="${e(id)}"${mutationBusyAttrs('auto_run', id, 'configure')}>Configure</button>`
               : ''}
-            <button type="button" class="automation-button" ${ACTION_ATTR}="toggle:auto_run:${!a.enabled || a.auto_disabled ? 'on' : 'off'}" ${ROW_ID_ATTR}="${e(autoRunId(a))}"${mutationBusyAttrs('auto_run', autoRunId(a), 'toggle')}>${e(mutationToggleLabel('auto_run', autoRunId(a), !a.enabled ? 'Resume' : a.auto_disabled ? 'Re-arm' : 'Pause', !a.enabled || a.auto_disabled))}</button>
-            ${a.preapproval ? renderPreapprovalButtons('auto_run', autoRunId(a), a.preapproval.proposal_id)
+            <button type="button" class="automation-button" ${ACTION_ATTR}="toggle:auto_run:${state.armed === 'on' ? 'off' : 'on'}" ${ROW_ID_ATTR}="${e(id)}"${mutationBusyAttrs('auto_run', id, 'toggle')}>${e(mutationToggleLabel('auto_run', id, state.toggleLabel, state.armed !== 'on'))}</button>
+            ${a.preapproval ? renderPreapprovalButtons('auto_run', id, a.preapproval.proposal_id)
               : opts.preapprovalPrepareCaller && opts.onPreapprovalPrepared && a.lifecycle_revision !== undefined && !a.auto_disabled
                   && (a.dish_id ?? null) !== null && canPreapprove('next_auto_run')
-                ? `<button type="button" class="automation-button" ${ACTION_ATTR}="preapprove:auto_run" ${ROW_ID_ATTR}="${e(autoRunId(a))}">Look at the next run</button>` : ''}
+                ? `<button type="button" class="automation-button" ${ACTION_ATTR}="preapprove:auto_run" ${ROW_ID_ATTR}="${e(id)}">Look at the next run</button>` : ''}
           </div>`)}`;
       }
     }
+    const workspace = inWorkspace ? workspaceSection() : null;
     return `
-      <section class="automation-detail" data-recued-automation-detail="${e(detailId ?? '')}">
-        ${back}
+      <section class="automation-detail${inWorkspace ? ' automation-rule-inspector' : ''}" data-recued-automation-detail="${e(detailId ?? '')}"${workspace ? ` aria-label="${RULE_WORKSPACES[workspace].label}"` : ''}>
+        ${!inWorkspace || body === null ? back : ''}
         ${body ?? (loading
           ? '<p>Loading…</p>'
           : '<p>This rule no longer exists — it may have been removed.</p>')}
         ${oneOffEditor && activeSection === 'schedules' && detailId === oneOffEditor.id
           ? '<div data-recued-one-off-slot></div>' : ''}
-        <p class="automation-section-hint">Runs land in <a href="#logs">Logs<span aria-hidden="true">.</span></a></p>
+        ${inWorkspace ? '' : '<p class="automation-section-hint">Runs land in <a href="#logs">Logs<span aria-hidden="true">.</span></a></p>'}
       </section>`;
   };
 
@@ -3504,6 +3937,16 @@ export const bootstrapAutomationRoute = (
   const navTabFor = (token: string): HTMLElement | null | undefined =>
     (routeRoot.querySelector?.(`[${AUTOMATION_ROUTE_SUBNAV_ATTR}="${token}"]`)
       ?? routeRoot.querySelector?.(`[${AUTOMATION_ROUTE_SUBNAV_ATTR}][tabindex="0"]`)) as HTMLElement | null | undefined;
+
+  const focusRuleListReturn = (focus: AutomationActionFocus | null, position?: AutomationWorkspacePosition): void => {
+    const row = focus && findActionFocusTarget(focus);
+    const workspaceListHeading = routeRoot.querySelector?.<HTMLElement>(
+      `.automation-rule-workspace .automation-section-title`,
+    );
+    if (position) restoreWorkspacePosition(position);
+    focusListTarget(row ?? workspaceListHeading ?? navTabFor(activeSection));
+    if (!position || !workspaceListElement()) row?.scrollIntoView?.({ block: 'nearest' });
+  };
 
   const revealActiveSubnav = (): void => {
     const nav = routeRoot.querySelector?.(
@@ -3612,11 +4055,32 @@ export const bootstrapAutomationRoute = (
   };
 
   const render = (): void => {
-    // This route replaces every sub-nav button and native filter when state or
-    // async reads repaint it. Preserve ownership only when one of those controls
-    // currently has focus; otherwise activation detaches it and strands focus
-    // on <body>.
+    // Preserve the focused control when async reads replace the list markup.
     const activeElement = doc.activeElement as HTMLElement | null | undefined;
+    const desktopWorkspace = showRuleWorkspace() ? workspaceSection() : null;
+    const showList = detailId === null || desktopWorkspace !== null;
+    const agendaNow = activeSection === 'coming-up' && desktopMedia?.matches === true
+      ? (opts.now ?? Date.now)() : undefined;
+    const agendaScroll = agendaNow !== undefined && routeRoot.querySelector?.('.automation-agenda')
+      ? readListScroll(opts.root) : undefined;
+    const workspacePosition = desktopWorkspace && routeRoot.querySelector?.('.automation-rule-workspace')
+      ? captureWorkspacePosition() : undefined;
+    const priorInspector = workspaceInspectorElement();
+    const sameInspector = priorInspector?.getAttribute('data-recued-automation-detail') === detailId;
+    const inspectorScroll = priorInspector && sameInspector ? readListScroll(priorInspector) : undefined;
+    const matchingRules = priorInspector?.querySelector<HTMLDetailsElement>('[data-trigger-matching-rules]');
+    const priorTrigger = priorInspector?.getAttribute('data-recued-automation-detail');
+    if (matchingRules && priorTrigger) {
+      if (matchingRules.open) openTriggerMatches.add(priorTrigger);
+      else openTriggerMatches.delete(priorTrigger);
+    }
+    const focusedMatchingRules = sameInspector && matchingRules?.contains(activeElement ?? null);
+    const focusedWorkspaceClose = sameInspector && priorInspector && activeElement?.hasAttribute?.('data-recued-automation-back');
+    const focusedAction = activeElement?.getAttribute?.(ACTION_ATTR);
+    const focusedRuleId = activeElement?.getAttribute?.(ROW_ID_ATTR);
+    const focusedRuleDetails = focusedRuleId && focusedAction?.startsWith('detail:')
+      ? { verb: 'detail', section: focusedAction.slice('detail:'.length) as AutomationSectionKind, rule_id: focusedRuleId }
+      : null;
     const focusedRetryRaw = activeElement?.getAttribute?.(
       AUTOMATION_ROUTE_RETRY_ATTR,
     );
@@ -3690,7 +4154,7 @@ export const bootstrapAutomationRoute = (
         && !stillOwnsRequest;
       if (
         activeSection !== pendingRecipeEntriesFocus
-        || detailId !== null
+        || !showList
         || liveOwnerMovedElsewhere
       ) pendingRecipeEntriesFocus = null;
     }
@@ -3705,7 +4169,7 @@ export const bootstrapAutomationRoute = (
         && activeElement.isConnected !== false;
       if (
         activeSection !== pendingModalReturnFocus
-        || detailId !== null
+        || !showList
         || addPickerFor !== null
         || (!focusedReturn && liveOwnerMovedElsewhere)
       ) {
@@ -3772,8 +4236,10 @@ export const bootstrapAutomationRoute = (
           start: (activeElement as HTMLInputElement).selectionStart,
           end: (activeElement as HTMLInputElement).selectionEnd,
         };
-    const focusedRehearsal = [...rehearsalPanels.values(), ...localWritePanels.values(), ...preapprovalPanels.values()]
-      .some(item => item.host.contains(activeElement ?? null)) ? activeElement : null;
+    const focusedDetailPanel = oneOffEditor?.host.contains(activeElement ?? null)
+      || [...rehearsalPanels.values(), ...localWritePanels.values(), ...preapprovalPanels.values()]
+        .some(item => item.host.contains(activeElement ?? null))
+      ? activeElement : null;
     oneOffEditor?.host.remove();
     for (const item of rehearsalPanels.values()) item.host.remove();
     for (const item of localWritePanels.values()) item.host.remove();
@@ -3781,31 +4247,52 @@ export const bootstrapAutomationRoute = (
     const promptFocus = promptHost.contains?.(doc.activeElement) ? doc.activeElement as HTMLElement : null;
     const comingUpFocus = activeElement?.getAttribute?.('data-coming-up-prompt');
     const comingUpConversationFocus = activeElement?.getAttribute?.('data-coming-up-conversation');
+    const comingUpRecipeFocus = activeElement?.getAttribute?.('data-coming-up-recipe');
     const comingUpErrorFocus = activeElement?.hasAttribute?.('data-coming-up-prompt-error');
     const promptBackFocus = activeElement?.hasAttribute?.('data-prompt-detail-back');
     const alarmFocus = alarmHost.contains?.(doc.activeElement) ? doc.activeElement as HTMLElement : null;
     if (alarmForm) alarmHost.remove();
     if (promptPanel) promptHost.remove();
+    const historyLink = '<a href="#logs">Run history <span aria-hidden="true">→</span></a>';
+    const headerActions = desktopMedia?.matches === true && activeSection === 'all' && detailId === null
+      ? `<span class="automation-header-actions">
+          <a class="automation-button" href="#automation/auto-run">Review auto-run</a>
+          <a class="automation-button" href="#automation/triggers">Review triggers</a>
+          <a class="automation-button" href="#automation/schedules">Review schedules</a>
+          <a class="automation-button" href="#logs">Run history <span aria-hidden="true">→</span></a>
+        </span>`
+      : historyLink;
+    const panel = opts.initialPromptId
+      ? `<p><button type="button" class="automation-button" data-prompt-detail-back>${opts.promptSearchReturnHash ? 'Back to search' : listMemory?.activeSection === 'coming-up' && listMemory.destinationHash === doc.defaultView?.location.hash ? 'Back to Coming up' : 'Back to schedules'}</button></p><div data-prompt-selected-slot></div>`
+      : desktopWorkspace
+      ? `${desktopWorkspace === 'auto-run' ? '' : filterBar()}${desktopWorkspace === 'schedules' ? missedRunsCard() : ''}${hiddenWorkspaceAlerts(desktopWorkspace)}
+        <div class="automation-rule-workspace" ${RULE_WORKSPACES[desktopWorkspace].attr}>
+          ${activeSectionHtml(true)}
+          ${detailId !== null ? renderDetail(true) : `<p class="automation-rule-inspector-empty">${RULE_WORKSPACES[desktopWorkspace].hint}</p>`}
+        </div>`
+      : detailId !== null ? renderDetail() : `${filterBar()}${activeSectionHtml(false, agendaNow)}`;
     routeRoot.innerHTML = `
-      <header class="automation-header">
-        <div>
-          <h1 class="automation-title" ${AUTOMATION_ROUTE_HEADING_ATTR}>Automation</h1>
-          <p class="automation-subtitle">Schedule reminders, run AI requests, and keep your recipes working for you.</p>
-        </div>
-        <a href="#logs">Run history <span aria-hidden="true">→</span></a>
-      </header>
-      ${lockBanner()}
-      ${subNav()}
+      <div class="automation-page-header">
+        <header class="automation-header">
+          <div>
+            <h1 class="automation-title" ${AUTOMATION_ROUTE_HEADING_ATTR}>Automation</h1>
+            <p class="automation-subtitle">Schedule reminders, run AI requests, and keep your recipes working for you.</p>
+          </div>
+          ${headerActions}
+        </header>
+        ${lockBanner()}
+        ${subNav()}
+      </div>
       <div ${AUTOMATION_ROUTE_SECTION_PANEL_ATTR}
         id="recued-automation-section-panel" role="tabpanel"
-        aria-labelledby="recued-automation-section-tab-${activeSection}">
-        ${opts.initialPromptId ? `<p><button type="button" class="automation-button" data-prompt-detail-back>${opts.promptSearchReturnHash ? 'Back to search' : listMemory?.activeSection === 'coming-up' && listMemory.destinationHash === doc.defaultView?.location.hash ? 'Back to Coming up' : 'Back to schedules'}</button></p><div data-prompt-selected-slot></div>`
-          : detailId !== null ? renderDetail() : `${filterBar()}${activeSectionHtml()}`}
+        ${desktopWorkspace ? `aria-label="${SECTION_LABEL[desktopWorkspace]}"` : `aria-labelledby="recued-automation-section-tab-${activeSection}"`}>
+        ${panel}
       </div>
     `;
     if (comingUpOpening) for (const link of routeRoot.querySelectorAll?.('[data-coming-up-prompt]') ?? []) link.setAttribute('aria-disabled', 'true');
-    if (comingUpFocus) findComingUpPrompt(comingUpFocus)?.focus({ preventScroll: true });
-    if (comingUpConversationFocus) findComingUpPrompt(comingUpConversationFocus, 'conversation')?.focus({ preventScroll: true });
+    if (comingUpFocus) findComingUpLink(comingUpFocus)?.focus({ preventScroll: true });
+    if (comingUpConversationFocus) findComingUpLink(comingUpConversationFocus, 'conversation')?.focus({ preventScroll: true });
+    if (comingUpRecipeFocus) findComingUpLink(comingUpRecipeFocus, 'recipe')?.focus({ preventScroll: true });
     if (comingUpErrorFocus) routeRoot.querySelector<HTMLElement>('[data-coming-up-prompt-error]')?.focus({ preventScroll: true });
     if (promptBackFocus) routeRoot.querySelector<HTMLElement>('[data-prompt-detail-back]')?.focus({ preventScroll: true });
     promptPanel?.setFilter(opts.initialPromptId ? null : promptViewFilter());
@@ -3825,7 +4312,7 @@ export const bootstrapAutomationRoute = (
       oneOffEditor.panel.update(schedules.find(s => s.schedule_id === oneOffEditor!.id) ?? null);
       routeRoot.querySelector?.('[data-recued-one-off-slot]')?.replaceWith(oneOffEditor.host);
     }
-    if (focusedRehearsal?.isConnected && (doc.activeElement === doc.body || doc.activeElement == null)) focusedRehearsal.focus?.({ preventScroll: true });
+    if (focusedDetailPanel?.isConnected && (doc.activeElement === doc.body || doc.activeElement == null)) focusListTarget(focusedDetailPanel);
     if (focusedSection !== null) {
       const replacement = routeRoot.querySelector(
         `[${AUTOMATION_ROUTE_SUBNAV_ATTR}="${focusedSection}"]`,
@@ -3874,9 +4361,15 @@ export const bootstrapAutomationRoute = (
       const fallback = navTabFor(activeSection);
       (replacement ?? (busy.has(pendingActionFocus.rule_id) ? null : fallback))
         ?.focus?.({ preventScroll: true });
+    } else if (focusedRuleDetails && showList) {
+      focusListTarget(findActionFocusTarget(focusedRuleDetails)
+        ?? (desktopWorkspace ? routeRoot.querySelector<HTMLElement>('.automation-rule-workspace .automation-section-title') : null));
     }
     if (focusedDetailHeading) focusRenderedDetailHeading();
-    if (detailId === null) {
+    const inspector = workspaceInspectorElement();
+    if (focusedMatchingRules) focusListTarget(inspector?.querySelector<HTMLElement>('[data-trigger-matching-rules] summary'));
+    if (focusedWorkspaceClose) focusListTarget(routeRoot.querySelector<HTMLElement>('[data-recued-automation-back]'));
+    if (showList) {
       const focusedPickerReplacement = focusedRoutePickerId === null
         ? null
         : routeRoot.querySelector?.(
@@ -3964,7 +4457,11 @@ export const bootstrapAutomationRoute = (
         : routeRoot.querySelector<HTMLElement>(`[${AUTOMATION_ROUTE_ADD_ATTR}="schedules"]`) ?? navTabFor(activeSection);
       fallback?.focus?.({ preventScroll: true });
     }
+    if (workspacePosition) restoreWorkspacePosition(workspacePosition);
+    if (inspector) restoreListScroll(inspector, inspectorScroll);
+    if (agendaScroll) restoreListScroll(opts.root, agendaScroll);
     revealActiveSubnav();
+    scheduleAgendaDayRefresh(agendaNow);
   };
   renderPromptOverview = () => { if (!disposed) render(); };
 
@@ -4151,6 +4648,29 @@ export const bootstrapAutomationRoute = (
       loadDishHistory(detailId);
     }
     render();
+    if (clampedAgendaTop !== undefined && promptReturn) {
+      if (routeInteractions === 0 && view?.location.hash === promptReturn.returnHash
+        && activeSection === 'coming-up' && desktopMedia?.matches === true
+        && opts.root.scrollTop === clampedAgendaTop && findComingUpLink(promptReturn.focusId) === doc.activeElement) {
+        opts.root.scrollTop = promptReturn.top;
+      }
+      clampedAgendaTop = undefined;
+    }
+    if (initialWorkspacePosition) {
+      if (routeInteractions === 0 && workspaceVisit === ruleReturn && showRuleWorkspace()) {
+        restoreWorkspacePosition(initialWorkspacePosition);
+      }
+      initialWorkspacePosition = undefined;
+    }
+    if (ruleReturnFocus) {
+      const focus = ruleReturnFocus;
+      ruleReturnFocus = undefined;
+      if (routeInteractions === 0 && detailId === null
+        && view?.location.hash === ruleReturn?.listHash
+        && (doc.activeElement === doc.body || doc.activeElement === null)) {
+        focusRuleListReturn(focus, ruleReturn?.workspacePosition);
+      }
+    }
   };
 
   const runMutation = async (
@@ -4163,6 +4683,9 @@ export const bootstrapAutomationRoute = (
     focusAfterInitialRender = false,
   ): Promise<void> => {
     if (busy.has(rule_id)) return;
+    const rowErrors = section === 'event_trigger' ? triggerMutationErrors
+      : section === 'schedule' ? scheduleMutationErrors
+      : section === 'auto_run' ? autoRunMutationErrors : undefined;
     if (focus !== undefined && !focusAfterInitialRender) {
       pendingActionFocus = focus;
       pendingActionFallbackFocus = fallbackFocus ?? null;
@@ -4179,12 +4702,15 @@ export const bootstrapAutomationRoute = (
     }
     try {
       await mutate();
+      rowErrors?.delete(rule_id);
       const { [sectionErrorKey(section)]: _cleared, ...rest } = mutationErrors;
       mutationErrors = rest;
     } catch (err) {
+      const message = messageForError(err);
+      rowErrors?.set(rule_id, message);
       mutationErrors = {
         ...mutationErrors,
-        [sectionErrorKey(section)]: messageForError(err),
+        [sectionErrorKey(section)]: message,
       };
     }
     // Re-list either way — on failure the fresh list shows the
@@ -4444,7 +4970,7 @@ export const bootstrapAutomationRoute = (
     enabled: boolean,
     focus?: AutomationActionFocus,
   ): void => {
-    const action = { verb: 'toggle', section, rule_id } satisfies AutomationActionFocus;
+    const action = { verb: 'toggle', section, rule_id, enabled } satisfies AutomationActionFocus;
     if (section === 'schedule' && opts.schedulesUpdateCaller) {
       void runMutation(rule_id, section, () =>
         opts.schedulesUpdateCaller!({ schedule_id: rule_id, enabled }), focus, undefined, action);
@@ -4553,6 +5079,9 @@ export const bootstrapAutomationRoute = (
     // and supersedes a pending legacy auto-pick.
     detailId = null;
     detailReturnSection = null;
+    workspaceVisit = undefined;
+    workspaceCanGoBack = false;
+    workspaceCloseRequested = false;
     pendingDishHistoryRetryFocus = null;
     pendingRecipeEntriesFocus = null;
     addPickerFor = null;
@@ -4564,8 +5093,121 @@ export const bootstrapAutomationRoute = (
     return true;
   };
 
+  const releaseWorkspaceDetailFocus = (): void => {
+    pendingActionFocus = null;
+    pendingActionFallbackFocus = null;
+    if (deleteConfirmation && !busy.has(deleteConfirmation.rule_id)) deleteConfirmation = null;
+    if (revokeConfirmation && !busy.has(revokeConfirmation.rule_id)) revokeConfirmation = null;
+  };
+
+  const openWorkspaceRule = (section: AutomationSectionKind, ruleId: string): void => {
+    if (workspaceCloseRequested || !automationRuleExists(section, ruleId)) return;
+    if (detailId === ruleId) {
+      focusRenderedDetailHeading();
+      return;
+    }
+    const switching = workspaceVisit !== undefined;
+    const origin: AutomationRuleReturn = {
+      owner: historyOwner,
+      listHash: workspaceVisit?.listHash ?? view?.location.hash ?? automationAddress(activeSection, null).hash,
+      detailHash: automationAddress(activeSection, ruleId).hash,
+      section: activeSection,
+      recipeFilter, statusFilter, originFilter, chipFilter,
+      focus: { verb: 'detail', section, rule_id: ruleId },
+      workspacePosition: captureWorkspacePosition(),
+    };
+    if (!switching) {
+      markRuleListEntry(origin);
+      if (opts.promptListMemory) delete opts.promptListMemory.value;
+    }
+    releaseWorkspaceDetailFocus();
+    detailId = ruleId;
+    workspaceVisit = origin;
+    const result = syncHash(switching ? 'replace' : 'push', origin);
+    if (!switching) workspaceCanGoBack = result.committed && result.mode === 'push';
+    render();
+    focusRenderedDetailHeading();
+  };
+
+  const closeWorkspaceRule = (arrivedHash?: string): boolean => {
+    const origin = workspaceVisit;
+    if (origin === undefined || detailId === null) return false;
+    if (arrivedHash === undefined && workspaceCanGoBack && view?.location.hash === origin.detailHash
+      && typeof view.history.back === 'function') {
+      if (!workspaceCloseRequested) {
+        workspaceCloseRequested = true;
+        try {
+          view.history.back();
+          return true;
+        } catch {
+          workspaceCloseRequested = false;
+        }
+      } else {
+        return true;
+      }
+    }
+    const position = showRuleWorkspace() ? captureWorkspacePosition() : origin.workspacePosition;
+    releaseWorkspaceDetailFocus();
+    detailId = null;
+    workspaceVisit = undefined;
+    workspaceCanGoBack = false;
+    workspaceCloseRequested = false;
+    if (arrivedHash === undefined) syncHash('replace');
+    else automationHistory.adopt({ ...automationAddress(origin.section, null), hash: arrivedHash });
+    render();
+    focusRuleListReturn(origin.focus, position);
+    return true;
+  };
+
+  const navigateRuleWorkspace = (hash: string): boolean => {
+    if (disposed || workspaceSection() === null) return false;
+    if (workspaceVisit?.listHash === hash) return closeWorkspaceRule(hash);
+    const forward: AutomationRuleReturn | undefined = view?.history?.state?.recuedAutomationRuleReturn;
+    if (detailId !== null || !forward?.workspacePosition || forward.owner !== historyOwner
+      || forward.section !== activeSection || forward.detailHash !== hash
+      || forward.listHash !== automationHistory.current().hash) return false;
+    // Keep the mounted list and any work started there when revisiting its
+    // detail. A fresh deep link has no return entry owned by this route.
+    releaseWorkspaceDetailFocus();
+    workspaceVisit = {
+      ...forward, recipeFilter, statusFilter, originFilter, chipFilter,
+      workspacePosition: captureWorkspacePosition(),
+    };
+    workspaceCanGoBack = true;
+    detailId = forward.focus.rule_id;
+    automationHistory.adopt({ ...automationAddress(activeSection, detailId), hash });
+    render();
+    focusRenderedDetailHeading();
+    return true;
+  };
+
+  const onDesktopMediaChange = (): void => {
+    if (disposed) return;
+    if (activeSection === 'coming-up') {
+      render();
+      return;
+    }
+    if (workspaceSection() === null && (activeSection !== 'all' || detailId !== null)) return;
+    const list = workspaceListElement();
+    const focusInList = list?.contains(doc.activeElement) === true;
+    if (workspaceVisit && list) workspaceVisit = { ...workspaceVisit, workspacePosition: captureWorkspacePosition() };
+    render();
+    if (workspaceVisit && showRuleWorkspace() && workspaceVisit.workspacePosition) {
+      restoreWorkspacePosition(workspaceVisit.workspacePosition);
+    } else if (focusInList && detailId !== null) {
+      focusRenderedDetailHeading();
+    }
+  };
+
   const onSubnavKeyDown = (ev: Event): void => {
     const event = ev as KeyboardEvent;
+    if (event.key === 'Escape' && !event.defaultPrevented && !event.isComposing && showRuleWorkspace()
+      && (event.target as Element | null)?.closest?.('.automation-rule-inspector, .automation-rule-select[aria-current="true"]')
+      && closeWorkspaceRule()) {
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
     const tab = (event.target as (Element & {
       closest?: (selector: string) => Element | null;
     }) | null)?.closest?.(`[${AUTOMATION_ROUTE_SUBNAV_ATTR}]`);
@@ -4639,9 +5281,9 @@ export const bootstrapAutomationRoute = (
       ev.preventDefault();
       const row = comingUpSelections.get(promptLink.getAttribute('data-coming-up-prompt') ?? '');
       if (!row || comingUpOpening || !promptPanel || promptPanel.protectDraft()) return;
-      const interaction = promptInteractions, hash = doc.defaultView?.location.hash, top = opts.root.scrollTop;
+      const interaction = routeInteractions, hash = doc.defaultView?.location.hash, top = opts.root.scrollTop;
       comingUpOpening = row.schedule_id; comingUpError = ''; render();
-      const ownsVisit = () => !disposed && activeSection === 'coming-up' && doc.defaultView?.location.hash === hash && interaction === promptInteractions;
+      const ownsVisit = () => !disposed && activeSection === 'coming-up' && doc.defaultView?.location.hash === hash && interaction === routeInteractions;
       void promptPanel.resolveSchedule(row).then(fresh => {
         if (fresh && ownsVisit()) openSavedPrompt(fresh, top);
       }).catch(failure => {
@@ -4768,6 +5410,7 @@ export const bootstrapAutomationRoute = (
       closest?: (selector: string) => Element | null;
     }) | null)?.closest?.('[data-recued-automation-back]');
     if (backButton) {
+      if (closeWorkspaceRule()) return;
       const returnFocus = detailId === null
         ? null
         : {
@@ -4783,10 +5426,7 @@ export const bootstrapAutomationRoute = (
       }
       syncHash('replace');
       render();
-      const replacement = returnFocus === null
-        ? null
-        : findActionFocusTarget(returnFocus);
-      (replacement ?? navTabFor(activeSection))?.focus?.({ preventScroll: true });
+      focusRuleListReturn(returnFocus);
       return;
     }
     // R21 create path — the per-section Add disclosure.
@@ -4890,9 +5530,28 @@ export const bootstrapAutomationRoute = (
     // LOW: the button renders enabled, so a busy-guard swallow would be
     // a dead click). Mutating verbs stay busy-guarded below.
     if (verb === 'detail') {
+      const own = sectionTokenForKind(section);
+      if (own === activeSection && showRuleWorkspace()) {
+        openWorkspaceRule(section, ruleId);
+        return;
+      }
       // D-319 §5.4 — from the one list, a rule's Details open in its own
       // kind's section; Back returns to the list.
-      const own = sectionTokenForKind(section);
+      let returnTo: AutomationRuleReturn | undefined;
+      if (view && detailId === null && own !== null) {
+        returnTo = {
+          owner: historyOwner,
+          listHash: view.location.hash,
+          detailHash: automationAddress(own, ruleId).hash,
+          section: activeSection,
+          recipeFilter, statusFilter, originFilter, chipFilter,
+          focus: { verb, section, rule_id: ruleId },
+        };
+        // Retain the exact list entry for browser Back and its context on
+        // the detail entry for Forward followed by the in-page Back button.
+        markRuleListEntry(returnTo);
+        if (opts.promptListMemory) delete opts.promptListMemory.value;
+      }
       if (own !== null && own !== activeSection) {
         detailReturnSection = activeSection;
         activeSection = own;
@@ -4904,7 +5563,7 @@ export const bootstrapAutomationRoute = (
         pendingDishHistoryRetryFocus = null;
         loadDishHistory(ruleId);
       }
-      syncHash('push');
+      syncHash('push', returnTo);
       render();
       focusRenderedDetailHeading();
       return;
@@ -4986,7 +5645,7 @@ export const bootstrapAutomationRoute = (
           // Kept only until the revocation is known to have landed: a retry
           // must replay the SAME request, a fresh arm must not.
           revokeRequestIds.delete(`${section}:${ruleId}`);
-          revokeConfirmation = null;
+          if (confirmingRevokeFor(section, ruleId)) revokeConfirmation = null;
         },
         action,
         undefined,
@@ -5104,6 +5763,7 @@ export const bootstrapAutomationRoute = (
   routeRoot.addEventListener('click', onClick);
   routeRoot.addEventListener('change', onFilterChange);
   routeRoot.addEventListener('keydown', onSubnavKeyDown);
+  desktopMedia?.addEventListener?.('change', onDesktopMediaChange);
 
   const unsubscribers: Array<() => void> = [];
   if (opts.subscribe !== undefined) {
@@ -5122,7 +5782,7 @@ export const bootstrapAutomationRoute = (
 
   render();
   const initialLoad = loadAll();
-  function findComingUpPrompt(id: string, kind: 'prompt' | 'conversation' = 'prompt'): HTMLElement | undefined {
+  function findComingUpLink(id: string, kind: 'prompt' | 'conversation' | 'recipe' = 'prompt'): HTMLElement | undefined {
     const attr = 'data-coming-up-' + kind;
     return Array.from(routeRoot.querySelectorAll?.<HTMLElement>(`[${attr}]`) ?? [])
       .find(el => el.getAttribute(attr) === id);
@@ -5130,15 +5790,19 @@ export const bootstrapAutomationRoute = (
   // Only the prompt list owns this return. Unrelated recipe/capability reads
   // may still be pending, and later overview paints preserve this control.
   if (promptReturn) void promptPanel?.whenLoaded().then(() => {
-    if (disposed || promptReturnInteracted || doc.defaultView?.location.hash !== promptReturn.returnHash) return;
+    if (disposed || routeInteractions > 0 || view?.location.hash !== promptReturn.returnHash) return;
     if (promptReturn.activeSection === 'coming-up') {
-      const target = findComingUpPrompt(promptReturn.focusId);
+      const target = findComingUpLink(promptReturn.focusId);
       if (target) target.focus({ preventScroll: true });
       else {
         comingUpError = 'This scheduled prompt is no longer in Coming up. Review its current schedule in Overview.';
         render(); routeRoot.querySelector<HTMLElement>('[data-coming-up-prompt-error]')?.focus({ preventScroll: true });
       }
       opts.root.scrollTop = promptReturn.top;
+      // Prompt focus can return before the loaded recipe rows give the agenda its full height.
+      if (target && loading && desktopMedia?.matches === true && opts.root.scrollTop !== promptReturn.top) {
+        clampedAgendaTop = opts.root.scrollTop;
+      }
     } else if (promptPanel?.focusSchedule(promptReturn.focusId)) opts.root.scrollTop = promptReturn.top;
   });
   if (opts.initialPromptDraft && promptPanel) {
@@ -5174,6 +5838,7 @@ export const bootstrapAutomationRoute = (
     refresh: () => loadAll(),
     whenLoaded: () => initialLoad,
     hasInFlightWork: hasAutomationInFlightWork,
+    navigateDeepLink: navigateRuleWorkspace,
     inFlightWorkPrompt: () =>
       hasAutomationInFlightWork()
         ? 'Something is still happening here. Leave anyway?'
@@ -5181,7 +5846,10 @@ export const bootstrapAutomationRoute = (
     dispose: () => {
       if (disposed) return;
       disposed = true;
-      opts.root.removeEventListener('pointerdown', markPromptReturnInteraction, true); opts.root.removeEventListener('keydown', markPromptReturnInteraction, true);
+      clearAgendaDayTimer();
+      opts.root.removeEventListener('pointerdown', recordRouteInteraction, true);
+      opts.root.removeEventListener('keydown', recordRouteInteraction, true);
+      desktopMedia?.removeEventListener?.('change', onDesktopMediaChange);
       promptPanel?.dispose();
       alarmForm?.dispose();
       oneOffEditor?.panel.dispose(); oneOffEditor = null;

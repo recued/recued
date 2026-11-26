@@ -66,6 +66,8 @@ export interface CollectionExplorerProps {
    *  filtered to `platform === collection` by the route). */
   instances: readonly CollectionInstanceRow[];
   instanceLabels?: ReadonlyMap<string, string>;
+  /** The host supplies its own source controls above the explorer. */
+  hideInstanceBar?: boolean;
   /** The selected instance's `slug` (null → the picker when >1; the route
    *  auto-selects when exactly 1). */
   selectedSlug: string | null;
@@ -276,21 +278,34 @@ const renderStateBadge = (record: CollectionRecord, stateField: StateField | und
 };
 
 /** Mail keeps the familiar sender / subject / preview reading order. */
-const renderMailRow = (record: CollectionRecord, actionAttr: string, controls = '', disabled = false): string => {
+export const renderMailRow = (
+  record: CollectionRecord, actionAttr: string, controls = '', disabled = false,
+  reader?: { action: string; focusAttr: string; current: boolean; tabStop: boolean; busy: boolean },
+): string => {
   const hot = record.hot_fields;
   const sent = hot.direction === 'outbound';
   const addresses = Array.isArray(hot.to) ? hot.to.filter(value => typeof value === 'string').join(', ') : '';
   const sender = sent ? `To ${addresses || 'unknown recipient'}` : typeof hot.from === 'string' && hot.from ? hot.from : 'Unknown sender';
   const subject = typeof hot.subject === 'string' && hot.subject ? hot.subject : '(No subject)';
-  const preview = record.body_inline?.slice(0, 400).replace(/\s+/g, ' ').trim().slice(0, 160) ?? '';
+  const preview = reader ? '' : record.body_inline?.slice(0, 400).replace(/\s+/g, ' ').trim().slice(0, 160) ?? '';
   const unread = !sent && (hot.is_read === false || hot.is_read === 0);
+  const starred = hot.is_flagged === true || hot.is_flagged === 1;
+  const attachments = hot.has_attachments === true || hot.has_attachments === 1;
+  const status = [sent ? 'Sent' : reader ? '' : 'Received', unread ? 'Unread' : '', starred ? 'Starred' : '',
+    attachments ? 'Attachments' : ''].filter(Boolean).join(' · ');
+  const date = formatClientDateTime(record.received_at);
+  const instant = reader ? new Date(record.received_at) : null;
+  const compactDate = instant && Number.isFinite(instant.getTime())
+    ? instant.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) : date;
+  const readerAttrs = reader ? ` ${reader.focusAttr}="inbox:${e(record.record_id)}" tabindex="${reader.tabStop ? 0 : -1}"
+    ${reader.current ? ' aria-current="true"' : ''}${reader.busy ? ' aria-disabled="true"' : ''}` : '';
   return `<li class="col-explorer-row${controls ? ' col-explorer-row--controlled' : ''}">${controls}
-    <button type="button"${disabled ? ' disabled' : ''} class="col-explorer-row-btn col-explorer-mail-row${unread ? ' is-unread' : ''}" ${actionAttr}="${COLLECTION_OPEN_RECORD_ACTION}" ${COLLECTION_RECORD_ID_ATTR}="${e(record.record_id)}">
+    <button type="button"${disabled ? ' disabled' : ''} class="col-explorer-row-btn col-explorer-mail-row${unread ? ' is-unread' : ''}" ${actionAttr}="${reader?.action ?? COLLECTION_OPEN_RECORD_ACTION}" ${COLLECTION_RECORD_ID_ATTR}="${e(record.record_id)}"${readerAttrs}>
       <span class="col-explorer-mail-sender">${e(sender)}</span>
-      <time class="col-explorer-mail-date">${e(formatClientDateTime(record.received_at))}</time>
-      <span class="col-explorer-mail-subject">${e(subject)}</span>
+      <time class="col-explorer-mail-date"${reader ? ` title="${e(date)}"` : ''}>${e(compactDate)}</time>
+      <span class="col-explorer-mail-subject"${reader ? ` title="${e(subject)}"` : ''}>${e(subject)}</span>
       ${preview ? `<span class="col-explorer-mail-preview">${e(preview)}</span>` : ''}
-      <span class="col-explorer-mail-status">${sent ? 'Sent' : 'Received'}${unread ? ' · Unread' : ''}${hot.is_flagged === true || hot.is_flagged === 1 ? ' · Starred' : ''}${hot.has_attachments === true || hot.has_attachments === 1 ? ' · Attachments' : ''}${typeof hot.folder === 'string' && hot.folder && hot.folder.toLowerCase() !== (sent ? 'sent' : 'received') ? ` · ${e(hot.folder)}` : ''}</span>
+      ${status ? `<span class="col-explorer-mail-status">${status}${!reader && typeof hot.folder === 'string' && hot.folder && hot.folder.toLowerCase() !== (sent ? 'sent' : 'received') ? ` · ${e(hot.folder)}` : ''}</span>` : ''}
     </button>
   </li>`;
 };
@@ -335,12 +350,13 @@ const renderRow = (
 
 /** The instance selector — a chip per `(platform, slug)` instance. Only rendered
  *  when there's more than one (a single instance is auto-selected by the route). */
-const renderInstanceBar = (
+export const renderCollectionInstanceBar = (
   instances: readonly CollectionInstanceRow[],
   selectedSlug: string | null,
   actionAttr: string,
   labels?: ReadonlyMap<string, string>,
   disabled = false,
+  groupLabel = 'Choose an instance',
 ): string => {
   if (instances.length === 0 || (instances.length === 1 && instances[0]!.slug === selectedSlug)) return '';
   const chips = instances
@@ -369,7 +385,7 @@ const renderInstanceBar = (
         aria-pressed="${active ? 'true' : 'false'}"${disabled ? ' disabled' : ''}>${e(label)}${owned !== '' ? ` ${owned}` : ''}</button>`;
     })
     .join('');
-  return `<div class="col-explorer-instances" role="group" aria-label="Choose an instance">${chips}</div>`;
+  return `<div class="col-explorer-instances" role="group" aria-label="${e(groupLabel)}">${chips}</div>`;
 };
 
 /** The per-record detail — a schema-driven field list + the body (inline text)
@@ -574,9 +590,9 @@ export const renderCollectionExplorer = (props: CollectionExplorerProps): string
     )}</section>`;
   }
 
-  const instanceBar = props.singleCollection
+  const instanceBar = props.singleCollection || props.hideInstanceBar
     ? ''
-    : renderInstanceBar(props.instances, props.selectedSlug, props.actionAttr, props.instanceLabels, props.disabled);
+    : renderCollectionInstanceBar(props.instances, props.selectedSlug, props.actionAttr, props.instanceLabels, props.disabled);
 
   let body: string;
   if (props.error !== undefined) {

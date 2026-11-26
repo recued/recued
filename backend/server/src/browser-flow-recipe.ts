@@ -38,8 +38,11 @@ const slug = (text: string): string => text.toLowerCase().replace(/[^a-z0-9]+/g,
   || 'page';
 const quoted = (text: string): string => `“${text.length > 60 ? `${text.slice(0, 60).trimEnd()}…` : text}”`;
 const verb: Record<ExecutionBrowserFlowStep['do'], string> = {
-  type: 'type into', pick: 'pick in', click: 'click', press: 'press a key in', submit: 'send the form of',
+  type: 'type into', pick: 'pick in', click: 'click', press: 'press a key in', seek: 'seek within', submit: 'send the form of',
 };
+const stepVerb = (step: ExecutionBrowserFlowStep): string =>
+  step.do === 'click' && step.count === 2 ? 'double-click'
+    : step.do === 'type' && step.delivery === 'paste' ? 'paste into' : verb[step.do];
 
 export interface BrowserFlowRecipeDraft {
   recipe: RecipeDefinition;
@@ -60,7 +63,7 @@ export const recipeFromBrowserFlow = (flow: { flow_id: string; steps: readonly E
     const what = `the ${step.element.role} ${quoted(step.element.label)}`;
     const selector = step.element.selector ?? BROWSER_FLOW_SELECTOR_TO_FILL;
     if (step.element.selector === undefined) {
-      issues.push(`Step ${String(n)} (${verb[step.do]} ${what}) has no selector that finds it alone: replace `
+      issues.push(`Step ${String(n)} (${stepVerb(step)} ${what}) has no selector that finds it alone: replace `
         + `${BROWSER_FLOW_SELECTOR_TO_FILL} with one in Kitchen.`);
     }
     // A typed text is a setting, named by the field it went into.
@@ -80,13 +83,14 @@ export const recipeFromBrowserFlow = (flow: { flow_id: string; steps: readonly E
       if (step.secret === true) issues.push(`Step ${String(n)} types into ${what}: what was typed was not kept, so the recipe asks for it.`);
       value = `{{config.${key}}}`;
     }
-    return step.do === 'click' ? { do: 'click', selector }
+    if (step.do === 'seek') return { do: 'seek', selector, at_seconds: step.at_seconds };
+    return step.do === 'click' ? { do: 'click', selector, ...(step.count === 2 ? { count: 2 } : {}) }
       : step.do === 'press' ? { do: 'press', selector, key: step.key ?? 'Enter' }
         : step.do === 'submit' ? (value !== undefined ? { do: 'type', selector, value, submit: true } : { do: 'submit', selector })
           : step.do === 'pick' ? { do: 'type', selector, value: value!, pick: step.pick ?? '' }
-            : { do: 'type', selector, value: value! };
+            : { do: 'type', selector, value: value!, ...(step.delivery === 'paste' ? { delivery: 'paste' } : {}) };
   });
-  const summary = flow.steps.slice(0, 3).map((step) => `${verb[step.do]} ${quoted(step.element.label)}`).join(', ');
+  const summary = flow.steps.slice(0, 3).map((step) => `${stepVerb(step)} ${quoted(step.element.label)}`).join(', ');
   const recipe = {
     recipe_id: `browser-flow-${slug(site)}-${flow.flow_id.replace(/[^a-z0-9]/gi, '').slice(0, 8).toLowerCase()}`,
     version: 1,
@@ -95,7 +99,7 @@ export const recipeFromBrowserFlow = (flow: { flow_id: string; steps: readonly E
       name: `On ${site}: ${summary}${flow.steps.length > 3 ? '…' : ''}`.slice(0, 100),
       description: `Does in your browser what your AI did on ${site} and you kept: ${String(flow.steps.length)} `
         + `${flow.steps.length === 1 ? 'step' : 'steps'} on the page ${pageAddress(first.url)}, through the Browser Bridge, `
-        + 'with no AI. It finds the page among your open tabs, or opens it, which asks you first.',
+        + 'with no AI. It finds the page among your open tabs, or opens it.',
       author: 'you',
       supported_platforms: [],
       tags: ['browser', 'web', 'browser-flow'],

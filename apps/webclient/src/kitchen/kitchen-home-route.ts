@@ -12,6 +12,99 @@ import { humanizeRpcError } from '../shell/rpc-error-copy.js';
 export const KITCHEN_HOME_ATTR = 'data-recued-kitchen-home';
 export const KITCHEN_HOME_ITEM_ATTR = 'data-recued-kitchen-home-item';
 
+const KITCHEN_HOME_STYLES = `
+[${KITCHEN_HOME_ATTR}] {
+  box-sizing: border-box;
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 16px 24px 32px;
+}
+[${KITCHEN_HOME_ATTR}] .kitchen-home-start { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; }
+[${KITCHEN_HOME_ATTR}] .kitchen-home-start > a { display: inline-flex; align-items: center; min-height: 44px; }
+[${KITCHEN_HOME_ATTR}] .kitchen-home-list { list-style: none; margin: 0; padding: 0; }
+[${KITCHEN_HOME_ITEM_ATTR}] {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 16px;
+  padding: 12px 0;
+  border-top: 1px solid var(--border);
+}
+[${KITCHEN_HOME_ATTR}] .kitchen-home-row-info { display: contents; }
+[${KITCHEN_HOME_ATTR}] .kitchen-home-actions { margin-left: auto; display: flex; gap: 8px; }
+[${KITCHEN_HOME_ATTR}] .kitchen-home-action { display: inline-flex; align-items: center; gap: 6px; }
+[${KITCHEN_HOME_ATTR}] .kitchen-home-action > svg { flex-shrink: 0; }
+[${KITCHEN_HOME_ATTR}] .kitchen-home-action[aria-busy="true"] { cursor: wait; opacity: 0.65; }
+
+@media (min-width: 1280px) and (hover: hover) and (pointer: fine) {
+  [${KITCHEN_HOME_ATTR}] .kitchen-home-lead { margin: 0 0 16px; color: var(--fg-muted); }
+  [${KITCHEN_HOME_ATTR}] .kitchen-home-layout {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 28%);
+    align-items: start;
+    gap: var(--wc-space-lg, 24px);
+  }
+  [${KITCHEN_HOME_ATTR}] .kitchen-home-layout > * {
+    min-width: 0;
+    padding: 16px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--wc-radius-lg, 14px);
+  }
+  [${KITCHEN_HOME_ATTR}] .kitchen-home-queue { grid-area: 1 / 1; }
+  [${KITCHEN_HOME_ATTR}] .kitchen-home-start {
+    grid-area: 1 / 2;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px 8px;
+  }
+  [${KITCHEN_HOME_ATTR}] .kitchen-home-start > span {
+    grid-column: 1 / -1;
+    color: var(--fg-muted);
+    font-size: 13px;
+  }
+  [${KITCHEN_HOME_ATTR}] .kitchen-home-start > a,
+  [${KITCHEN_HOME_ATTR}] .kitchen-home-actions > :is(a, button) {
+    box-sizing: border-box;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: var(--wc-control-h, 40px);
+    padding: 0 12px;
+    border: 1px solid var(--border);
+    border-radius: var(--wc-radius, 9px);
+    background: var(--surface);
+    color: var(--fg);
+    font: inherit;
+    font-size: 13px;
+    font-weight: 600;
+    text-align: center;
+    text-decoration: none;
+  }
+  [${KITCHEN_HOME_ATTR}] .kitchen-home-start > a:first-child {
+    border-color: var(--accent);
+    background: var(--accent);
+    color: var(--on-accent);
+  }
+  [${KITCHEN_HOME_ATTR}] .kitchen-home-actions > a { color: var(--accent); }
+  [${KITCHEN_HOME_ATTR}] .kitchen-home-actions > button:not([aria-disabled="true"]) { cursor: pointer; }
+  [${KITCHEN_HOME_ATTR}] .kitchen-home-actions > button:hover { color: var(--danger); }
+  [${KITCHEN_HOME_ATTR}] :is(a, button):focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  [${KITCHEN_HOME_ATTR}] .kitchen-home-queue h2 { margin: 0 0 12px; color: var(--fg-strong); font-size: 16px; }
+  [${KITCHEN_HOME_ATTR}] .kitchen-home-status { margin: 0; color: var(--fg-muted); }
+  [${KITCHEN_HOME_ITEM_ATTR}] {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 8rem) auto;
+    column-gap: 12px;
+    overflow-wrap: anywhere;
+  }
+  [${KITCHEN_HOME_ATTR}] .kitchen-home-row-info { display: grid; gap: 4px; min-width: 0; }
+  [${KITCHEN_HOME_ATTR}] .kitchen-home-row-info > span,
+  [${KITCHEN_HOME_ATTR}] .kitchen-home-row-status { color: var(--fg-muted); font-size: 13px; }
+  [${KITCHEN_HOME_ATTR}] .kitchen-home-actions { margin: 0; white-space: nowrap; }
+}
+`;
+
 export interface KitchenHomeOptions {
   root: HTMLElement;
   listWork: () => Promise<KitchenWorkItemList>;
@@ -73,31 +166,34 @@ export const mountKitchenHomeRoute = (options: KitchenHomeOptions): { dispose():
   const confirmDiscard = options.confirm ?? ((message: string) => doc.defaultView?.confirm(message) ?? false);
   const host = doc.createElement('section');
   host.setAttribute(KITCHEN_HOME_ATTR, '');
-  host.style.cssText = 'max-width:1200px;margin:0 auto;padding:16px 24px 32px;box-sizing:border-box;';
   const style = doc.createElement('style');
-  style.textContent = `
-    [${KITCHEN_HOME_ATTR}] .kitchen-home-action { display:inline-flex;align-items:center;gap:6px; }
-    [${KITCHEN_HOME_ATTR}] .kitchen-home-action > svg { flex-shrink:0; }
-  `;
+  style.textContent = KITCHEN_HOME_STYLES;
   host.append(style);
   const lead = doc.createElement('p');
+  lead.className = 'kitchen-home-lead';
   lead.textContent = 'Start something new, or pick up where you left off.';
-  const start = doc.createElement('div');
-  start.style.cssText = 'display:flex;flex-wrap:wrap;align-items:center;gap:8px 16px;';
+  const layout = doc.createElement('div');
+  layout.className = 'kitchen-home-layout';
+  const start = doc.createElement('nav');
+  start.className = 'kitchen-home-start';
+  start.setAttribute('aria-label', 'Start new work or open saved work');
   const link = (label: string, href: string): HTMLAnchorElement => {
     const anchor = doc.createElement('a'); anchor.setAttribute('href', href); anchor.textContent = label; return anchor;
   };
   const newRecipe = link('New recipe', serializeShellRoute('kitchen', 'new', 'recipe'));
   const newPack = link('New pack', serializeShellRoute('kitchen', 'pack'));
-  // These two stand alone, not in a sentence, so they are a finger's size on a phone.
-  for (const anchor of [newRecipe, newPack]) anchor.style.cssText = 'display:inline-flex;align-items:center;min-height:44px;';
   const saved = doc.createElement('span');
   saved.append('Edit a saved one: ', link('Recipes', serializeShellRoute('recipes')), ' · ', link('Packs', serializeShellRoute('packs')));
   start.append(newRecipe, newPack, saved);
   const progress = doc.createElement('section');
   progress.setAttribute('aria-label', 'In progress');
   const status = doc.createElement('p'); status.setAttribute('role', 'status'); status.textContent = 'Loading what is in progress…';
-  host.append(lead, start, progress, status);
+  status.className = 'kitchen-home-status';
+  const queue = doc.createElement('div');
+  queue.className = 'kitchen-home-queue';
+  queue.append(progress, status);
+  layout.append(start, queue);
+  host.append(lead, layout);
   options.root.append(host);
   let disposed = false;
 
@@ -107,37 +203,50 @@ export const mountKitchenHomeRoute = (options: KitchenHomeOptions): { dispose():
     status.textContent = '';
     const heading = doc.createElement('h2'); heading.textContent = 'In progress';
     const list = doc.createElement('ul');
-    list.style.cssText = 'list-style:none;margin:0;padding:0;';
+    list.className = 'kitchen-home-list';
     for (const row of rows) {
       const entry = doc.createElement('li');
       entry.setAttribute(KITCHEN_HOME_ITEM_ATTR, row.key);
-      entry.style.cssText = 'display:flex;flex-wrap:wrap;align-items:center;gap:4px 16px;padding:12px 0;border-top:1px solid var(--border);';
+      const info = doc.createElement('div');
+      info.className = 'kitchen-home-row-info';
       const title = doc.createElement('strong'); title.textContent = row.title;
       const meta = doc.createElement('span');
       meta.textContent = `${row.started} · ${editedAgo(row.updated_at, now())}`;
       meta.setAttribute('title', new Date(row.updated_at).toLocaleString());
+      info.append(title, meta);
       const state = doc.createElement('span'); state.textContent = row.state ?? '';
+      state.className = 'kitchen-home-row-status';
+      state.setAttribute('aria-live', 'polite');
       const actions = doc.createElement('span');
-      actions.style.cssText = 'margin-left:auto;display:flex;gap:8px;';
+      actions.className = 'kitchen-home-actions';
       const resume = link('Continue', row.href);
       const remove = doc.createElement('button'); remove.type = 'button';
       remove.className = 'kitchen-home-action';
       remove.innerHTML = renderActionLabel('delete', 'Discard');
-      remove.addEventListener('click', () => {
+      remove.addEventListener('click', async () => {
+        if (remove.getAttribute('aria-busy') === 'true') return;
+        remove.focus?.({ preventScroll: true });
         if (!confirmDiscard(`Discard "${row.title}"? It is removed from Kitchen and cannot be brought back.`)) return;
-        remove.disabled = true;
-        void row.discard().then(() => {
+        remove.setAttribute('aria-busy', 'true');
+        remove.setAttribute('aria-disabled', 'true');
+        try {
+          await row.discard();
+        } catch (error) {
           if (disposed) return;
-          entry.remove();
-          if (list.children.length === 0) render([]);
-        }).catch((error: unknown) => {
-          if (disposed) return;
-          remove.disabled = false;
+          remove.removeAttribute('aria-busy');
+          remove.removeAttribute('aria-disabled');
           state.textContent = humanizeRpcError(error);
-        });
+          return;
+        }
+        if (disposed) return;
+        const restoreFocus = doc.activeElement === remove || doc.activeElement === resume;
+        const adjacent = entry.nextElementSibling ?? entry.previousElementSibling;
+        entry.remove();
+        if (list.children.length === 0) render([]);
+        if (restoreFocus) (adjacent?.querySelector<HTMLAnchorElement>('a') ?? newRecipe).focus();
       });
       actions.append(resume, remove);
-      entry.append(title, meta, state, actions);
+      entry.append(info, state, actions);
       list.append(entry);
     }
     progress.append(heading, list);

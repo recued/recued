@@ -1,6 +1,7 @@
 import { expect, test, type Page } from '@playwright/test';
-import type { RecordsOwnerSearchRequest, SavedDataViewDefinition } from '@recued/contracts';
+import type { RecordsOwnerSearchRequest, SavedDataView, SavedDataViewDefinition } from '@recued/contracts';
 import { openSavedViewList } from './helpers/saved-data-views.js';
+import { openRecordsManagement } from './helpers/records.js';
 const URL = '/full-app-harness.html?data=records-navigation&records_browse=1';
 const KEY = 'recued-test-saved-data-views';
 const ID = 'view_00000000-0000-4000-8000-000000000001';
@@ -72,11 +73,78 @@ test('Records applies filters and sorting before paging and saves settings witho
   await expect(rows(page)).toHaveCount(14);
   await expect(page).toHaveURL(new RegExp(`#views/${saved.id}$`));
   await expect(toolbar(page).locator('[data-view-modified]')).toHaveCount(0);
+  const savedRow = page.getByRole('button', { name: 'Open record job-038', exact: true });
+  await savedRow.press('Enter');
+  await expect(page.locator('#records-detail-title')).toBeFocused();
+  await page.goBack();
+  await expect(page).toHaveURL(new RegExp(`#views/${saved.id}$`));
+  await expect(savedRow).toBeFocused();
+  await expect(rows(page)).toHaveCount(14);
   await page.reload();
   await ready(page);
   await expect(rows(page).first()).toContainText('Open 238');
   expect((await requests(page)).at(-1)).not.toHaveProperty('cursor');
   expect(errors).toEqual([]);
+});
+
+test('Desktop Saved views switches by keyboard and restores the previous filtered Records view on Back', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  const closedId = 'view_00000000-0000-4000-8000-000000000002';
+  const hiddenId = 'view_00000000-0000-4000-8000-000000000003';
+  const pack = { publisher: 'publisher-a', slug: 'same-board' };
+  const makeView = (id: string, name: string, prefix: string): SavedDataView => ({
+    id, name, revision: 1, created_at: 1, updated_at: 1,
+    definition: { ...definition, filters: { title: { op: 'prefix', value: prefix } }, sort: '-amount' },
+  });
+  const views = [
+    makeView(ID, 'Open jobs', 'Open'),
+    { ...makeView(closedId, 'Closed jobs', 'Closed'), pack },
+    { id: hiddenId, name: 'All jobs', definition, revision: 1, created_at: 1, updated_at: 1, pack, hidden: true },
+  ];
+  await page.addInitScript(({ key, views }) => sessionStorage.setItem(key, JSON.stringify(views)), { key: KEY, views });
+  await page.goto(`${URL}#views/${ID}`);
+  await ready(page);
+  await expect(rows(page).first()).toContainText('Open 238');
+
+  const switcher = toolbar(page).locator('[data-view-switcher]');
+  const trigger = switcher.locator('summary');
+  const openJobs = switcher.getByRole('link', { name: 'Open jobs', exact: true });
+  const closedJobs = switcher.getByRole('link', { name: 'Closed jobs From same-board', exact: true });
+  await expect(trigger).toHaveText('Open jobs');
+  await trigger.press('Enter');
+  await expect(openJobs).toHaveAttribute('aria-current', 'page');
+  await expect(switcher.getByRole('link', { name: /All jobs/ })).toHaveCount(0);
+  await page.keyboard.press('Tab');
+  await expect(openJobs).toBeFocused();
+  await page.keyboard.press('Escape');
+  await expect(switcher).not.toHaveAttribute('open');
+  await expect(trigger).toBeFocused();
+
+  await page.keyboard.press('Space');
+  await page.keyboard.press('Tab');
+  await page.keyboard.press('Tab');
+  await expect(closedJobs).toBeFocused();
+  await page.keyboard.press('Enter');
+  await expect(page).toHaveURL(new RegExp(`#views/${closedId}$`));
+  await expect(rows(page).first()).toContainText('Closed 239');
+  await expect(trigger).toHaveText('Closed jobs');
+  await page.goBack();
+  await expect(page).toHaveURL(new RegExp(`#views/${ID}$`));
+  await expect(rows(page).first()).toContainText('Open 238');
+  await expect(trigger).toHaveText('Open jobs');
+
+  await trigger.press('Enter');
+  await page.keyboard.press('Tab');
+  await expect(openJobs).toBeFocused();
+  await page.setViewportSize({ width: 1279, height: 900 });
+  await expect(toolbar(page).locator('[data-view-library] summary')).toBeFocused();
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await expect(trigger).toBeFocused();
+
+  await toolbar(page).getByRole('link', { name: 'Manage views', exact: true }).click();
+  await expect(page).toHaveURL(/#views$/);
+  await expect(toolbar(page).getByRole('button', { name: 'Rename Open jobs', exact: true })).toBeVisible();
+  await expect(toolbar(page).getByRole('button', { name: 'Show All jobs', exact: true })).toBeVisible();
 });
 
 test('Records updates old bookmarks, reviews competing filters and saves copies', async ({ page }) => {
@@ -139,10 +207,159 @@ test('Records restarts paging for query, kind, pack and refresh changes', async 
   expect((await requests(page)).at(-1)).not.toHaveProperty('sort');
   await page.getByRole('button', { name: 'Next page', exact: true }).click();
   await expect(rows(page).first()).toContainText('invoice-100');
-  await page.locator('[data-records-namespace="publisher-b/same-board"]').click();
+  const pack = page.getByRole('combobox', { name: 'Pack', exact: true });
+  await pack.focus();
+  const kindsBefore = await page.evaluate(() => window.__app.rpcCallCount('records.kind.list'));
+  await page.evaluate(() => window.__app.holdRpcResponses?.('records.kind.list'));
+  await pack.selectOption('publisher-b/same-board');
+  await expect(pack).toHaveAttribute('aria-busy', 'true');
+  await expect(pack).toHaveAttribute('aria-disabled', 'true');
+  await pack.evaluate(node => {
+    const select = node as HTMLSelectElement;
+    select.value = 'publisher-a/same-board';
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+  });
+  await expect(pack).toHaveValue('publisher-b/same-board');
+  expect(await page.evaluate(() => window.__app.rpcCallCount('records.kind.list'))).toBe(kindsBefore + 1);
+  expect(await page.evaluate(() => window.__app.releaseRpcResponses?.('records.kind.list'))).toBe(1);
   await expect(rows(page).first()).toContainText('invoice-000');
+  await expect(pack).toBeFocused();
   expect((await requests(page)).at(-1)).toMatchObject({ owner: { publisher: 'publisher-b' } });
   expect((await requests(page)).at(-1)).not.toHaveProperty('cursor');
+});
+
+test('the desktop Records inspector keeps filtered results and restores the table on Close and browser Back', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto(`${URL}#data/records`);
+  await ready(page);
+
+  const pack = page.getByRole('combobox', { name: 'Pack', exact: true });
+  const kind = page.getByRole('tab', { name: /^job\b/i });
+  const row = page.getByRole('button', { name: 'Open record job-014', exact: true });
+  const next = page.getByRole('button', { name: 'Open record job-012', exact: true });
+  const index = page.getByRole('list', { name: 'Records results', exact: true });
+  const heading = page.locator('#records-detail-title');
+  await expect(rows(page)).toHaveCount(100);
+  await pack.selectOption('publisher-b/same-board');
+  await kind.click();
+  await addFilter(page, 1, 'title', 'prefix', 'Open');
+  await page.getByLabel('Sort records', { exact: true }).selectOption('-amount');
+  await apply(page);
+  await page.getByRole('button', { name: 'Next page', exact: true }).click();
+  await expect(rows(page)).toHaveCount(20);
+  await expect(rows(page).first()).toContainText('Open 38');
+  const queryCount = (await requests(page)).length;
+  const scroll = page.locator('[data-recued-webclient-content]');
+  await row.scrollIntoViewIfNeeded();
+  await row.focus();
+  const scrollTop = await scroll.evaluate(node => node.scrollTop);
+  expect(scrollTop).toBeGreaterThan(0);
+
+  const open = async () => {
+    await row.press('Enter');
+    await expect(heading).toBeFocused();
+    await expect(page).toHaveURL(/#data\/records\/publisher-b\/same-board\/job\/job-014$/);
+    await expect(index.getByRole('listitem')).toHaveCount(20);
+    await expect(index.getByRole('listitem').first()).toContainText('Open 38');
+    await expect(index).not.toContainText('publisher-b@example.test');
+    await expect(row).toHaveAttribute('aria-current', 'true');
+    await expect(page.getByLabel('Filter 1 value')).toHaveValue('Open');
+  };
+  const expectList = async (selection: typeof row) => {
+    await expect(page).toHaveURL(/#data\/records$/);
+    await expect(index).toHaveCount(0);
+    await expect(pack).toHaveValue('publisher-b/same-board');
+    await expect(kind).toHaveAttribute('aria-selected', 'true');
+    await expect(page.getByLabel('Filter 1 value')).toHaveValue('Open');
+    await expect(page.getByLabel('Sort records', { exact: true })).toHaveValue('-amount');
+    await expect(page.getByRole('navigation', { name: 'Records pages' })).toContainText('Page 2');
+    await expect(rows(page).first()).toContainText('Open 38');
+    await expect(selection).toBeFocused();
+    await expect(selection).toBeInViewport();
+    expect(await requests(page)).toHaveLength(queryCount);
+  };
+
+  await open();
+  const pane = page.getByRole('region', { name: 'job-014', exact: true });
+  const listBox = (await index.boundingBox())!;
+  expect(listBox.x + listBox.width).toBeLessThan((await pane.boundingBox())!.x);
+  await pane.getByRole('button', { name: 'Close inspector', exact: true }).press('Enter');
+  await expectList(row);
+  expect(Math.abs(await scroll.evaluate(node => node.scrollTop) - scrollTop)).toBeLessThanOrEqual(1);
+  await open();
+  await next.click();
+  await expect(heading).toHaveText('job-012');
+  await expect(heading).toBeInViewport();
+  await expect(next).toHaveAttribute('aria-current', 'true');
+  await expect(row).not.toHaveAttribute('aria-current');
+  await expect(page).toHaveURL(/#data\/records\/publisher-b\/same-board\/job\/job-012$/);
+  await page.goBack();
+  await expectList(next);
+
+  await next.click();
+  await page.getByRole('region', { name: 'job-012', exact: true })
+    .getByRole('button', { name: 'job/job-058', exact: true }).click();
+  const related = page.getByRole('region', { name: 'job-058', exact: true });
+  await expect(related).toBeVisible();
+  await expect(index.getByRole('listitem')).toHaveCount(20);
+  await page.goBack();
+  await expectList(next);
+
+  await next.click();
+  await expect(heading).toHaveText('job-012');
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(index).toHaveCount(0);
+  await expect(heading).toBeFocused();
+  await expect(page.getByRole('button', { name: 'Back', exact: true })).toBeVisible();
+});
+
+test('the desktop Records inspector keeps the latest selection and drops reads that settle after closing', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await bootSaved(page);
+  const row = (id: string) => page.getByRole('button', { name: `Open record ${id}`, exact: true });
+  const heading = page.locator('#records-detail-title');
+  await row('job-004').click();
+  await expect(heading).toHaveText('job-004');
+
+  await page.evaluate(() => window.__app.holdRpcResponses!('records.get'));
+  await row('job-005').click();
+  await expect(row('job-005')).toHaveAttribute('aria-busy', 'true');
+  await expect(row('job-004')).toHaveAttribute('aria-current', 'true');
+  await expect(page.getByRole('button', { name: 'Delete record…', exact: true })).toHaveAttribute('aria-disabled', 'true');
+  await row('job-006').click();
+  await expect.poll(() => page.evaluate(() => window.__app.rpcCallCount('records.get'))).toBe(3);
+  expect(await page.evaluate(() => window.__app.releaseRpcResponses!('records.get', 1))).toBe(1);
+  await expect(heading).toHaveText('job-006');
+  expect(await page.evaluate(() => window.__app.releaseRpcResponses!('records.get'))).toBe(1);
+  await expect(row('job-006')).toHaveAttribute('aria-current', 'true');
+
+  await page.evaluate(() => window.__app.holdRpcResponses!('records.get'));
+  await row('job-007').click();
+  await expect.poll(() => page.evaluate(() => window.__app.rpcCallCount('records.get'))).toBe(4);
+  await row('job-007').press('Escape');
+  expect(await page.evaluate(() => window.__app.releaseRpcResponses!('records.get'))).toBe(1);
+  await expect(heading).toHaveCount(0);
+  await expect(page).toHaveURL(new RegExp(`#views/${ID}$`));
+  await expect(row('job-006')).toBeFocused();
+});
+
+test('direct Records links and phone row taps use the full record view', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto(`${URL}#data/records/publisher-b/same-board/job/job-014`);
+  await ready(page);
+  const detail = page.getByRole('region', { name: 'job-014', exact: true });
+  await expect(detail.getByRole('button', { name: 'Back', exact: true })).toBeVisible();
+  const index = page.getByRole('list', { name: 'Records results', exact: true });
+  await expect(index).toHaveCount(0);
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  await detail.getByRole('button', { name: 'Back', exact: true }).click();
+  await page.getByRole('button', { name: 'Open record job-032', exact: true }).click();
+  const phoneHeading = page.getByRole('heading', { name: 'job-032', exact: true });
+  await expect(phoneHeading).toBeFocused();
+  await expect(phoneHeading).toBeInViewport();
+  await expect(page.getByRole('region', { name: 'job-032', exact: true }).getByText('Open 32', { exact: true })).toBeInViewport();
+  await expect(index).toHaveCount(0);
 });
 
 test('Records keeps a missing saved field explicit until corrected', async ({ page }) => {
@@ -182,6 +399,7 @@ test('Records disables filter editing while an export owns the reader', async ({
   await addFilter(page, 1, 'status', 'eq', 'open');
   await apply(page);
   const value = page.getByLabel('Filter 1 value', { exact: true });
+  await openRecordsManagement(page);
   await page.getByRole('button', { name: 'Export kind JSON', exact: true }).click();
   await expect(value).toBeDisabled();
   await expect(page.getByLabel('Sort records', { exact: true })).toBeDisabled();
@@ -265,6 +483,7 @@ for (const focusTarget of ['clear-filters', 'account-menu'] as const) {
     const clear = page.getByRole('button', { name: 'Clear filters', exact: true });
     await expect(clear).toBeVisible();
     const before = await requests(page);
+    await openRecordsManagement(page);
     await page.getByRole('button', { name: 'Export kind JSON', exact: true }).click();
     await expect(clear).toHaveAttribute('aria-disabled', 'true');
     await clear.focus();

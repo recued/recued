@@ -992,7 +992,9 @@ test('keeps a phone reply inside the dialog, guards unsaved instructions, and re
   await brief(page).fill('Ask for more detail.');
   await page.getByRole('button', { name: 'Close', exact: true }).focus();
   await page.keyboard.press('Shift+Tab');
-  await expect(page.getByRole('button', { name: 'Polish', exact: true })).toBeFocused();
+  const send = dialog(page).getByRole('button', { name: 'Send', exact: true });
+  await expect(send).toBeFocused();
+  await expect(send).toBeInViewport({ ratio: 1 });
   await page.keyboard.press('Escape');
   await expect(page.getByRole('button', { name: 'Keep editing', exact: true })).toBeFocused();
   await page.getByRole('button', { name: 'Keep editing', exact: true }).click();
@@ -1550,6 +1552,7 @@ test('inbox rejects a server that ignores paging and retains the confirmed page'
 });
 
 test.describe('Mail reader navigation', () => {
+  const readingInbox = (page: Page) => page.getByRole('complementary', { name: 'Inbox messages', exact: true });
   const navigation = (page: Page) => page.getByRole('navigation', { name: 'Browse inbox emails', exact: true });
   const next = (page: Page) => navigation(page).getByRole('button', { name: 'Next email', exact: true });
   const previous = (page: Page) => navigation(page).getByRole('button', { name: 'Previous email', exact: true });
@@ -1563,6 +1566,56 @@ test.describe('Mail reader navigation', () => {
     await page.getByRole('checkbox', { name: 'Has attachments', exact: true }).check();
     await expect(inboxRows(page)).toHaveCount(9);
   };
+
+  test('switches directly between filtered messages while keeping the desktop inbox in place', async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 800 });
+    await boot(page, { inbox: true, triage: 'writable' });
+    await filtered(page);
+    const ids = await inboxIds(page), first = ids[0]!, later = ids[7]!;
+    const origin = page.locator(`[data-collection-record="${first}"]`);
+    const content = page.locator('[data-recued-webclient-content]');
+    await origin.scrollIntoViewIfNeeded();
+    const inboxPosition = await content.evaluate(node => node.scrollTop);
+    await origin.press('Enter');
+    await opened(page, first);
+
+    const inbox = readingInbox(page);
+    await expect(inbox.getByRole('heading')).toHaveText('Inbox work');
+    await expect(inbox).toContainText('Unread · Received · Has attachments');
+    await expect(inbox.locator('[data-collection-record]')).toHaveCount(ids.length);
+    const selected = inbox.locator(`[data-collection-record="${first}"]`);
+    await expect(selected).toHaveAttribute('aria-current', 'true');
+    await expect(inbox.locator('[data-collection-record][tabindex="0"]')).toHaveCount(1);
+    const target = inbox.locator(`[data-collection-record="${later}"]`);
+    const scroll = inbox.locator('[data-mail-reader-inbox-scroll]');
+    await selected.press('End');
+    await page.keyboard.press('ArrowUp');
+    await expect(target).toBeFocused();
+    const position = await scroll.evaluate(node => node.scrollTop);
+    expect(position).toBeGreaterThan(0);
+    await page.keyboard.press('Enter');
+    await opened(page, later);
+    await expect(page).toHaveURL(new RegExp(`#data/mail/record/work/${later}$`));
+    await expect(target).toHaveAttribute('aria-current', 'true');
+    await expect(target).toBeFocused();
+    expect(await scroll.evaluate(node => node.scrollTop)).toBe(position);
+
+    await page.setViewportSize({ width: 1279, height: 800 });
+    await expect(inbox).toHaveCount(0);
+    await expect(next(page)).toBeFocused();
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await expect(target).toHaveAttribute('aria-current', 'true');
+    expect(await scroll.evaluate(node => node.scrollTop)).toBe(position);
+
+    await page.goBack();
+    await expect(origin).toBeFocused();
+    expect(await inboxIds(page)).toEqual(ids);
+    expect(await content.evaluate(node => node.scrollTop)).toBe(inboxPosition);
+    await expect(page.getByLabel('Message status', { exact: true })).toHaveValue('unread');
+    await page.goForward();
+    await opened(page, later);
+    await expect(inbox).toHaveCount(0);
+  });
 
   test('steps through the filtered inbox from the keyboard and returns to the same list position', async ({ page }, testInfo) => {
     await page.setViewportSize({ width: 390, height: 844 });
@@ -1603,6 +1656,7 @@ test.describe('Mail reader navigation', () => {
     expect(failed?.before?.record_id).toBe('mail-36');
     await next(page).click(); await opened(page, 'mail-35'); await expect(next(page)).toBeFocused();
     expect(await page.evaluate(() => window.__mailInbox.requests.at(-1))).toEqual(failed);
+    await expect(readingInbox(page).locator('[data-collection-record]')).toHaveCount(60);
     await page.getByRole('button', { name: '← Back', exact: true }).click();
     await expect(inboxRows(page)).toHaveCount(60); await expect(page.locator('[data-collection-record="mail-36"]')).toBeFocused();
   });
@@ -1618,6 +1672,8 @@ test.describe('Mail reader navigation', () => {
     await next(page).dispatchEvent('click'); await opened(page, 'mail-64');
     await page.evaluate(() => window.__mailCompose.releaseState());
     await expect(article.getByLabel('Email status', { exact: true })).toHaveText('Read');
+    await expect(readingInbox(page).getByRole('status')).toHaveText('The open message is outside this inbox view.');
+    await expect(readingInbox(page).locator('[data-collection-record="mail-64"]')).toHaveCount(0);
     await next(page).click(); await opened(page, 'mail-56');
     await previous(page).click(); await opened(page, 'mail-64');
     await next(page).click(); await opened(page, 'mail-56');
@@ -1633,6 +1689,7 @@ test.describe('Mail reader navigation', () => {
     await field(page, 'body').fill('Keep this unfinished reply.');
     // The modal owns pointer/keyboard input; the route also guards a dispatched navigation action.
     await next(page).dispatchEvent('click');
+    await readingInbox(page).locator('[data-collection-record="mail-63"]').dispatchEvent('click');
     await expect(field(page, 'body')).toHaveValue('Keep this unfinished reply.'); await opened(page, 'mail-64');
     await dialog(page).getByRole('button', { name: 'Close', exact: true }).click();
     await dialog(page).getByRole('button', { name: 'Discard draft', exact: true }).click();
@@ -1709,10 +1766,12 @@ test.describe('Keep and find unfinished mail', () => {
   const leave = (page: Page) => page.getByRole('alertdialog', { name: 'Keep this email for later?', exact: true });
   const later = (page: Page) => page.getByRole('button', { name: 'Keep draft for later', exact: true });
   const found = (page: Page) => page.getByRole('region', { name: 'Unfinished work search results', exact: true });
-  const search = async (page: Page, query: string) => {
+  const search = async (page: Page, query: string, type: 'all' | 'draft' = 'all') => {
     await page.evaluate(() => window.__app.setHash('#data/search'));
     const input = page.getByRole('searchbox', { name: 'Search everything', exact: true });
-    await input.fill(query); await expect(found(page)).toHaveAttribute('aria-busy', 'false');
+    await input.fill(query);
+    if (type !== 'all') await page.getByRole('combobox', { name: 'Result type', exact: true }).selectOption(type);
+    await expect(found(page)).toHaveAttribute('aria-busy', 'false');
     return input;
   };
   const result = (page: Page) => found(page).locator('[data-recovery-draft-key]');
@@ -1810,7 +1869,7 @@ test.describe('Keep and find unfinished mail', () => {
     await page.evaluate(() => { document.documentElement.dataset.mailReadBlocked = '1'; }); await page.getByRole('button', { name: 'Close', exact: true }).click(); await later(page).click();
     await expect(leave(page).getByRole('alert')).toContainText('could not be confirmed');
     await page.evaluate(() => { document.documentElement.dataset.mailReadBlocked = '0'; }); await later(page).click(); await expect(dialog(page)).toHaveCount(0);
-    await page.evaluate(() => { document.documentElement.dataset.mailReadBlocked = '1'; }); await search(page, 'Kestrel');
+    await page.evaluate(() => { document.documentElement.dataset.mailReadBlocked = '1'; }); await search(page, 'Kestrel', 'draft');
     await expect(found(page).getByRole('alert')).toContainText('Email recovery copies could not be read');
     await page.evaluate(() => { document.documentElement.dataset.mailReadBlocked = '0'; }); await found(page).getByRole('button', { name: 'Refresh drafts', exact: true }).click();
     await result(page).click(); await expect(field(page, 'body')).toHaveValue('Kestrel latest blocked details.'); expect(await page.evaluate(() => window.__mailCompose.executions)).toEqual([]);

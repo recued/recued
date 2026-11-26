@@ -31,6 +31,17 @@ it('keeps uncertain actions blocked until an actual read, even after metadata ar
   expect(cache.resolve('owner', url)?.page).toBe(page);
 });
 
+it('looks up a requested route afresh after the same document changes fragments', () => {
+  const cache = createBrowserContinuations(), page = 'bridge:A:7:ROOT';
+  const overview = 'https://example.org/app/#/overview';
+  const detail = 'https://example.org/app/#/detail';
+  cache.observe('owner', { page, url: overview });
+  expect(cache.resolve('owner', detail)).toBeUndefined();
+  cache.observe('owner', { page, url: detail });
+  expect(cache.resolve('owner', overview)).toBeUndefined();
+  expect(cache.resolve('owner', detail)).toEqual({ page, url: detail, moved: false });
+});
+
 it('continues a read on the navigated document and rejects URL/ref batches before an earlier fill', async () => {
   const url = 'https://example.org/app/';
   const dispatch = vi.fn(async (request: DispatchRequest): Promise<DispatchOutcome> => ({

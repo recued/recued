@@ -173,7 +173,10 @@ export const mountPermissionRegressionPanel = (options: { host: HTMLElement; con
       }
     };
     const openSections = new Set([...root.querySelectorAll<HTMLDetailsElement>('details[open]')].map(item => item.querySelector('summary')?.textContent));
-    root.replaceChildren(); node('h3', root, 'Permission tests and reviewed grants');
+    root.replaceChildren();
+    const heading = node('h3', root, 'Permission tests and reviewed grants');
+    heading.dataset.permissionFocus = 'permission-heading';
+    heading.tabIndex = -1;
     node('p', root, 'Check a proposed grant change against saved examples, then review the exact revision before applying it. Ordinary grant controls remain available.');
     const status = node('p', root, message); status.dataset.permissionMessage = ''; status.dataset.permissionFocus = 'permission-message'; status.tabIndex = -1; status.setAttribute('role', 'status');
     const alert = node('p', root, error); alert.setAttribute('role', 'alert');
@@ -264,5 +267,6 @@ export const mountPermissionRegressionPanel = (options: { host: HTMLElement; con
   const loaded = refresh();
   const expiryTimer = setInterval(gates, 2_000);
   return { whenLoaded: () => loaded, hasInFlightWork: () => busy, hasUnsavedChanges: () => dirty || builderDirty,
+    focusHeading: () => root.querySelector<HTMLElement>('[data-permission-focus="permission-heading"]')?.focus(),
     dispose() { disposed = true; clearInterval(expiryTimer); root.remove(); } };
 };

@@ -45,6 +45,7 @@ export interface ProjectOverviewProps {
   time_zone?: string;
   stale?: boolean;
   source_incomplete?: boolean;
+  desktop_workspace?: boolean;
   close_label?: string;
   history_html?: string;
 }
@@ -103,32 +104,48 @@ const section = (kind: ProjectWorkKind, state: ProjectWorkSection, canCreate: bo
 export const renderProjectOverview = (props: ProjectOverviewProps): string => {
   const { project, sections } = props;
   const open = sections.task.open_tasks;
-  return `<article class="project-overview" data-kind="project" data-project-id="${e(project.id)}" data-project-overview="${e(project.id)}">
-    <header class="project-overview-header">
-      <button type="button" data-action="close-work-entity-dialog" data-project-focus="back">${e(props.close_label ?? 'Back to projects')}</button>
-      ${props.can_edit ? '<button type="button" data-action="project-edit" data-project-focus="edit">Edit project</button>' : ''}
-    </header>
-    <div class="project-overview-summary"><div class="project-overview-status"><span class="project-state">${e(states[project.state])}</span><span class="project-work-meta">${e(props.source_label)}</span>
-      ${props.stale || project.sync_state === 'stale_unreachable' ? '<span class="project-work-meta">May be out of date</span>' : ''}${props.source_incomplete ? '<span class="project-work-meta">Source partly synced</span>' : ''}${project.pending_write ? '<span class="project-work-meta">Waiting for source confirmation</span>' : ''}</div>
-      <h2 class="project-overview-title" tabindex="-1" data-project-focus="heading">${e(project.title)}</h2>
-      ${project.description ? `<p class="project-overview-description">${e(project.description)}</p>` : ''}
-      <div class="project-overview-facts">${project.target_completion_at !== undefined ? `<span>Target ${e(date(project.target_completion_at))}</span>` : '<span>No target date</span>'}
-        ${open !== undefined && sections.task.total !== undefined ? `<span>${props.search_query ? 'Matching tasks: ' : ''}${open} open · ${(sections.task.total_tasks ?? sections.task.total) - open} completed tasks</span>` : ''}</div>
-      ${sections.task.error && sections.task.total !== undefined ? '<p class="project-work-hint">Task counts are from the last successful read.</p>' : ''}
-      <p class="project-work-hint">Linked tasks, notes and blocking commitments saved on this server. Only explicit project links are included.</p>
-    </div>
-    ${renderProjectCommunication(props.communication, props.task_busy)}
-    ${renderProjectAttention(props.attention, props.task_busy)}
-    <form class="project-work-search" role="search" aria-label="Search this project" data-project-search-form>
+  const back = `<button type="button" data-action="close-work-entity-dialog" data-project-focus="back">${e(props.close_label ?? 'Back to projects')}</button>`;
+  const edit = props.can_edit ? '<button type="button" data-action="project-edit" data-project-focus="edit">Edit project</button>' : '';
+  const status = `<div class="project-overview-status"><span class="project-state">${e(states[project.state])}</span><span class="project-work-meta">${e(props.source_label)}</span>
+    ${props.stale || project.sync_state === 'stale_unreachable' ? '<span class="project-work-meta">May be out of date</span>' : ''}${props.source_incomplete ? '<span class="project-work-meta">Source partly synced</span>' : ''}${project.pending_write ? '<span class="project-work-meta">Waiting for source confirmation</span>' : ''}</div>`;
+  const title = `<h2 class="project-overview-title" tabindex="-1" data-project-focus="heading">${e(project.title)}</h2>`;
+  const description = project.description ? `<p class="project-overview-description">${e(project.description)}</p>` : '';
+  const facts = `<div class="project-overview-facts">${project.target_completion_at !== undefined ? `<span>Target ${e(date(project.target_completion_at))}</span>` : '<span>No target date</span>'}
+    ${open !== undefined && sections.task.total !== undefined ? `<span>${props.search_query ? 'Matching tasks: ' : ''}${open} open · ${(sections.task.total_tasks ?? sections.task.total) - open} completed tasks</span>` : ''}</div>`;
+  const countsNotice = sections.task.error && sections.task.total !== undefined ? '<p class="project-work-hint">Task counts are from the last successful read.</p>' : '';
+  const communication = renderProjectCommunication(props.communication, props.task_busy);
+  const attention = renderProjectAttention(props.attention, props.task_busy);
+  const search = `<form class="project-work-search" role="search" aria-label="Search this project" data-project-search-form>
       <label>Search this project <input type="search" data-project-search-input data-project-focus="search" maxlength="200" value="${e(props.search_draft ?? props.search_query ?? '')}" placeholder="Task titles, note text or commitments" aria-describedby="project-search-status"${props.task_busy ? ' disabled' : ''}></label>
       <div class="project-work-actions"><button type="submit" data-project-focus="search-submit"${props.task_busy ? ' disabled' : ''}>Search project</button>
         ${props.search_query || props.search_draft ? `<button type="button" data-action="project-work-search-clear" data-project-focus="search-clear"${props.task_busy ? ' disabled' : ''}>Clear search</button>` : ''}</div>
       <p class="project-work-hint" id="project-search-status" role="status">${props.search_query ? `Results for “${e(props.search_query)}” in this project’s saved tasks, notes and commitments.` : 'Search all linked tasks, notes and commitments saved on this server.'}</p>
       ${props.search_error ? `<p role="alert">${e(props.search_error)}</p>` : ''}
-    </form>
-    <div class="project-overview-work">${section('commitment', sections.commitment, props.can_create_commitment === true, props)}
-      ${section('task', sections.task, props.can_create_task, props)}
-      ${section('note', sections.note, props.can_create_note, props)}</div>
+    </form>`;
+  const tasks = section('task', sections.task, props.can_create_task, props);
+  const notes = section('note', sections.note, props.can_create_note, props);
+  const commitments = section('commitment', sections.commitment, props.can_create_commitment === true, props);
+  return `<article class="project-overview${props.desktop_workspace ? ' project-overview--desktop' : ''}" data-kind="project" data-project-id="${e(project.id)}" data-project-overview="${e(project.id)}">
+    ${props.desktop_workspace ? `
+      <header class="project-overview-summary">
+        <div class="project-overview-identity">
+          <div class="project-overview-title-row">${back}${title}</div>
+          <div class="project-overview-metadata">${status}${facts}</div>
+          ${description}${countsNotice}
+        </div>
+        ${edit || communication ? `<div class="project-overview-actions">${edit}${communication}</div>` : ''}
+      </header>
+      <div class="project-workspace-columns">
+        <div class="project-workspace-main">${search}${tasks}</div>
+        <aside class="project-workspace-status" aria-label="Project status">${attention}${commitments}</aside>
+      </div>
+      ${notes}` : `
+      <header class="project-overview-header">${back}${edit}</header>
+      <div class="project-overview-summary">${status}${title}${description}${facts}${countsNotice}
+        <p class="project-work-hint">Linked tasks, notes and blocking commitments saved on this server. Only explicit project links are included.</p>
+      </div>
+      ${communication}${attention}${search}
+      <div class="project-overview-work">${commitments}${tasks}${notes}</div>`}
     ${props.history_html ?? ''}
   </article>`;
 };
@@ -194,4 +211,45 @@ ${PROJECT_ATTENTION_STYLES}
 .project-work-section > button { align-self:flex-start; }
 .project-work-error { margin:0; font-size:.875rem; color:var(--danger); }
 .project-work-refreshing { position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip-path:inset(50%); white-space:nowrap; }
+
+.project-overview--desktop { gap:var(--wc-space-lg,24px); }
+.project-overview--desktop > .project-overview-summary {
+  display:grid; grid-template-columns:minmax(0,1fr) fit-content(48%); align-items:start;
+  gap:var(--wc-space-md,16px); padding:var(--wc-space-md,16px); border-radius:var(--wc-radius,9px);
+}
+.project-overview-identity { display:grid; gap:var(--wc-space-sm,8px); min-width:0; }
+.project-overview-title-row, .project-overview-metadata {
+  display:flex; flex-wrap:wrap; align-items:center; gap:var(--wc-space-sm,8px) var(--wc-space-md,16px);
+}
+.project-overview-title-row .project-overview-title { flex:1 1 12rem; min-width:0; }
+.project-overview-metadata .project-overview-facts { gap:.25rem .75rem; }
+.project-overview-actions { display:flex; flex-wrap:wrap; justify-content:flex-end; align-items:start; gap:.5rem; min-width:0; }
+.project-overview-actions [data-project-communication], .project-overview-actions .project-work-search label { min-width:0; }
+.project-overview-actions .project-work-actions { justify-content:flex-end; }
+.project-overview-actions select { min-width:0; }
+.project-overview--desktop button { min-height:var(--wc-control-h,40px); }
+.project-workspace-columns {
+  display:grid; grid-template-columns:minmax(0,1fr) minmax(15rem,36%); align-items:start;
+  gap:var(--wc-space-lg,24px);
+}
+.project-workspace-main, .project-workspace-status { display:grid; align-content:start; gap:var(--wc-space-md,16px); min-width:0; }
+.project-workspace-main > .project-work-search {
+  grid-template-columns:minmax(0,1fr) auto; align-items:end; gap:.375rem .5rem; padding:0; border:0;
+}
+.project-workspace-main .project-work-search label { min-width:0; }
+.project-workspace-main .project-work-search input { min-height:var(--wc-control-h,40px); }
+.project-workspace-main .project-work-search p { grid-column:1 / -1; margin:0; }
+.project-workspace-main .project-task-row { display:grid; grid-template-columns:minmax(0,1fr) auto; align-items:center; }
+.project-workspace-main .project-task-control { padding:0 .75rem 0 .25rem; }
+.project-workspace-main .project-task-row:has(.project-task-control > span) > * { grid-column:1 / -1; }
+.project-workspace-main .project-task-row:has(.project-task-control > span) .project-task-control { padding:0 .75rem .75rem; }
+.project-workspace-status > .project-work-section {
+  padding:var(--wc-space-md,16px); border:1px solid var(--border); border-radius:var(--wc-radius,9px); background:var(--surface);
+}
+.project-workspace-status .project-work-actions { margin-inline-start:0; }
+.project-workspace-status .project-attention .project-work-head > .project-work-actions {
+  display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,8rem),1fr)); width:100%;
+}
+.project-workspace-status .project-attention .project-work-head > .project-work-actions button { padding-inline:8px; font-size:13px; }
+.project-workspace-status .project-attention-counts { display:grid; grid-template-columns:minmax(0,1fr); gap:.375rem; }
 `;

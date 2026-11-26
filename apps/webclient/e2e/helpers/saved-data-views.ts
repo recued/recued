@@ -1,7 +1,7 @@
 import { expect, type Page } from '@playwright/test';
 
-/** The main list starts expanded; an addressed view keeps its secondary list
- * folded. Open it only when needed so a management journey works from either. */
+/** The library starts expanded. Open the disclosure or desktop switcher
+ * when following a view link from the reader. */
 export const openSavedViewList = async (page: Page): Promise<void> => {
   const list = page.locator('[data-saved-data-views] details').first();
   await expect(list).toBeVisible();

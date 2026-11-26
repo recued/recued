@@ -40,6 +40,7 @@ import {
   type IntakeFormVisitorFieldRequirement,
   type VisitorReceipt,
 } from '@recued/contracts';
+import { RECEPTION_PAGE_STYLE_SRC } from '../static-assets.js';
 import {
   htmlEscape,
   renderReceptionOutputBlocks,
@@ -87,7 +88,7 @@ export interface IntakeFormRenderInput {
    *  interpolated display name — so the renderer emits it verbatim. */
   readonly trust_footer?: string | null;
   /** Does the recipe bound to this form run AI on what the visitor submits?
-   *  `true` renders the AI notice immediately above the submit button.
+   *  `true` renders the AI notice with the submit button.
    *
    *  🔑 THE NOTICE SITS ON THE FORM, AT ENTRANCE, AND THAT PLACEMENT IS THE
    *  POINT. It is the earliest moment in the flow, so it also covers what the
@@ -105,7 +106,7 @@ export interface IntakeFormRenderInput {
 // Common shell
 // ────────────────────────────────────────────────────────────────
 
-const renderHead = (title: string): string => `<!DOCTYPE html>
+const renderHead = (title: string, stylesheet = `${RECEPTION_PAGE_STATIC_PATH_PREFIX}style.css`): string => `<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -114,7 +115,7 @@ const renderHead = (title: string): string => `<!DOCTYPE html>
 <meta name="robots" content="noindex,nofollow">
 <title>${htmlEscape(title)}</title>
 <link rel="icon" href="${RECEPTION_PAGE_STATIC_PATH_PREFIX}favicon.ico">
-<link rel="stylesheet" href="${RECEPTION_PAGE_STATIC_PATH_PREFIX}style.css">
+<link rel="stylesheet" href="${htmlEscape(stylesheet)}">
 </head>`;
 
 /** D-149 P12 § A.20.7 — `trust_footer` comes from `buildTrustFooter`
@@ -143,7 +144,7 @@ const renderFooter = (trust_footer?: string | null): string => {
  *  how a disclosure surface ends up switched off. */
 const renderAiNotice = (uses_ai?: boolean): string =>
   uses_ai === true
-    ? '<p class="rcp-ai-notice">This form uses AI to process what you send.</p>\n'
+    ? '<p class="rcp-ai-notice" id="rcp-intake-ai-notice">This form uses AI to process what you send.</p>\n'
     : '';
 
 // ────────────────────────────────────────────────────────────────
@@ -309,6 +310,34 @@ const renderHoneypotFields = (names: ReadonlyArray<string>): string => {
     .join('\n');
 };
 
+const singleLineFieldTypes = new Set<IntakeFormConfigField['type']>(['text', 'number', 'date', 'datetime', 'enum']);
+
+const renderFieldRows = (input: IntakeFormRenderInput): string => {
+  const fields = input.fields
+    .filter(field => !input.honeypot_fields.includes(field.name))
+    .map(field => ({
+      singleLine: singleLineFieldTypes.has(field.type),
+      html: renderField(field, input.field_descriptions?.[field.name] ?? ''),
+    }));
+  if (input.visitor_email_requirement !== 'omit') {
+    fields.unshift({ singleLine: true, html: renderEmailField(input.visitor_email_requirement) });
+  }
+
+  // Pair adjacent fields in source order. A long field ends the run.
+  const rows: string[] = [];
+  for (let index = 0; index < fields.length; index++) {
+    const current = fields[index]!;
+    const next = fields[index + 1];
+    if (current.singleLine && next?.singleLine) {
+      rows.push(`<div class="rcp-intake-field-pair">\n${current.html}\n${next.html}\n</div>`);
+      index++;
+    } else {
+      rows.push(current.html);
+    }
+  }
+  return rows.join('\n');
+};
+
 // ────────────────────────────────────────────────────────────────
 // Main render
 // ────────────────────────────────────────────────────────────────
@@ -335,17 +364,11 @@ export const renderIntakeFormHtml = (input: IntakeFormRenderInput): string => {
     input.instructions && input.instructions.length > 0
       ? `<p class="rcp-tagline">${htmlEscape(input.instructions)}</p>`
       : '';
-  const visibleFields = input.fields
-    .filter((f) => !input.honeypot_fields.includes(f.name))
-    .map((f) =>
-      renderField(f, input.field_descriptions?.[f.name] ?? ''),
-    )
-    .join('\n');
-  const honeypotBlock = renderHoneypotFields(input.honeypot_fields);
-  const emailBlock = renderEmailField(input.visitor_email_requirement);
-  return `${renderHead(`Send ${input.display_name} a message`)}
+  const aiNotice = renderAiNotice(input.uses_ai);
+  const submitDescription = aiNotice ? ' aria-describedby="rcp-intake-ai-notice"' : '';
+  return `${renderHead(`Send ${input.display_name} a message`, RECEPTION_PAGE_STYLE_SRC)}
 <body>
-<div class="rcp-shell">
+<div class="rcp-shell rcp-intake-shell">
 <div class="rcp-card">
 <div class="rcp-header">
 <div>
@@ -353,12 +376,13 @@ export const renderIntakeFormHtml = (input: IntakeFormRenderInput): string => {
 ${instructionsBlock}
 </div>
 </div>
-<form class="rcp-form" method="POST" action="/reception/intake/${htmlEscape(input.endpoint_id)}?t=${encodeURIComponent(input.bearer_secret)}">
+<form class="rcp-form rcp-intake-form" method="POST" action="/reception/intake/${htmlEscape(input.endpoint_id)}?t=${encodeURIComponent(input.bearer_secret)}">
 <input type="hidden" name="form_nonce" value="${htmlEscape(input.form_nonce)}">
-${honeypotBlock}
-${emailBlock}
-${visibleFields}
-${renderAiNotice(input.uses_ai)}<button type="submit" class="rcp-button rcp-button-primary">${htmlEscape(input.submit_button_label)}</button>
+${renderHoneypotFields(input.honeypot_fields)}
+${renderFieldRows(input)}
+<div class="rcp-intake-actions">
+${aiNotice}<button type="submit" class="rcp-button rcp-button-primary"${submitDescription}>${htmlEscape(input.submit_button_label)}</button>
+</div>
 </form>
 ${renderFooter(input.trust_footer ?? null)}
 </div>
@@ -408,7 +432,7 @@ export const renderIntakeFormSuccessHtml = (input: {
 ${renderedBlocks}
 </div>`
     : '';
-  return `${renderHead(`Submission received — ${input.display_name}`)}
+  return `${renderHead(`Submission received — ${input.display_name}`, RECEPTION_PAGE_STYLE_SRC)}
 <body>
 <div class="rcp-shell">
 <div class="rcp-card">

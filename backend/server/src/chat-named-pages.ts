@@ -16,9 +16,9 @@ export const NAMED_PAGES_MAX = 3;
 
 /** What a turn that opens holding them is told. ⚠ Model-facing string — see
  *  `chat-prompt-optimization-log.md`. */
-export const NAMED_PAGES_NOTE = 'The pages this request names by address were read for it before this round, with Inspect a '
-  + 'web page: they come first in prior_tool_calls. Answer from them, or go on by their handles and refs, without reading '
-  + 'them again from the top.';
+export const NAMED_PAGES_NOTE = 'The web addresses in this request were checked before this round with Inspect a web page. '
+  + 'Use the opening results in prior_tool_calls. For browser_tab_choices, inspect the returned handles to identify the intended tab. '
+  + 'For a usable read, continue from its page handle and refs.';
 
 const count = (text: string, char: string): number => text.split(char).length - 1;
 

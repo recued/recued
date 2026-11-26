@@ -735,12 +735,67 @@ test('Overview includes prompt attention and failures, and Coming up sorts promp
   const picker = page.getByRole('combobox', { name: 'Show only one Recipe' });
   await picker.fill('fixture-later');
   await page.getByRole('option', { name: 'fixture-later', exact: true }).click();
-  await expect(coming.getByRole('link')).toHaveText(['fixture-later']);
+  await expect(coming.locator('.automation-coming-up-name')).toHaveText(['fixture-later']);
+  await expect(coming.getByRole('link')).toHaveAttribute('href', '#recipes/fixture-later');
   await expect(page.getByRole('tab', { name: /^Coming up\s+1$/ })).toBeVisible();
   await page.getByRole('tab', { name: /^Overview/ }).click();
   await expect(prompts).toHaveCount(0);
   await page.getByRole('button', { name: 'Clear selection' }).click();
   await expect(prompts.getByRole('article', { name: 'Finished one-off' })).toBeVisible();
+});
+
+test.describe('Desktop Coming up in the viewer time zone', () => {
+  test.use({ timezoneId: 'America/Los_Angeles', locale: 'en-US' });
+
+  test('groups mixed runs across local midnight and updates the relative day headings', async ({ context, page }) => {
+    await page.setViewportSize({ width: 1280, height: 720 });
+    await page.clock.install({ time: new Date('2026-03-08T07:48:00Z') });
+    const beforeMidnight = Date.parse('2026-03-08T07:59:00Z');
+    const firstAfter = Date.parse('2026-03-08T08:00:00Z');
+    const secondAfter = Date.parse('2026-03-08T08:01:00Z');
+    const afterClockChange = Date.parse('2026-03-09T07:15:00Z');
+    const base = manualScheduleFixture('coming-up-agenda');
+    const prompts = [
+      { ...base, schedule_id: 'second', title: 'Second midnight prompt', next_run_at: secondAfter },
+      { ...base, schedule_id: 'monday', title: 'Monday prompt', next_run_at: afterClockChange },
+      { ...base, schedule_id: 'first', title: 'First midnight prompt', next_run_at: firstAfter },
+    ];
+    const { recipe } = overviewFixtures();
+    await context.route('**/prompt-rpc', async route => {
+      const { method } = route.request().postDataJSON();
+      const result = method === 'chat.schedules.list' ? prompts
+        : method === 'schedules.list' ? { schedules: [{ ...recipe, next_run_at: beforeMidnight }] }
+        : method === 'recipe.list' ? { recipes: [] } : {};
+      await route.fulfill({ json: { result } });
+    });
+    await page.goto('/prompt-harness.html?automation');
+    await page.getByRole('tab', { name: /^Coming up\s+4$/ }).click();
+    const agenda = page.locator('[data-recued-automation-coming-up]');
+    const today = agenda.getByRole('region', { name: 'Today', exact: true });
+    const tomorrow = agenda.getByRole('region', { name: 'Tomorrow', exact: true });
+    const recipeLink = agenda.getByRole('link', { name: 'Open recipe for fixture-later', exact: true });
+    await expect(recipeLink).toHaveAttribute('href', '#recipes/fixture-later');
+    await expect(today.locator('time')).toHaveAttribute('datetime', new Date(beforeMidnight).toISOString());
+    await expect(today.locator('time')).toContainText('11:59');
+    await expect(tomorrow.locator('.automation-coming-up-name')).toHaveText(['First midnight prompt', 'Second midnight prompt']);
+    await expect(tomorrow.locator('time').first()).toHaveAttribute('datetime', new Date(firstAfter).toISOString());
+    await expect(tomorrow.locator('time').first()).toContainText('12:00');
+    await expect(agenda.getByRole('region', { name: /Monday/ })).toContainText('Monday prompt');
+
+    await recipeLink.focus();
+    await page.clock.fastForward(12 * 60_000 + 1_000);
+    await expect(today.locator('.automation-coming-up-name')).toHaveText(['First midnight prompt', 'Second midnight prompt']);
+    await expect(tomorrow.locator('time')).toHaveAttribute('datetime', new Date(afterClockChange).toISOString());
+    await expect(agenda.getByRole('region', { name: /Saturday/ })).toContainText('fixture-later');
+    await expect(recipeLink).toBeFocused();
+
+    await page.setViewportSize({ width: 390, height: 844 });
+    await expect(agenda.getByRole('region')).toHaveCount(0);
+    await expect(agenda.locator('.automation-coming-up-name')).toHaveText([
+      'fixture-later', 'First midnight prompt', 'Second midnight prompt', 'Monday prompt',
+    ]);
+    await expect(agenda.getByRole('link', { name: 'fixture-later', exact: true })).toBeFocused();
+  });
 });
 
 test('Coming up reports pending and failed prompt reads and ignores an older list reply after recovery', async ({ context, page }) => {

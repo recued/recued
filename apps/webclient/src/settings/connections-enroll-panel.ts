@@ -216,6 +216,8 @@ import {
 import type { BroadcastSubscriber } from '../realtime/subscriber.js';
 import { classifyRpcError, humanizeRpcError } from '../shell/rpc-error-copy.js';
 import { serializeShellRoute } from '../shell/route.js';
+import { focusListTarget, readListScroll, restoreListScroll, type ListScrollPosition } from '../shell/list-preview-continuity.js';
+import type { ConnectionInventorySelection } from '../connections/connections-navigation.js';
 import type {
   CredentialRotationContinuityStore,
 } from '../connections/credential-rotation-continuity.js';
@@ -539,6 +541,12 @@ export interface VendorOAuthBrowserEnv {
 }
 
 export interface MountConnectionsEnrollPanelOptions {
+  inventoryWorkspace?: {
+    scrollRoot: HTMLElement;
+    initialSelection?: ConnectionInventorySelection;
+    onSelect(selection: ConnectionInventorySelection | null): void;
+    backToInventory(): boolean;
+  };
   onManageOAuthApps?(): void;
   /** Host element the page renders into — replaced on every structural
    *  re-render, cleared on `dispose()`. */
@@ -736,7 +744,8 @@ export interface MountConnectionsEnrollPanelOptions {
   /** D-322 — service metadata comes from this current pack row, not a route URL. */
   initialPack?: import('../connections/connections-navigation.js').ConnectionEnrollmentPack;
   /** D-322 §24 — exact named account to review after the authoritative first list. */
-  initialConnectionAccessReview?: { name: string };
+  initialConnectionAccessReview?: { name: string; reviewOnly?: boolean };
+  onAccessReviewRetired?: () => void;
   initialFileAuthenticationSwitch?: { name: string };
   initialPermissionRepair?: ConnectionPermissionRepair;
   permissionRepairUnavailable?: boolean;
@@ -754,6 +763,7 @@ export interface ConnectionsEnrollPanelMount {
   refresh(): Promise<void>;
   /** D-322 §22 — broker usage opens the current saved row, respecting an existing draft. */
   openConnection(kind: ConnectionKind, name: string, expectedUpdatedAt?: number): Promise<boolean>;
+  selectInventoryConnection(selection: ConnectionInventorySelection | null): boolean;
   /** Initial / most-recent load promise — resolves after the list settles. */
   whenLoaded(): Promise<void>;
   /** Refreshes presentation-only profile names after Account re-reads its
@@ -786,6 +796,8 @@ export interface ConnectionsEnrollPanelMount {
 
 /** The `data-action` strings this host handles. */
 type ConnectionsEnrollAction =
+  | 'connections-open-detail'
+  | 'connections-close-detail'
   | 'connections-review-direct-authentication'
   | 'connections-manage-authentication'
   | 'connections-choose-auth'
@@ -1573,8 +1585,21 @@ export const mountConnectionsEnrollPanel = (
     );
   }
 
-  const { host } = opts;
+  const { host, inventoryWorkspace } = opts;
   const state: ConnectionsPageState = initialConnectionsPageState();
+  const desktopInventory = inventoryWorkspace
+    ? doc.defaultView?.matchMedia?.('(min-width: 1280px) and (hover: hover) and (pointer: fine)')
+    : undefined;
+  let inventorySelection = inventoryWorkspace?.initialSelection ?? null;
+  const inventoryProbes = new Map<string, {
+    revision: ConnectionView['updated_at'];
+    result: NonNullable<ConnectionsDialogState['recentProbe']>;
+  }>();
+  const inventoryRows = () => inventoryWorkspace ? host.querySelector?.<HTMLElement>('[data-connection-roster-rows]') : null;
+  const inventoryDetail = () => inventoryWorkspace ? host.querySelector?.<HTMLElement>('[data-connection-inventory-detail]') : null;
+  const inventoryHeading = () => host.querySelector?.<HTMLElement>('[data-connection-detail-heading]');
+  let inventoryRowsScroll: ListScrollPosition | undefined;
+  let inventoryPageScroll: ListScrollPosition | undefined;
   let filePreparationGeneration: number | undefined;
   const fileDownloadPicker = createFileDownloadPicker({ document:doc, changed:() => render(),
     call:request => { if (!opts.runManagedOAuth) return Promise.reject(new Error('File verification is unavailable.')); return opts.runManagedOAuth(request); } });
@@ -1637,6 +1662,7 @@ export const mountConnectionsEnrollPanel = (
   // navigation bumps it mid-flight, the completion is stale and must not
   // reset / clobber the newer dialog the user has moved on to.
   let dialogGen = 0;
+  let initialAccessReviewOpened = false;
   let renderedDialogStage: string = state.dialog.stage;
   let pendingControlFocus: Record<string, string | undefined> | undefined;
   let returnControlFocus: Record<string, string | undefined> | undefined;
@@ -2010,10 +2036,22 @@ export const mountConnectionsEnrollPanel = (
 
   const render = (): void => {
     if (disposed) return;
+    const previousRows = inventoryRows();
+    const previousDetail = inventoryDetail();
+    if (previousRows) inventoryRowsScroll = readListScroll(previousRows);
+    if (inventoryWorkspace && (previousRows || previousDetail)) inventoryPageScroll = readListScroll(inventoryWorkspace.scrollRoot);
+    const detailKey = inventorySelection ? connectionRowKey(inventorySelection.kind, inventorySelection.name) : undefined;
+    const detailScroll = previousDetail && previousDetail.dataset.connectionInventoryDetail === detailKey
+      ? readListScroll(previousDetail) : undefined;
+    if (initialAccessReviewOpened && (state.dialog.stage === 'closed' || state.dialog.mode !== 'edit'
+      || state.dialog.kind !== 'api' || state.dialog.editingId !== connectionRowKey('api', opts.initialConnectionAccessReview!.name))) {
+      initialAccessReviewOpened = false; opts.onAccessReviewRetired?.();
+    }
     const activeControl = doc.activeElement as HTMLInputElement | null | undefined;
     const ownControl = activeControl && host.contains(activeControl)
       && (activeControl.dataset?.action || activeControl.dataset?.connField || activeControl.dataset?.connInventoryFilter
-        || activeControl.hasAttribute?.('data-connection-dialog-heading') || activeControl.hasAttribute?.('data-manage-authentication-heading'));
+        || activeControl.hasAttribute?.('data-connection-dialog-heading') || activeControl.hasAttribute?.('data-manage-authentication-heading')
+        || activeControl.hasAttribute?.('data-connection-detail-heading'));
     if (ownControl) pendingControlFocus = { ...activeControl.dataset };
     else if (activeControl && !['BODY', 'MAIN'].includes(activeControl.tagName)) pendingControlFocus = undefined;
     if (renderedDialogStage === 'closed' && ownControl && activeControl.dataset.action) returnControlFocus = { ...activeControl.dataset };
@@ -2061,6 +2099,9 @@ export const mountConnectionsEnrollPanel = (
         ? { postSafeStopProfileHandoff }
         : {}),
       ...(signInGrid.enabled ? { signInGrids: true } : {}),
+      ...(desktopInventory?.matches || inventorySelection ? { inventoryWorkspace: {
+        desktop: desktopInventory?.matches === true, selection: inventorySelection, probes: inventoryProbes,
+      } } : {}),
     });
     fileDownloadPicker.mount(host.querySelector<HTMLElement>('[data-file-download-picker-host]'));
     mountMcpPackInstallScopePicker();
@@ -2091,11 +2132,11 @@ export const mountConnectionsEnrollPanel = (
       host.querySelector(SUBMIT_SELECTOR)?.setAttribute('disabled', '');
     }
     const restore = (dataset: Record<string, string | undefined> | undefined) => dataset
-      ? [...host.querySelectorAll?.<HTMLElement>('[data-action],[data-conn-field],[data-conn-inventory-filter],[data-connection-dialog-heading],[data-manage-authentication-heading]') ?? []]
+      ? [...host.querySelectorAll?.<HTMLElement>('[data-action],[data-conn-field],[data-conn-inventory-filter],[data-connection-dialog-heading],[data-manage-authentication-heading],[data-connection-detail-heading]') ?? []]
         .find(node => Object.entries(dataset).every(([key, value]) => node.dataset[key] === value) && !node.hasAttribute('disabled')) : undefined;
     if (stageChanged) {
       if (state.dialog.stage !== 'closed') { const heading = host.querySelector<HTMLElement>('[data-connection-dialog-heading]'); heading?.focus(); heading?.scrollIntoView?.({ block: 'nearest' }); }
-      else (restore(returnControlFocus) ?? host.querySelector<HTMLElement>('[data-action="connections-open-add"]'))?.focus();
+      else (restore(returnControlFocus) ?? inventoryHeading() ?? host.querySelector<HTMLElement>('[data-action="connections-open-add"]'))?.focus();
       pendingControlFocus = undefined;
     } else {
       const replacement = restore(pendingControlFocus) as HTMLInputElement | undefined;
@@ -2106,6 +2147,41 @@ export const mountConnectionsEnrollPanel = (
         }
         pendingControlFocus = undefined;
       }
+    }
+    const nextRows = inventoryRows();
+    const nextDetail = inventoryDetail();
+    if (nextRows) restoreListScroll(nextRows, inventoryRowsScroll);
+    if (nextDetail) restoreListScroll(nextDetail, detailScroll);
+    if (inventoryWorkspace && (nextRows || nextDetail)) restoreListScroll(inventoryWorkspace.scrollRoot, inventoryPageScroll);
+  };
+
+  const canSelectInventory = (): boolean => Boolean(inventoryWorkspace) && !disposed
+    && state.dialog.stage === 'closed' && state.deleteConfirm === null && state.mcpPackReview === null && !fileDownloadPicker.active();
+
+  const selectInventoryConnection = (selection: ConnectionInventorySelection | null): boolean => {
+    if (!canSelectInventory() || (selection && !state.connections.some(row => row.kind === selection.kind && row.name === selection.name))) return false;
+    const previous = inventorySelection;
+    inventorySelection = selection;
+    render();
+    if (selection) focusListTarget(inventoryHeading());
+    else if (previous) {
+      const rows = inventoryRows();
+      const action = rows ? 'connections-open-detail' : 'connections-probe';
+      const row = [...host.querySelectorAll<HTMLElement>(`[data-action="${action}"]`)]
+        .find(node => node.dataset.kind === previous.kind && node.dataset.name === previous.name);
+      const target = row ?? host.querySelector<HTMLElement>('[data-conn-inventory-filter="query"], [data-action="connections-open-add"]');
+      focusListTarget(target);
+      if (!rows) target?.scrollIntoView?.({ block: 'nearest' });
+    }
+    return true;
+  };
+
+  const onDesktopInventoryChange = (): void => {
+    if (disposed) return;
+    const fromRoster = inventoryRows()?.contains(doc.activeElement);
+    render();
+    if (fromRoster && !desktopInventory?.matches) {
+      focusListTarget(inventoryHeading() ?? host.querySelector<HTMLElement>('[data-conn-inventory-filter="query"]'));
     }
   };
 
@@ -7700,20 +7776,26 @@ export const mountConnectionsEnrollPanel = (
   const probeRow = async (kind: ConnectionKind, name: string): Promise<void> => {
     const key = connectionRowKey(kind, name);
     if (state.probeInFlight.has(key)) return;
+    const row = state.connections.find(connection => connection.kind === kind && connection.name === name);
+    const inInventory = row && (desktopInventory?.matches || inventorySelection);
+    const report = (result: NonNullable<ConnectionsDialogState['recentProbe']>): void => {
+      if (inInventory) inventoryProbes.set(key, { revision: row?.updated_at, result });
+      else state.dialog.recentProbe = result;
+    };
     postSafeStopVerificationGeneration += 1;
     state.probeInFlight.add(key);
     render();
     try {
       const { health } = await opts.runProbe({ name, kind });
       if (disposed) return;
-      state.dialog.recentProbe = { kind, name, status: health.status,
+      report({ kind, name, status: health.status,
         ...(health.last_error ? { last_error: health.last_error } : {}),
-        ...(health.last_probed_at !== undefined ? { checked_at: health.last_probed_at } : {}) };
+        ...(health.last_probed_at !== undefined ? { checked_at: health.last_probed_at } : {}) });
     } catch (err) {
       if (disposed) return;
       // Surface as a non-ok/unknown recent-probe → the renderer styles it
       // with the error tone.
-      state.dialog.recentProbe = { kind, name, status: errMessage(err) };
+      report({ kind, name, status: errMessage(err) });
     } finally {
       if (!disposed) {
         state.probeInFlight.delete(key);
@@ -8988,6 +9070,16 @@ export const mountConnectionsEnrollPanel = (
 
   // ── Action handlers ───────────────────────────────────────────
   const handlers: ActionHandlers<ConnectionsEnrollAction> = {
+    'connections-open-detail': ({ kind, name }) => {
+      const connectionKind = asKind(kind);
+      if (connectionKind === null || !name || !desktopInventory?.matches) return;
+      const selection = { kind: connectionKind, name };
+      if (selectInventoryConnection(selection)) inventoryWorkspace?.onSelect(selection);
+    },
+    'connections-close-detail': () => {
+      if (!canSelectInventory() || !inventorySelection || inventoryWorkspace?.backToInventory()) return;
+      if (selectInventoryConnection(null)) inventoryWorkspace?.onSelect(null);
+    },
     'connections-retry-inventory': (_dataset, _event, element) => {
       if (disposed || state.loading || !state.error || state.dialog.stage !== 'closed' || hasInFlightWork()) return;
       const reclaim = doc.activeElement === element;
@@ -9752,6 +9844,8 @@ export const mountConnectionsEnrollPanel = (
     const filter = target.closest?.('[data-conn-inventory-filter]') as FieldElement | null;
     if (filter?.dataset.connInventoryFilter && host.contains(filter)) {
       if ((filter.tagName === 'SELECT' ? 'change' : 'input') !== event.type) return;
+      const rows = inventoryRows();
+      if (rows) rows.scrollTop = 0;
       state.inventoryFilters = { ...state.inventoryFilters, [filter.dataset.connInventoryFilter]: filter.value ?? '' }; render(); return;
     }
     const guideUrlEl = (
@@ -10077,6 +10171,7 @@ export const mountConnectionsEnrollPanel = (
   });
   host.addEventListener('input', onFieldEvent);
   host.addEventListener('change', onFieldEvent);
+  desktopInventory?.addEventListener?.('change', onDesktopInventoryChange);
   credentialRotationTabUnsub =
     opts.credentialRotationTabConvergence?.subscribe((hint) => {
       void reconcileCredentialRotationTabs(hint);
@@ -10212,9 +10307,10 @@ export const mountConnectionsEnrollPanel = (
         render(); return;
       }
       openEditConnection('api', name);
+      initialAccessReviewOpened = true;
       render();
       const row = state.connections.find(connection => connection.kind === 'api' && connection.name === name);
-      if (row && ['oauth2_refresh', 'managed_oauth'].includes(row.auth_type ?? '')) void beginAuthenticationSwitch('reauthorize').catch(error => {
+      if (!opts.initialConnectionAccessReview?.reviewOnly && row && ['oauth2_refresh', 'managed_oauth'].includes(row.auth_type ?? '')) void beginAuthenticationSwitch('reauthorize').catch(error => {
         if (!disposed) { state.dialog.error = errMessage(error); render(); }
       });
     });
@@ -10426,6 +10522,7 @@ export const mountConnectionsEnrollPanel = (
 
   return {
     getState: () => state,
+    selectInventoryConnection,
     openConnection: async (kind, name, expectedUpdatedAt) => {
       if (disposed) return false;
       if (hasInFlightWork()) throw new Error('Finish the current connection action before opening another connection.');
@@ -10543,6 +10640,7 @@ export const mountConnectionsEnrollPanel = (
       detachActions();
       host.removeEventListener('input', onFieldEvent);
       host.removeEventListener('change', onFieldEvent);
+      desktopInventory?.removeEventListener?.('change', onDesktopInventoryChange);
       host.innerHTML = '';
     },
   };

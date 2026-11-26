@@ -6,8 +6,7 @@ const openResult = async (page: Page, surface: Surface) => {
   if (surface === 'recipes') {
     await page.goto(`/full-app-harness.html?recipes=installed&recipe_default_run=1&${query}#recipes`);
     await page.waitForFunction(() => window.__app?.ready === true);
-    await page.locator('[data-recued-recipes-card="autorun-live-1"]')
-      .getByRole('button', { name: /Open .+ details/ }).click();
+    await page.locator('[data-recued-recipes-card="autorun-live-1"]').press('Enter');
     const root = page.locator('[data-recued-recipes-detail="autorun-live-1"]');
     await root.locator('[data-recued-recipes-action="run-defaults"]').click();
     await expect(root.locator('[data-recued-run-summary]')).toBeVisible();
@@ -27,12 +26,14 @@ const openResult = async (page: Page, surface: Surface) => {
 
 for (const surface of ['recipes', 'packs'] as const) {
   for (const width of [375, 1280]) {
-    test(`${surface} copies the run receipt by keyboard at ${width}px`, async ({ page, context }) => {
+    test(`${surface} copies the run receipt by keyboard at ${width}px`, async ({ page, context, browserName }) => {
       const errors: string[] = [];
       page.on('pageerror', error => errors.push(error.message));
       await page.setViewportSize({ width, height: 900 });
       const root = await openResult(page, surface);
-      await context.grantPermissions(['clipboard-read', 'clipboard-write'], { origin: new URL(page.url()).origin });
+      // WebKit uses the trusted key gesture to authorize the write.
+      const permissions = browserName === 'webkit' ? ['clipboard-read'] : ['clipboard-read', 'clipboard-write'];
+      await context.grantPermissions(permissions, { origin: new URL(page.url()).origin });
       const summary = root.locator('[data-recued-run-summary]');
       const copy = summary.getByRole('button', { name: 'Copy run summary', exact: true });
       await copy.focus();
@@ -56,13 +57,14 @@ for (const surface of ['recipes', 'packs'] as const) {
     });
   }
 
-  test(`${surface} offers manual selection when the clipboard is denied`, async ({ page }) => {
+  test(`${surface} offers manual selection when a keyboard copy is denied`, async ({ page }) => {
     await page.addInitScript(() => Object.defineProperty(navigator, 'clipboard', {
       configurable: true, value: { writeText: () => Promise.reject(new Error('private policy detail')) },
     }));
     const root = await openResult(page, surface);
     const summary = root.locator('[data-recued-run-summary]');
-    await summary.getByRole('button', { name: 'Copy run summary', exact: true }).click();
+    await summary.getByRole('button', { name: 'Copy run summary', exact: true }).focus();
+    await page.keyboard.press('Enter');
     const field = summary.getByRole('textbox', { name: 'Run summary text' });
     await expect(field).toBeVisible();
     await expect(field).toBeFocused();

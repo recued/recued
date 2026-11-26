@@ -258,7 +258,7 @@ describe('D-182 slice 3a — kernel op registry', () => {
       // D-335 slice AP — a file a page links to, kept among the owner's files.
       'core.dom.download|dom|dom-download|read',
       'core.dom.inspect|dom|dom-inspect|read',
-      'core.dom.open|dom|dom-open|write',
+      'core.dom.open|dom|dom-open|read',
       'core.dom.read|dom|dom-read|read',
       'core.dom.screenshot|dom|dom-screenshot|read',
       // D-335 slice U — a page scrolled a screen at a time.

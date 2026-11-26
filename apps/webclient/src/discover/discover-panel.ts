@@ -213,6 +213,8 @@ export interface MountDiscoverPanelOptions<Row> {
 }
 
 export interface DiscoverPanelMount {
+  /** Stable search and sort controls for the route that mounts this panel. */
+  readonly controls: HTMLElement;
   getState(): 'loading' | 'ready' | 'error' | 'empty';
   /** Identities of the cards on screen, in render order (pinned rows first). */
   getRenderedIdentities(): string[];
@@ -1204,6 +1206,7 @@ export const mountDiscoverPanel = <Row>(
   let loaded = opts.search === undefined ? load() : refetch(false);
 
   return {
+    controls,
     getState: () => state,
     getRenderedIdentities: () =>
       [...(view?.pinned ?? []), ...(view?.pageRows ?? [])].map(opts.identity),

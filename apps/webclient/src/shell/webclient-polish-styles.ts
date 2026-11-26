@@ -59,9 +59,8 @@ export const WEBCLIENT_POLISH_STYLES = `
   --wc-font-title: clamp(24px, 3vw, 28px);
   /* One content column width every workspace/list route shares so the
      column stops jumping (960/980/1040/1120) as you navigate. Each route
-     reads it via max-width: var(--wc-content-max, 1080px). The dedicated
-     Settings form page stays deliberately narrower (forms read poorly at
-     full width); Kitchen is owned by another workstream. */
+     reads it via max-width: var(--wc-content-max, 1080px). Settings keeps
+     a narrower form column inside the wide desktop frame. */
   --wc-content-max: 1160px;
   /* Keyboard focus: a gap in the surface colour, then 2px of accent. ⛔ It was
      the accent at 10% (1.14:1 on white), which a keyboard user lost track of.
@@ -1294,6 +1293,179 @@ export const WEBCLIENT_POLISH_STYLES = `
   [data-recued-webclient-shell] [data-recued-webclient-content] [data-recued-settings-route] .settings-shell { gap: var(--wc-space-md, 16px); }
   [data-recued-webclient-shell] [data-recued-webclient-content] [data-recued-settings-nav-item] { min-height: 44px; }
 }
+
+/* The wide desktop frame aligns the workspace pages below.
+   Settings keeps its existing 912px inner measure for the finder, rail and form. */
+@media (min-width: 1280px) and (hover: hover) and (pointer: fine) {
+  [data-recued-webclient-shell] [data-recued-webclient-content] :is(
+    [data-recued-discovery-surface]:has(> [id="recued-recipes-library-installed-panel"]),
+    [data-recued-settings-route],
+    [data-recued-logs-route],
+    [data-recued-packs-route],
+    [data-recued-automation-route]
+  ) {
+    box-sizing: border-box;
+    width: 100%;
+    max-width: var(--wc-content-max, 1160px);
+    margin-inline: auto;
+    padding: var(--wc-page-pad, 24px);
+  }
+  [data-recued-webclient-shell] [data-recued-webclient-content] [data-recued-discovery-surface]:has(> [id="recued-recipes-library-installed-panel"]) > :is(.discovery-tabbar, .discovery-back-to-chat) {
+    margin: 0 0 var(--wc-space-md, 16px);
+  }
+  [data-recued-webclient-shell] [data-recued-webclient-content] [data-recued-discovery-surface]:has(> [id="recued-recipes-library-installed-panel"]) :is([data-recued-recipes-route], [data-recued-discovery-discover]) {
+    padding: 0;
+  }
+  [data-recued-webclient-shell] [data-recued-webclient-content] [data-recued-settings-route] {
+    display: grid;
+    grid-template-columns: minmax(0, 912px);
+  }
+  /* WebKit can focus a native time field's segments without matching :focus-visible. */
+  [data-recued-webclient-shell] [data-recued-webclient-content] [data-recued-settings-route] input[type="time"]:focus:not(:focus-visible) {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
+  }
+
+  /* The library's title and actions share a row. List content and read notices
+     use the whole frame. Recipe detail keeps its own internal layout. */
+  [data-recued-webclient-shell] [data-recued-webclient-content] [data-recued-recipes-route]:has(> .recipes-header + .recipes-actions) {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: start;
+    column-gap: var(--wc-space-lg, 24px);
+  }
+  [data-recued-webclient-shell] [data-recued-webclient-content] [data-recued-recipes-route] > :not(.recipes-header, .recipes-actions) {
+    grid-column: 1 / -1;
+  }
+  [data-recued-webclient-shell] [data-recued-webclient-content] [data-recued-recipes-route] > .recipes-header {
+    grid-area: 1 / 1;
+    margin: 0;
+  }
+  [data-recued-webclient-shell] [data-recued-webclient-content] [data-recued-recipes-route] > .recipes-actions {
+    grid-area: 1 / 2;
+    justify-content: flex-end;
+    margin: 0 0 var(--wc-space-md, 16px);
+  }
+  [data-recued-webclient-shell] [data-recued-webclient-content] [data-recued-recipes-route] > .recipes-actions > :is(button, a) {
+    min-height: var(--wc-control-h, 40px);
+  }
+  [data-recued-webclient-shell] [data-recued-webclient-content] [data-recued-recipes-route] > .recipes-actions > [data-recued-recipes-kitchen-link] {
+    padding: 4px 12px;
+    border-radius: var(--wc-radius, 9px);
+    background: var(--accent);
+    color: var(--on-accent);
+    font-weight: 600;
+  }
+
+  [data-recued-webclient-shell] [data-recued-webclient-content] [data-recued-logs-route] > .logs-page-header {
+    display: grid;
+    grid-template-columns: max-content minmax(0, 1fr);
+    align-items: center;
+    gap: var(--wc-space-sm, 8px) var(--wc-space-md, 16px);
+    margin-bottom: var(--wc-space-md, 16px);
+  }
+  [data-recued-webclient-shell] [data-recued-webclient-content] .logs-page-header > :is(.logs-header, .logs-intro, .logs-view-nav) {
+    margin: 0;
+  }
+  [data-recued-webclient-shell] [data-recued-webclient-content] .logs-page-header > .logs-view-nav {
+    grid-area: 1 / 2;
+  }
+  [data-recued-webclient-shell] [data-recued-webclient-content] .logs-page-header > .logs-intro {
+    grid-area: 2 / 1 / 3 / -1;
+  }
+
+  [data-recued-webclient-shell] [data-recued-webclient-content] [data-recued-packs-route] .packs-surface-add {
+    margin-bottom: var(--wc-space-md, 16px);
+  }
+  [data-recued-webclient-shell] [data-recued-webclient-content] [data-recued-packs-route] .packs-surface-add-submit {
+    min-height: var(--wc-control-h, 40px);
+  }
+  [data-recued-webclient-shell] [data-recued-webclient-content] [data-recued-packs-route] .packs-catalogue-toolbar {
+    display: grid;
+    grid-template-columns: max-content minmax(0, 1fr);
+    align-items: center;
+    gap: var(--wc-space-sm, 8px);
+    padding: 10px;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    background: var(--surface);
+  }
+  [data-recued-webclient-shell] [data-recued-webclient-content] .packs-catalogue-toolbar > .packs-surface-installed-toggle {
+    margin: 0;
+    min-height: var(--wc-control-h, 40px);
+  }
+  [data-recued-webclient-shell] [data-recued-webclient-content] .packs-catalogue-toolbar > .discover-controls {
+    grid-area: 1 / 2;
+    padding: 0;
+    border: 0;
+    background: transparent;
+  }
+  [data-recued-webclient-shell] [data-recued-webclient-content] .packs-catalogue-toolbar > [data-recued-packs-surface-installed-only-error] {
+    grid-area: 2 / 1 / 3 / -1;
+    margin: 0;
+  }
+
+  [data-recued-webclient-shell] [data-recued-webclient-content] [data-recued-automation-route] > .automation-page-header {
+    display: grid;
+    grid-template-columns: max-content minmax(0, 1fr) auto;
+    align-items: center;
+    gap: var(--wc-space-sm, 8px) var(--wc-space-md, 16px);
+    margin-bottom: var(--wc-space-md, 16px);
+  }
+  [data-recued-webclient-shell] [data-recued-webclient-content] .automation-page-header :is(.automation-header, .automation-header > div) {
+    display: contents;
+  }
+  [data-recued-webclient-shell] [data-recued-webclient-content] .automation-page-header .automation-title {
+    grid-area: 1 / 1;
+  }
+  [data-recued-webclient-shell] [data-recued-webclient-content] .automation-page-header > .automation-subnav {
+    grid-area: 1 / 2;
+    justify-self: start;
+    margin: 0;
+  }
+  [data-recued-webclient-shell] [data-recued-webclient-content] .automation-page-header .automation-subnav-tab {
+    min-height: var(--wc-control-h, 40px);
+  }
+  [data-recued-webclient-shell] [data-recued-webclient-content] .automation-page-header .automation-header > a {
+    grid-area: 1 / 3;
+    display: inline-flex;
+    align-items: center;
+    justify-self: end;
+    min-height: var(--wc-control-h, 40px);
+    padding: 0 12px;
+    border: 1px solid var(--border);
+    border-radius: var(--wc-radius, 9px);
+    background: var(--surface);
+  }
+  [data-recued-webclient-shell] [data-recued-webclient-content] .automation-page-header .automation-subtitle {
+    grid-area: 2 / 1 / 3 / -1;
+    margin: 0;
+  }
+  [data-recued-webclient-shell] [data-recued-webclient-content] .automation-page-header > .automation-lock-banner {
+    grid-area: 3 / 1 / 4 / -1;
+    margin: 0;
+  }
+  [data-recued-webclient-shell] [data-recued-webclient-content] [data-recued-automation-route] .automation-filter {
+    gap: var(--wc-space-sm, 8px) var(--wc-space-md, 16px);
+    margin: 0 0 var(--wc-space-md, 16px);
+    padding: 10px;
+    border: 1px solid var(--border);
+    border-radius: var(--wc-radius-lg, 12px);
+    background: var(--surface);
+  }
+  [data-recued-webclient-shell] [data-recued-webclient-content] [data-recued-automation-route] .automation-filter > .ref-picker {
+    min-width: 0;
+    max-width: 520px;
+  }
+  [data-recued-webclient-shell] [data-recued-webclient-content] .automation-filter :is(.ref-picker-input, .automation-filter-select) {
+    min-height: var(--wc-control-h, 40px);
+  }
+  [data-recued-webclient-shell] [data-recued-webclient-content] .automation-filter .automation-filter-select {
+    inline-size: 160px;
+    padding: 6px 10px;
+  }
+}
+
 [data-recued-webclient-shell] [data-recued-webclient-content] :is(
   [data-recued-chat-route-session-list],
   [data-recued-chat-route-thread],

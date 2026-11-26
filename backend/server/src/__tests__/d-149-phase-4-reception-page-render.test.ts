@@ -157,7 +157,7 @@ describe('D-149 P4 § A.5.1 — renderReceptionPageHtml', () => {
     // The page still owns the section chrome around it.
     expect(out).toContain('class="block link-button-block"');
     expect(out).toContain('class="link-button"');
-    expect(out).toContain('class="rcp-section-title">Links</p>');
+    expect(out).toMatch(/<h2\b[^>]*>Links<\/h2>/);
     expect(out).not.toContain('<form');
     expect(out).not.toContain('<iframe');
     expect(out).not.toContain('target=');

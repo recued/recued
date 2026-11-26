@@ -22,6 +22,7 @@ import { humanizeRpcError } from '../shell/rpc-error-copy.js';
 /** The route's own element, so it can be removed whole on dispose. */
 export const STATS_ROUTE_HOST_ATTR = 'data-recued-stats-route';
 export const STATS_ROUTE_STYLES_MARKER = 'data-recued-stats-route-styles';
+const STATS_DESKTOP_MEDIA = '(min-width: 1280px) and (hover: hover) and (pointer: fine)';
 
 /** ⛔ THESE CLASSES HAD NO STYLESHEET AT ALL. `renderStatsPanel` emits
  *  `stats-card` / `stats-record` / `stats-milestone`, and nothing anywhere
@@ -83,6 +84,27 @@ export const STATS_ROUTE_STYLES = `
   display: grid;
   gap: 6px;
 }
+[${STATS_ROUTE_HOST_ATTR}] .stats-panel > :is(.stats-readings, .stats-streaks, .stats-records, .stats-milestones-section) {
+  display: contents;
+}
+[${STATS_ROUTE_HOST_ATTR}] .stats-overview {
+  display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); align-items: start;
+  gap: var(--wc-space-lg, 24px); margin-top: 12px;
+}
+[${STATS_ROUTE_HOST_ATTR}] .stats-overview > div {
+  min-width: 0; padding: 14px 16px; background: var(--surface);
+  border: 1px solid var(--border); border-radius: var(--wc-radius-lg, 14px);
+}
+[${STATS_ROUTE_HOST_ATTR}] .stats-overview .stats-readings > .stats-table-wrap { margin-top: 0; }
+[${STATS_ROUTE_HOST_ATTR}] .stats-achievements { display: grid; gap: 14px; }
+[${STATS_ROUTE_HOST_ATTR}] .stats-achievements > section { min-width: 0; }
+[${STATS_ROUTE_HOST_ATTR}] .stats-achievements > section + section { border-top: 1px solid var(--border-subtle); padding-top: 12px; }
+[${STATS_ROUTE_HOST_ATTR}] .stats-achievements h3 { margin: 0 0 6px; }
+[${STATS_ROUTE_HOST_ATTR}] .stats-achievements .stats-table { table-layout: fixed; }
+[${STATS_ROUTE_HOST_ATTR}] .stats-achievements .stats-table thead th:first-child { width: 28%; }
+[${STATS_ROUTE_HOST_ATTR}] .stats-achievements .stats-table thead th:nth-child(2) { width: 25%; }
+[${STATS_ROUTE_HOST_ATTR}] .stats-achievements .stats-table__value { white-space: normal; overflow-wrap: break-word; }
+[${STATS_ROUTE_HOST_ATTR}] .stats-achievements .stats-table__meaning { width: auto; }
 [${STATS_ROUTE_HOST_ATTR}] .stats-asof,
 [${STATS_ROUTE_HOST_ATTR}] .stats-note,
 [${STATS_ROUTE_HOST_ATTR}] .publish-note,
@@ -301,6 +323,33 @@ export const bootstrapStatsRoute = (opts: BootstrapStatsRouteOptions): StatsRout
     ?? globalThis.document.createElement('div');
   root.setAttribute(STATS_ROUTE_HOST_ATTR, '');
   opts.container.appendChild(root);
+  const desktop = doc.defaultView?.matchMedia?.(STATS_DESKTOP_MEDIA);
+
+  // Only readings and achievements move. The publish controls stay connected during a resize.
+  const placeOverview = (): void => {
+    if (disposed || !desktop) return;
+    const panel = root.querySelector<HTMLElement>('.stats-panel');
+    if (!panel) return;
+    const overview = panel.querySelector<HTMLElement>('.stats-overview');
+    if (desktop.matches === Boolean(overview)) return;
+    const readings = panel.querySelector<HTMLElement>('.stats-readings');
+    const milestones = panel.querySelector<HTMLElement>('.stats-milestones-section');
+    if (!readings || !milestones) return;
+    const history = [...panel.querySelectorAll<HTMLElement>('.stats-streaks, .stats-records')];
+    const focused = doc.activeElement as HTMLElement | null;
+    if (overview) {
+      overview.before(readings, ...history);
+      panel.insertBefore(milestones, panel.querySelector(':scope > .stats-coverage'));
+      overview.remove();
+    } else {
+      const grid = doc.createElement('div'); grid.className = 'stats-overview';
+      const achievements = doc.createElement('div'); achievements.className = 'stats-achievements';
+      readings.before(grid);
+      grid.append(readings, achievements);
+      achievements.append(milestones, ...history);
+    }
+    if (focused?.isConnected && focused !== doc.activeElement) focused.focus({ preventScroll: true });
+  };
 
   type PublishChoice = { metric_id: string; tag: string; season_id: string };
   type Operation = { kind: 'publish'; choice: PublishChoice } | { kind: 'stop'; tag: string } | { kind: 'submit' };
@@ -417,6 +466,7 @@ export const bootstrapStatsRoute = (opts: BootstrapStatsRouteOptions): StatsRout
         ...(pending !== undefined ? { pendingPublish: pending } : {}),
         ...(submitOutcome !== undefined ? { submitOutcome } : {}) });
     paintMarkup(`<h1 data-recued-stats-route-heading tabindex="-1">Stats</h1>${feedback}${body}`);
+    placeOverview();
     root.setAttribute('aria-busy', String(reading || operation !== undefined));
     for (const button of Array.from(root.querySelectorAll?.<HTMLButtonElement>('button') ?? [])) {
       const mutation = mutationAttrs.some(key => button.hasAttribute(key));
@@ -535,6 +585,7 @@ export const bootstrapStatsRoute = (opts: BootstrapStatsRouteOptions): StatsRout
   const onInput = (): void => { captureDrafts(); };
   root.addEventListener?.('input', onInput);
   opts.container.addEventListener?.('click', onClick);
+  desktop?.addEventListener('change', placeOverview);
   void refresh();
 
   return {
@@ -545,6 +596,7 @@ export const bootstrapStatsRoute = (opts: BootstrapStatsRouteOptions): StatsRout
         removeEventListener?: (t: string, h: (e: Event) => void) => void;
       }).removeEventListener?.('click', onClick);
       root.removeEventListener?.('input', onInput);
+      desktop?.removeEventListener('change', placeOverview);
       readGeneration++;
       // ⛔ THE HALF THAT WAS MISSING. Dropping the listener without removing
       // the markup left the page on screen under its successor.

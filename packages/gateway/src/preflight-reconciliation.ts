@@ -58,6 +58,7 @@ import {
   browserPassActsOf,
   browserPassKindOfOption,
   BROWSER_REQUEST_PASS_TTL_MS,
+  browserPassOffersJob,
   browserPassOffersRequest,
   browserPassOptions,
   isApprovalWorkflowOperation,
@@ -720,18 +721,33 @@ const heldBrowserSteps = (target: unknown, args: Record<string, unknown> | undef
           : step.to === 'previous' ? 'up a screen' : 'down a screen'}.`);
     } else if (step.do === 'hover') {
       lines.push(`${n} Points at ${element}.`);
+    } else if (step.do === 'seek') {
+      acts = true;
+      lines.push(`${n} Seeks ${element} to ${step.at_seconds} seconds.`);
+    } else if (step.do === 'drag') {
+      acts = true;
+      const drop = isArgsRecord(seen.drop) && typeof seen.drop.role === 'string' && typeof seen.drop.label === 'string'
+        ? `the ${oneLine(seen.drop.role)}${seen.drop.label ? ` ${quoted(seen.drop.label)}` : ''}`
+        : step.drop.ref !== undefined ? `ref ${oneLine(step.drop.ref)}` : quoted(step.drop.selector);
+      lines.push(`${n} Drags ${element} onto ${drop}.`);
     } else if (step.do === 'download') {
       lines.push(`${n} Saves the file ${element} links to among your files.`);
     } else if (step.do === 'upload') {
       // D-335 slice AQ — one of the owner's files leaves for the site: the ask names it as their files do.
       acts = true;
-      const file = seen.file !== null && typeof seen.file === 'object' ? seen.file as { filename?: unknown; size_bytes?: unknown } : undefined;
-      const which = typeof file?.filename === 'string' ? `${quoted(file.filename)}${typeof file.size_bytes === 'number'
-        ? ` (${fileSizeSaid(file.size_bytes)})` : ''}` : oneLine(step.file);
-      lines.push(`${n} Puts your file ${which} into ${element}, for the site to receive.`);
+      const which = (ref: string, item: unknown) => {
+        const file = isArgsRecord(item) ? item : undefined;
+        return typeof file?.filename === 'string' ? `${quoted(file.filename)}${typeof file.size_bytes === 'number'
+          ? ` (${fileSizeSaid(file.size_bytes)})` : ''}` : oneLine(ref);
+      };
+      const known = Array.isArray(seen.files) ? seen.files : [];
+      const files = step.files?.map((ref, index) => which(ref, known[index])) ?? [which(step.file!, seen.file)];
+      const action = step.delivery === 'drop' ? 'Drops' : 'Puts';
+      lines.push(`${n} ${action} your ${files.length === 1 ? 'file' : 'files'} ${files.join(', ')} ${step.delivery === 'drop' ? 'onto' : 'into'} ${element}, for the site to receive.`);
     } else if (step.do === 'click') {
       acts = true;
-      lines.push(`${n} Clicks ${element}.`);
+      lines.push(`${n} ${step.count === 2 ? 'Double-clicks' : 'Clicks'} ${element}${step.download_wait === undefined ? ''
+        : ` and waits up to ${step.download_wait} seconds to save its generated download`}.`);
     } else if (step.do === 'submit') {
       acts = true;
       lines.push(`${n} Sends the form ${element} is in.`);
@@ -749,13 +765,14 @@ const heldBrowserSteps = (target: unknown, args: Record<string, unknown> | undef
       // Slice L — then the suggestion it picks, by its text, which the ask names as the model gave it.
       const picks = step.pick !== undefined ? `, then picks ${quoted(step.pick)} from its suggestions` : '';
       const sends = step.submit === true ? (picks !== '' ? ' and sends its form' : ', then sends its form') : '';
-      acts ||= step.submit === true || step.pick !== undefined;
+      acts ||= step.submit === true || step.pick !== undefined || step.delivery === 'paste';
+      const verb = step.delivery === 'paste' ? 'Pastes' : 'Types';
       // An element that could not be read may be a password field: its text is not shown.
       lines.push(shownNot || typeof seen.unread === 'string'
-        ? `${n} Types into ${element}${picks}${sends}. The text is not shown here, `
+        ? `${n} ${verb} into ${element}${picks}${sends}. The text is not shown here, `
           + (shownNot ? 'because the field is for a password, a sign-in code or a card.'
             : 'because the field could not be read to tell whether it is for a password.')
-        : `${n} Types into ${element}${picks}${sends}:\n${JSON.stringify(step.value)}`);
+        : `${n} ${verb} into ${element}${picks}${sends}:\n${JSON.stringify(step.value)}`);
     }
   }
   const page = typeof read.title === 'string' && read.title !== '' && read.site !== ''
@@ -1040,11 +1057,15 @@ const renderExactGrantBlock = (offer: { ttl_ms: number; max_uses: number }, acto
 const renderBrowserPassBlock = (offer: BrowserPassOffer): string => {
   const acts = browserPassActsOf(offer.key);
   const everywhere = offer.key.principal.kind === 'owner_chat' ? 'in all your chats' : 'for this AI app';
-  return oneLine(`“Allow on ${offer.host} for this session” stops asking about ${acts} in this `
+  // D-402 (2026-11-23) — the narrowest, first, as its button is: an AI app's job ends when the app ends it, starts
+  //   another, or an hour after it began.
+  return oneLine((browserPassOffersJob(offer) ? `“Allow on ${offer.host} until this job ends” stops asking about ${acts} `
+      + 'for the rest of the job this AI app started: until it ends the job, or an hour after the job began. ' : '')
+    + `“Allow on ${offer.host} for this session” stops asking about ${acts} in this `
     + `conversation, for up to ${renderTtl(BROWSER_PASS_SESSION_TTL_MS)}. “Always allow on ${offer.host}” stops `
     + `asking about them ${everywhere}, until you end it under Contracts.`
     // D-402 slice H4d — a pass for a recipe that names its browsers is the browser's it was granted in.
-    + (offer.key.browser !== undefined ? ` Both are for ${offer.browser_name !== undefined ? `“${offer.browser_name}”`
+    + (offer.key.browser !== undefined ? ` ${browserPassOffersJob(offer) ? 'All three are' : 'Both are'} for ${offer.browser_name !== undefined ? `“${offer.browser_name}”`
       : 'the browser it runs in'} alone: in another browser, each still asks.` : '')
     // D-341 slice A — and, from the owner's own chat, the switch below its input.
     + (browserPassOffersRequest(offer) ? ' “Don’t ask about browser actions in this chat” stops asking about any of '
@@ -1607,7 +1628,8 @@ export const buildPreflightAsk = (args: {
           PREFLIGHT_ASK_OPTIONS[0],
           ...(sessionGrant !== undefined ? [ALLOW_SESSION_ASK_OPTION] : []),
           ...(browserPass !== undefined
-            ? browserPassOptions(browserPass.host, { request: browserPassOffersRequest(browserPass) }) : []),
+            ? browserPassOptions(browserPass.host, { request: browserPassOffersRequest(browserPass),
+              job: browserPassOffersJob(browserPass) }) : []),
           ...(triggerOffer !== undefined ? [triggerPreapprovalOfferOption(triggerOffer)] : []),
           ...(kindOffer !== undefined ? [kindGrantOption()] : []),
           ...(overrideOffer !== undefined ? [overrideAskOption(overrideOffer)] : []),

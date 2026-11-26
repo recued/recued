@@ -32,7 +32,6 @@ export const browserAgentGuidance = (result: Record<string, unknown>): Record<st
     if (options.length >= 3 || options.some(option => option.kind === kind) || !validExample(example)) return;
     const option = { kind, when, ...(Array.isArray(example) ? { steps: example } : { step: example }), ...facts };
     options.push(option);
-    if (JSON.stringify(guide).length > 1_800 && Object.hasOwn(option, 'rows_and_count')) delete (option as Record<string, unknown>).rows_and_count;
     if (JSON.stringify(guide).length > 1_800) options.pop();
   };
   const reuse = (value: Record<string, unknown>) => {
@@ -123,15 +122,8 @@ export const browserAgentGuidance = (result: Record<string, unknown>): Record<st
         const collection = read.collection_hint;
         if (!table && targets.collection && object(collection) && object(collection.step)
           && collection.step.do === 'collect' && collection.step.items === targets.collection.items && collection.step.max_pages === 1 && page) {
-          const rowsAndCount = { do: 'data', source: 'latest', pipeline: [
-            { transform: 'slice', start: 0, end: BROWSER_COLLECT_MAX_ITEMS, id: 'rows' },
-            { transform: 'count', id: 'count' },
-          ], return: ['rows', 'count'] };
-          add('collect', `For repeated records, use these checked fields. max_pages: 1–${BROWSER_COLLECT_MAX_PAGES}; max_items: 1–${BROWSER_COLLECT_MAX_ITEMS}. The example caps linked-page traversal and stops earlier when Next ends; lower the cap for a requested page subset. A limit stop remains partial. Follow with data only for needed computation.`,
-            { ...collection.step, ...(object(collection.step.next) ? { max_pages: BROWSER_COLLECT_MAX_PAGES, max_items: BROWSER_COLLECT_MAX_ITEMS } : {}), page }, validExample(rowsAndCount) ? { rows_and_count: {
-              when: 'Only when matching rows and their count are requested, append this data step in the same batch. Replace slice with the requested filter using observed fields, retaining id:rows. Format returned rows yourself.',
-              step: rowsAndCount,
-            } } : {});
+          add('collect', `Use these checked fields for repeated records. Set max_pages to the requested scope (1–${BROWSER_COLLECT_MAX_PAGES}) and check coverage. For exact text or array membership, where:{field,equals} returns matching records and their count in this step. Add data for further computation.`,
+            { ...collection.step, ...(object(collection.step.next) ? { max_pages: BROWSER_COLLECT_MAX_PAGES, max_items: BROWSER_COLLECT_MAX_ITEMS } : {}), page });
         }
       }
       const entries = object(read.entry_data) ? read.entry_data : read.data_format === 'entries' ? read : undefined;

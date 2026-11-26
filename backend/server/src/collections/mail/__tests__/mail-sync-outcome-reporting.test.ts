@@ -28,6 +28,7 @@ import { OAuthError } from '../oauth.js';
 import type {
   CanonicalMessage,
   MailProvider,
+  MailSyncOutcomeListener,
   ProviderHealth,
   ProviderSyncCallback,
 } from '../provider.js';
@@ -332,6 +333,26 @@ describe('MailCollection sync-outcome reporting', () => {
     const row = harness.instances.get('mail', SLUG);
     expect(row?.auth_state).toBe('healthy');
     expect(row?.last_synced_at).toBeGreaterThan(0);
+  });
+
+  it('requires a completed inbound poll for the conditional-send sync clock and clears it on failure or stop', async () => {
+    const harness = withHarness({ provider: { healthLastSuccessfulSyncAt: START_TIME } });
+    let report: MailSyncOutcomeListener | undefined;
+    harness.provider.provider.onSyncOutcome = listener => { report = listener; return () => {}; };
+    await harness.collection.sync.start();
+    expect(harness.collection.health().last_indexed_at).toBe(START_TIME);
+    expect(harness.collection.lastInboundSyncAt).toBeNull();
+    report!({ phase: 'reconnect', ok: true, at: START_TIME + 1 });
+    expect(harness.collection.lastInboundSyncAt).toBeNull();
+    report!({ phase: 'poll', ok: true, at: START_TIME + 2 });
+    expect(harness.collection.lastInboundSyncAt).toBe(START_TIME + 2);
+    report!({ phase: 'poll', ok: false, failure: 'transient', at: START_TIME + 3 });
+    expect(harness.collection.lastInboundSyncAt).toBeNull();
+    report!({ phase: 'poll', ok: true, at: START_TIME + 4 });
+    expect(harness.collection.lastInboundSyncAt).toBe(START_TIME + 4);
+    await harness.collection.sync.stop();
+    report!({ phase: 'poll', ok: true, at: START_TIME + 5 });
+    expect(harness.collection.lastInboundSyncAt).toBeNull();
   });
 
   it('throttles sync-clock writes to one per 60-second interval', async () => {

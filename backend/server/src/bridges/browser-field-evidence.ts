@@ -1,4 +1,5 @@
-import { BRIDGE_INSPECT_CEILING_CHARS, type BrowserEvidenceValue, type BrowserEvidenceItem, type BrowserFieldEvidence } from '@recued/contracts';
+import { BRIDGE_INSPECT_CEILING_CHARS, BROWSER_FIELD_TAGS, isBrowserTitleTag,
+  type BrowserEvidenceValue, type BrowserEvidenceItem, type BrowserFieldEvidence } from '@recued/contracts';
 export type { BrowserEvidenceValue, BrowserEvidenceItem, BrowserFieldEvidence } from '@recued/contracts';
 import { parseInspectHtml, type OutlineElement, type OutlineNode } from './page-outline.js';
 
@@ -9,7 +10,7 @@ export const BROWSER_FIELD_EVIDENCE_ITEMS = 16;
 const VALUE_CHARS = 1_000;
 const MAX_NODES = 15_000;
 const NOTE = 'Copy requested values exactly, including punctuation. Attributes and text are separate sources; alt is not a caption. This is a bounded field view, not a page inventory.';
-type Source = 'textContent' | 'title' | 'aria-label' | 'alt' | 'figcaption.textContent' | 'containing-cell.textContent';
+type Source = BrowserEvidenceValue['source'];
 const attr = (node: OutlineElement, name: string) => typeof node.attrs[name] === 'string' ? node.attrs[name] as string : undefined;
 const omitted = (node: OutlineElement) => ['nav', 'header', 'footer', 'script', 'style', 'template', 'noscript', 'input', 'textarea', 'select'].includes(node.tag)
   || Object.hasOwn(node.attrs, 'hidden') || attr(node, 'aria-hidden') === 'true';
@@ -51,11 +52,12 @@ export const browserFieldEvidence = (html: string, options: { whole: boolean; tr
     if (/[\uD800-\uDBFF]$/.test(text)) text = text.slice(0, -1);
     return { value: text, source, ...(truncated ? { truncated: true as const } : {}) };
   };
-  const text = (node: OutlineElement, source: Source): BrowserEvidenceValue => {
+  const text = (node: OutlineElement, source: Source, exclude?: OutlineElement): BrowserEvidenceValue => {
     const stack: OutlineNode[] = [...node.children].reverse(); let raw = '', visited = 0;
     while (stack.length) {
       if (++visited > MAX_NODES) return value(raw, source, true);
       const child = stack.pop()!;
+      if (child === exclude) continue;
       if (child.kind === 'text') {
         raw += /\w$/.test(raw) && /^\w/.test(child.text) ? ' ' + child.text : child.text;
         if (raw.length > VALUE_CHARS) return value(raw, source, true);
@@ -66,8 +68,10 @@ export const browserFieldEvidence = (html: string, options: { whole: boolean; tr
     }
     return value(raw, source);
   };
-  const ancestor = (node: OutlineElement, tags: string[]) => {
-    for (let at = parents.get(node); at; at = parents.get(at)) if (tags.includes(at.tag)) return at;
+  const ancestor = (node: OutlineElement, tags: string[], roles: string[] = []) => {
+    for (let at = parents.get(node); at; at = parents.get(at)) {
+      if (tags.includes(at.tag) || roles.includes(attr(at, 'role') ?? '')) return at;
+    }
     return undefined;
   };
   const imageCounts = new Map<OutlineElement, number>(), captionsByFigure = new Map<OutlineElement, OutlineElement[]>();
@@ -81,14 +85,25 @@ export const browserFieldEvidence = (html: string, options: { whole: boolean; tr
       if (figure) captionsByFigure.set(figure, [...(captionsByFigure.get(figure) ?? []), node]);
     }
   }
+  // Keep the existing evidence ahead of additional titles within the same limits.
+  const primary = (node: OutlineElement) => BROWSER_FIELD_TAGS.includes(node.tag);
+  const titles = all.filter(node => !primary(node) && isBrowserTitleTag(node.tag) && attr(node, 'title')?.trim());
   const items: BrowserEvidenceItem[] = [];
-  for (const node of all) {
+  for (const node of [...all.filter(primary), ...titles]) {
     if (main && !inside(node, main)) continue;
-    if (!['a', 'img', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6'].includes(node.tag)) continue;
     const fields: BrowserEvidenceItem['fields'] = {};
     if (node.tag !== 'img') {
       const own = text(node, 'textContent');
       if (own.value) fields.text = own;
+      if (!primary(node)) {
+        if (!own.value) continue;
+        const entry = ancestor(node, ['tr', 'li', 'dt', 'dd'], ['row', 'listitem', 'term', 'definition'])
+          ?? ancestor(node, ['p', 'label']);
+        if (entry && (!main || inside(entry, main))) {
+          const nearby = text(entry, 'containing-entry.textContent', node);
+          if (nearby.value) fields.nearby_text = nearby;
+        }
+      }
     }
     for (const [name, key] of [['title', 'title_attribute'], ['aria-label', 'aria_label'], ['alt', 'alt']] as const) {
       const raw = attr(node, name);

@@ -118,20 +118,41 @@ for (const width of [280, 1280]) {
     await page.evaluate(() => dispatchEvent(new Event('finish-permission')));
     await expect.poll(async () => page.evaluate(() => { dispatchEvent(new Event('query-permission-work')); return document.body.dataset.leases; })).toBe('0');
   });
-  test(`allows private-history cleanup for an inactive agreement at ${width}px`, async ({ page }) => {
+  test(`allows keyboard cleanup of private history for an inactive agreement at ${width}px`, async ({ page }) => {
     await open(page, width, 'unsupported'); await expect(page.getByText('This agreement is inactive.')).toBeVisible();
     await expect(page.getByRole('button', { name: 'Save test version' })).toHaveCount(0);
-    await page.getByRole('button', { name: 'Delete saved tests and history' }).click(); await page.getByRole('button', { name: 'Confirm delete saved tests' }).click();
+    await page.getByRole('button', { name: 'Delete saved tests and history' }).press('Enter');
+    await page.getByRole('button', { name: 'Confirm delete saved tests' }).press('Enter');
     await expect(page.getByRole('status')).toContainText('Deleted saved tests and history');
     await expect(page.getByRole('status')).toBeFocused();
     expect((await fixture(page)).view.grants).toEqual([{ entry_key: 'data.task', granted: false }]); expect((await fixture(page)).applied).toBe(0);
   });
   test(`opens from the actual Contracts detail and keeps its editor across tabs at ${width}px`, async ({ page }) => {
     await open(page, width, '', '&seed=1&route=contracts');
-    await page.locator('summary').filter({ hasText: /^Permission tests and reviewed grants$/ }).click();
-    await page.getByLabel('Test suite title').fill('Kept while switching tabs');
-    await page.getByRole('tab', { name: 'Entities', exact: true }).click(); await page.getByRole('tab', { name: 'Ops', exact: true }).click();
-    await expect(page.getByLabel('Test suite title')).toHaveValue('Kept while switching tabs');
+    const launch = page.getByRole('button', { name: 'Permission tests', exact: true });
+    const disclosure = page.locator('summary').filter({ hasText: /^Permission tests and reviewed grants$/ });
+    const editor = page.locator('[data-permission-workbench]');
+    const desktop = width >= 1280;
+    await expect(desktop ? disclosure : launch).toBeHidden();
+    await (desktop ? launch : disclosure).press('Enter');
+    await editor.getByLabel('Test suite title').fill('Kept while switching tabs');
+    await page.getByRole('tab', { name: 'Entities', exact: true }).press('Enter');
+    await page.getByRole('tab', { name: 'Ops', exact: true }).press('Enter');
+    if (desktop) {
+      await expect(editor).toBeHidden();
+      await launch.press('Enter');
+    }
+    await expect(editor.getByLabel('Test suite title')).toHaveValue('Kept while switching tabs');
     await page.evaluate(() => dispatchEvent(new Event('query-permission-work'))); await expect(page.locator('body')).toHaveAttribute('data-busy', 'true');
+    expect((await fixture(page)).calls.filter((item: { method: string }) => item.method === 'contract.regression.get')).toHaveLength(1);
+    if (desktop) {
+      await editor.getByRole('button', { name: 'Save test version', exact: true }).press('Enter');
+      await expect(editor.getByRole('status')).toContainText('Saved test version 2');
+      await runAndReview(page);
+      expect((await fixture(page)).applied).toBe(0);
+      await editor.getByRole('button', { name: 'Activate reviewed grants', exact: true }).press('Enter');
+      await expect(editor.getByRole('status')).toContainText('Activated permission revision 2');
+      expect((await fixture(page)).applied).toBe(1);
+    }
   });
 }

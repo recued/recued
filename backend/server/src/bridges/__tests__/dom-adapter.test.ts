@@ -925,7 +925,7 @@ describe('D-335 slice H - core.dom.wait, core.dom.table and core.dom.screenshot'
       data_hint: expect.any(Object),
       data_columns: [{ field: 'Deal', label: 'Deal' }], data_fields: [{ field: 'Deal', types: ['string'] }] });
     expect(requests(dispatch)).toEqual([expect.objectContaining({ action: 'read_table', args: { page: PAGE, selector: '#deals' },
-      expects_output_keys: ['page', 'url', 'title', 'columns', 'rows', 'truncated'] })]);
+      expects_output_keys: ['page', 'url', 'title', 'columns', 'rows', 'truncated', 'sort'] })]);
   });
 
   it.each([
@@ -1027,14 +1027,16 @@ describe('D-335 slice U - core.dom.scroll', () => {
     // A recipe always passes `to`: a screen it names wins.
     await adapter(scroll.call({ target: TARGET_A, page: PAGE, to: 'next', screen: 4 }));
     await adapter(scroll.call({ target: TARGET_A, page: PAGE, selector: '#inbox', to: 'bottom' }));
+    await adapter(scroll.call({ target: TARGET_A, page: PAGE, selector: '#grid', to: 'right' }));
     expect(requests(dispatch).map(request => [request.action, request.args])).toEqual([['scroll', { page: PAGE, to: 'next' }],
-      ['scroll', { page: PAGE, screen: 4 }], ['scroll', { page: PAGE, selector: '#inbox', to: 'bottom' }]]);
+      ['scroll', { page: PAGE, screen: 4 }], ['scroll', { page: PAGE, selector: '#inbox', to: 'bottom' }],
+      ['scroll', { page: PAGE, selector: '#grid', to: 'right' }]]);
     expect(requests(dispatch)[0]!.expects_output_keys).toEqual(['page', 'url', 'title', 'screen', 'screens']);
   });
 
   it.each([
     [{ target: TARGET_A, selector: '#x' }, 'core.dom.scroll: pass the page handle'],
-    [{ target: TARGET_A, page: PAGE, to: 'sideways' }, "core.dom.scroll: 'to' is next, previous, top, bottom"],
+    [{ target: TARGET_A, page: PAGE, to: 'sideways' }, "core.dom.scroll: 'to' is next, previous, top, bottom, left, right"],
     [{ target: TARGET_A, page: PAGE, screen: -2 }, "core.dom.scroll: 'screen' is a screen of the page counted from 1"],
   ])('refuses %j before any Bridge is asked', async (input, message) => {
     const { adapter, dispatch } = setupAdapter({ manifest: scroll.manifest });

@@ -1,13 +1,14 @@
 import { e } from '@recued/ui-shared';
 import { humanizeRpcError } from '../shell/rpc-error-copy.js';
 
-export type WorkReaderKind = 'task' | 'note';
+export type WorkReaderKind = 'task' | 'note' | 'commitment';
 export const WORK_READER_ACTION = 'work-reader-';
 export const WORK_READER_FOCUS = 'data-work-reader-focus';
 export interface WorkReaderScope {
   kind: WorkReaderKind; key: string; generation: number; label: string;
   ids: readonly string[]; more: boolean; progress: number; error?: string; ready?: boolean;
 }
+export type WorkReaderListOrigin = { hash: string; scope: WorkReaderScope; scrollTop: number };
 
 /** Keep the opening order, including an anchor that leaves a filtered list
  * after an edit. Each next record is read again by the host before it opens. */
@@ -20,7 +21,7 @@ export const createWorkReaderNavigation = (deps: {
   changed: () => void;
   focus: (direction: 'previous' | 'next') => void;
 }) => {
-  let visit: { kind: WorkReaderKind; key: string; navigation: number; ids: string[]; index: number; scrollTop: number } | null = null;
+  let visit: { kind: WorkReaderKind; key: string; navigation: number; ids: string[]; index: number; scrollTop: number; listHash?: string } | null = null;
   let sequence = 0, moving = false, target: string | null = null, error = '';
   const current = () => {
     const scope = deps.scope();
@@ -73,18 +74,23 @@ export const createWorkReaderNavigation = (deps: {
   return {
     reset, suspend,
     busy: () => moving,
-    start(kind: WorkReaderKind, id: string, scrollTop: number) {
-      reset(); const scope = deps.scope();
+    start(kind: WorkReaderKind, id: string, scrollTop: number, listOrigin?: WorkReaderListOrigin) {
+      reset(); const scope = listOrigin?.scope ?? deps.scope();
       if (scope?.kind !== kind || scope.ready === false) return;
       const ids = [...new Set(scope.ids)], index = ids.indexOf(id);
-      if (index >= 0) visit = { kind, key: scope.key, navigation: scope.generation, ids, index, scrollTop };
+      if (index >= 0) visit = { kind, key: scope.key, navigation: scope.generation, ids, index, scrollTop, listHash: listOrigin?.hash };
     },
     resume(kind: WorkReaderKind, id: string) {
       const scope = deps.scope();
-      if (!visit || scope?.kind !== kind || visit.kind !== kind || scope.key !== visit.key || !visit.ids.includes(id)) return;
+      if (!visit || scope?.kind !== kind || visit.kind !== kind || !visit.ids.includes(id)) return;
+      // The pane still belongs to the list if its filters changed. Previous
+      // and Next remain tied to the order captured when the record was opened.
+      if (scope.key !== visit.key && !(visit.listHash && id === visit.ids[visit.index])) return;
       if (scope.generation !== visit.navigation) { suspend(); visit.navigation = scope.generation; }
       if (!moving || id === target) visit.index = visit.ids.indexOf(id);
     },
+    listHash: (kind: WorkReaderKind, id: string, generation: number) => visit?.kind === kind && visit.navigation === generation
+      && id === visit.ids[visit.index] ? visit.listHash : undefined,
     returnPosition: () => visit && current() && reading() ? { kind: visit.kind, id: visit.ids[visit.index]!, scrollTop: visit.scrollTop } : null,
     handle(action: string) {
       if (!action.startsWith(WORK_READER_ACTION)) return false;

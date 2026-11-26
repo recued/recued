@@ -4,6 +4,8 @@ import {
   connectionsAccountAddress,
   connectionsAddressSelection,
   connectionsEnrollAddress,
+  connectionsInventoryAddress,
+  connectionsWebhookAddress,
   connectionsLaneAddress,
   parseConnectionsAddress,
   connectionsReviewAccessAddress,
@@ -20,6 +22,16 @@ import {
 import { parseShellRoute } from '../../shell/route.js';
 
 describe('Connections hierarchical navigation contract', () => {
+  it('opens an exact webhook address under Webhooks without interpreting any action suffix', () => {
+    const ingressId = 'whi_browserdemo0123456789abcdef012345';
+    const address = connectionsWebhookAddress(ingressId);
+    expect(address.hash).toBe(`#connections/webhooks/webhook/${ingressId}`);
+    const selection = parseConnectionsAddress(parseShellRoute(address.hash));
+    expect(selection).toEqual({ kind: 'webhook', ingressId });
+    expect(connectionsAddressSelection(selection).tab).toBe('webhooks');
+    expect(parseConnectionsAddress(parseShellRoute(`${address.hash}/enable`))).toEqual({ kind: 'lane', tab: 'webhooks' });
+  });
+
   it.each([{ kind: 'all' }, { kind: 'oauth_apps' }, { kind: 'connection', name: 'filter' }, { kind: 'group', id: 'a'.repeat(64) },
     { kind: 'collection', platform: 'calendar', slug: 'filter' }, { kind: 'file_source', source_id: 'work/files' }] as const)('round-trips a filtered history address for %j', scope => {
     const filters = { search: 'École / 100%_', type: 'verification' as const, outcome: 'failed' as const, from: '2026-10-01', through: '2026-10-17' };
@@ -151,6 +163,15 @@ describe('Connections hierarchical navigation contract', () => {
       .toBe('#connections/mail/work%2Fmail');
     expect(connectionsAccountAddress('mail', 'work/mail').levels.map((level) => level.key))
       .toEqual(['connections-lane:mail', 'connections-account:work/mail']);
+  });
+
+  it('addresses saved connections by kind and name apart from access and enrollment routes', () => {
+    const selection = { kind: 'mcp' as const, name: 'shared' };
+    const { hash } = connectionsInventoryAddress(selection);
+    expect(hash).toBe('#connections/others/connection/mcp/shared');
+    expect(parseConnectionsAddress(parseShellRoute(hash))).toEqual({ kind: 'connection', selection });
+    expect(connectionsAddressSelection(parseConnectionsAddress(parseShellRoute(hash))).tab).toBe('others');
+    expect(parseConnectionsAddress(parseShellRoute('#connections/others/connection/other/shared'))).toEqual({ kind: 'lane', tab: 'others' });
   });
 
   it('models the routed enrollment workspace without treating it as an account', () => {

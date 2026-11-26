@@ -102,6 +102,8 @@ export interface WorkEntityPageProps {
   footer_html?: string;
   /** Booking-only server-side lifecycle filter echoed into the list control. */
   booking_lifecycle_filter?: BookingLifecycleState | 'all';
+  /** The booking reader has its own address and can coexist with its editor. */
+  booking_reader?: { id: string; html: string };
   task_filters?: TaskViewFilters;
   commitment_filters?: CommitmentViewFilters;
   counterparty_labels?: Readonly<Record<string, string>>;
@@ -124,6 +126,7 @@ export interface WorkEntityPageProps {
   task_completion?: WorkEntityDialogProps['task_completion'];
   task_details_open?: boolean;
   task_view?: WorkEntityDialogProps['task_view'];
+  work_reader_inline?: boolean;
   note_details_open?: boolean;
   note_view?: WorkEntityDialogProps['note_view'];
   duplicate?: WorkEntityDialogProps['duplicate'];
@@ -149,6 +152,14 @@ export const renderWorkEntityPage = (props: WorkEntityPageProps): string => {
   const chipsHtml = renderSourceAffordanceChips(activeOption);
 
   const createButtonHtml = renderCreateControl(state.kind, props.can_create);
+  const view = state.kind === 'task' ? props.task_view : state.kind === 'note' ? props.note_view
+    : state.kind === 'commitment' ? props.commitment_view : undefined;
+  const inlineDialog = props.work_reader_inline && state.dialog?.mode === 'edit' && view?.mode === 'read'
+    && state.dialog.entity_id === view.entity.id ? view.entity : undefined;
+  const readerId = props.booking_reader?.id ?? inlineDialog?.id;
+  const sourceRow = props.header_external && !props.task_list_layout ? `<div class="work-entity-page-source-row">
+    ${dropdownHtml}${chipsHtml}
+  </div>` : '';
 
   const listHtml = renderWorkEntityListView({
     kind: state.kind,
@@ -156,6 +167,7 @@ export const renderWorkEntityPage = (props: WorkEntityPageProps): string => {
     show_source_label: showSourceLabel,
     empty_state_copy: spec.empty_state_copy,
     search_query: state.search_query,
+    current_entity_id: readerId,
     ...(props.task_filters !== undefined ? { task_filters: props.task_filters } : {}),
     ...(props.commitment_filters ? { commitment_filters: props.commitment_filters } : {}),
     ...(props.counterparty_labels ? { counterparty_labels: props.counterparty_labels } : {}),
@@ -188,6 +200,7 @@ export const renderWorkEntityPage = (props: WorkEntityPageProps): string => {
           note_details_open: props.note_details_open === true,
           ...(props.note_view ? { note_view: props.note_view } : {}),
           ...(props.task_view ? { task_view: props.task_view } : {}),
+          work_reader_inline: inlineDialog !== undefined,
           ...(props.duplicate ? { duplicate: props.duplicate } : {}),
           ...(props.commitment_view ? { commitment_view: props.commitment_view } : {}),
           ...(props.close_label ? { close_label: props.close_label } : {}),
@@ -200,6 +213,11 @@ export const renderWorkEntityPage = (props: WorkEntityPageProps): string => {
             : {}),
         });
 
+  const listBody = `<div class="work-entity-page-body">
+    ${readerId !== undefined ? sourceRow : ''}
+    ${listHtml}
+    ${props.footer_html ?? ''}
+  </div>`;
   return `
     <section class="work-entity-page${props.header_external ? ' work-entity-page--external-header' : ''}${props.task_list_layout ? ' work-entity-page--compact-task' : ''}" data-kind="${e(state.kind)}"
              aria-labelledby="${e(headingId)}">
@@ -211,14 +229,7 @@ export const renderWorkEntityPage = (props: WorkEntityPageProps): string => {
           ${createButtonHtml}
         </div>
       </header>`}
-      ${props.header_external && !props.task_list_layout ? `<div class="work-entity-page-source-row">
-        ${dropdownHtml}${chipsHtml}
-      </div>` : ''}
-      <div class="work-entity-page-body">
-        ${listHtml}
-        ${props.footer_html ?? ''}
-      </div>
-      ${dialogHtml}
+      ${readerId !== undefined ? `<div class="work-entity-list-workspace work-entity-${e(state.kind)}-workspace">${listBody}${props.booking_reader?.html ?? dialogHtml}</div>${props.booking_reader ? dialogHtml : ''}` : `${sourceRow}${listBody}${dialogHtml}`}
     </section>
   `;
 };

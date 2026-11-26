@@ -1,6 +1,13 @@
-export interface BrowserEvidenceValue { value: string; source: 'textContent' | 'title' | 'aria-label' | 'alt' | 'figcaption.textContent' | 'containing-cell.textContent'; truncated?: true }
+export interface BrowserEvidenceValue {
+  value: string;
+  source: 'textContent' | 'title' | 'aria-label' | 'alt' | 'figcaption.textContent' | 'containing-cell.textContent' | 'containing-entry.textContent';
+  truncated?: true;
+}
 export interface BrowserEvidenceItem { tag: string; ref?: string; fields: Record<string, BrowserEvidenceValue> }
 export interface BrowserFieldEvidence { scope: 'page' | 'main' | 'region'; items: BrowserEvidenceItem[]; complete: boolean; incomplete?: string[]; note: string }
+
+export const BROWSER_FIELD_TAGS: readonly string[] = ['a', 'img', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6'];
+export const isBrowserTitleTag = (tag: unknown): tag is string => typeof tag === 'string' && /^[a-z][a-z0-9-]{0,47}$/.test(tag);
 
 const record = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === 'object' && !Array.isArray(value);
 const keys = (value: Record<string, unknown>, allowed: readonly string[]) => Object.keys(value).every(key => allowed.includes(key));
@@ -14,9 +21,12 @@ export const isBrowserFieldEvidence = (value: unknown): value is BrowserFieldEvi
   && optional(value.incomplete, value => Array.isArray(value) && value.length <= 8 && value.every(item => oneOf(item,
     ['page_truncated', 'source_limit', 'node_limit', 'depth_limit', 'value_truncated', 'item_limit', 'character_limit', 'observation_limit'])))
   && Array.isArray(value.items) && value.items.length <= 16 && value.items.every(item => record(item)
-    && keys(item, ['tag', 'ref', 'fields']) && oneOf(item.tag, ['a', 'img', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6'])
+    && keys(item, ['tag', 'ref', 'fields'])
     && optional(item.ref, value => text(value, 32) && /^e\d+$/.test(value))
     && record(item.fields) && keys(item.fields, ['text', 'title_attribute', 'aria_label', 'alt', 'caption', 'nearby_text'])
+    && (oneOf(item.tag, BROWSER_FIELD_TAGS) || isBrowserTitleTag(item.tag)
+      && record(item.fields.text) && item.fields.text.source === 'textContent'
+      && record(item.fields.title_attribute) && item.fields.title_attribute.source === 'title')
     && Object.values(item.fields).every(field => record(field) && keys(field, ['value', 'source', 'truncated']) && text(field.value, 1_000)
-      && oneOf(field.source, ['textContent', 'title', 'aria-label', 'alt', 'figcaption.textContent', 'containing-cell.textContent'])
+      && oneOf(field.source, ['textContent', 'title', 'aria-label', 'alt', 'figcaption.textContent', 'containing-cell.textContent', 'containing-entry.textContent'])
       && optional(field.truncated, value => value === true)));

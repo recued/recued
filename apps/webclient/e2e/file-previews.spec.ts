@@ -371,6 +371,50 @@ const pdfFixture = (texts = ['First retained PDF page', 'Second retained PDF pag
   return Buffer.from(pdf + `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n` + xref + '\n%%EOF\n');
 };
 
+test('desktop Saved files previews PDF and XLSX inline and releases the retired reader', async ({ browser }, testInfo) => {
+  const f = await setup(browser, async fixture => {
+    await fixture.files!.ingest({ filename: 'Review packet.pdf', bytes: pdfFixture(), mime_type: 'application/pdf',
+      origin: 'webclient_upload', source_id: 'saved-preview-pdf', scan_status: 'clean' });
+    await fixture.files!.ingest({ filename: 'Prices.xlsx', bytes: xlsx(), mime_type: xlsxMime,
+      origin: 'webclient_upload', source_id: 'saved-preview-xlsx', scan_status: 'clean' });
+  });
+  try {
+    await f.page.setViewportSize({ width: 1280, height: 900 });
+    await f.page.evaluate(() => { location.hash = '#data/files'; });
+    await f.page.getByRole('button', { name: /^Saved files/ }).click();
+    const rows = f.page.locator('[data-recued-data-action="file-open-preview"]');
+    const pdf = rows.filter({ hasText: 'Review packet.pdf' }), workbook = rows.filter({ hasText: 'Prices.xlsx' });
+    const pane = f.page.getByRole('region', { name: 'File preview', exact: true });
+    await pdf.click();
+    await expect(pane.locator('canvas[data-file-preview-rendered]')).toBeInViewport();
+    await pane.getByRole('button', { name: 'Next page', exact: true }).click();
+    await expect(pane.locator('canvas[data-file-preview-rendered][aria-label="PDF page 2 of 2"]')).toBeInViewport();
+    await f.page.screenshot({ path: testInfo.outputPath('saved-file-pane-pdf.png') });
+
+    await workbook.click();
+    const sheet = pane.getByRole('combobox', { name: 'Worksheet', exact: true });
+    await sheet.selectOption({ label: 'Summary' });
+    await expect(pane.getByRole('cell', { name: '2500.50', exact: true })).toBeVisible();
+    // The XLSX parser also terminates as soon as it has decoded the workbook.
+    await expect.poll(() => f.resources().then(value => value.terminated)).toBe(2);
+    await expect(f.viewer).toHaveCount(0);
+    const expand = pane.getByRole('button', { name: 'Open full size', exact: true });
+    await expand.click();
+    await expect(f.viewer.getByRole('heading', { name: 'Prices.xlsx', exact: true })).toBeVisible();
+    await expect(f.viewer.getByRole('combobox', { name: 'Worksheet', exact: true })).toBeVisible();
+    await f.viewer.getByRole('button', { name: 'Close preview', exact: true }).click();
+    await expect(expand).toBeFocused();
+    await expect(pane.getByRole('cell', { name: '2500.50', exact: true })).toBeVisible();
+    await f.page.setViewportSize({ width: 390, height: 844 });
+    await expect(pane).toHaveCount(0);
+    await expect(workbook).toBeFocused();
+    await workbook.click();
+    await expect(f.viewer.getByRole('combobox', { name: 'Worksheet', exact: true })).toBeVisible();
+    noWrites(f.calls);
+    expect((await f.resources()).violations).toEqual([]);
+  } finally { await f.close(); }
+});
+
 test('Conversation files and Data preview the same historical bytes without changing the draft or message', async ({ browser }) => {
   let original!: { source: string; version: string };
   const f = await setup(browser, async fixture => {

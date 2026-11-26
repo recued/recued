@@ -80,11 +80,14 @@ test('Repeated class fields identify the duplicate and do not make a write', asy
 test('Proposal cards expose affected records, triggers and reminder changes without extra reads', async ({ page }) => {
   await page.goto(`${HARNESS_URL}?yours=demo&yours_rule_fields#yours/proposals`);
   const route = page.locator('[data-recued-yours]'); const preview = route.locator('[data-yours-proposal-preview="rule-review"]');
+  await expect(route.locator('[data-yours-proposal-row="rule-review"]')).toBeVisible();
+  const reads = await page.evaluate(() => window.__app.rpcCallCount('yours.read'));
+  await route.locator('[data-yours-proposal-row="rule-review"]').click();
   await expect(preview).toContainText('Ana’s passport'); await expect(preview).toContainText('issued on');
   await expect(preview).toContainText('Proposed reminders: on the day');
+  await route.locator('[data-yours-proposal-row="schedule-review"]').click();
   const timing = route.locator('[data-yours-proposal-preview="schedule-review"]');
   await expect(timing).toContainText('Current reminders:'); await expect(timing).toContainText(/Proposed reminders:\s*2 weeks before; on the day/u);
-  const reads = await page.evaluate(() => window.__app.rpcCallCount('yours.read'));
   await route.getByRole('button', { name: 'Refresh', exact: true }).click(); await expect(route).toHaveAttribute('aria-busy', 'false');
   expect(await page.evaluate(() => window.__app.rpcCallCount('yours.read'))).toBe(reads + 1);
   expect(await page.evaluate(() => window.__assetRuleWrites)).toEqual([]);
@@ -106,9 +109,11 @@ test('Refresh and a pending editor give feedback while another selection can sti
   await expect(route.getByRole('button', { name: 'Refreshing…', exact: true })).toBeDisabled();
   await expect(route.getByRole('status')).toHaveText('Refreshing Yours…');
   await page.evaluate(() => window.__app.releaseRpcResponses?.('yours.read')); await expect(route).toHaveAttribute('aria-busy', 'false');
+  await route.locator('[data-yours-proposal-row="schedule-review"]').click();
   const card = route.getByRole('article').filter({ has: page.getByRole('heading', { name: 'Review renewal reminders', exact: true }) });
   await card.getByRole('button', { name: 'Review change', exact: true }).click();
   await expect(card.getByRole('button', { name: 'Opening…', exact: true })).toBeDisabled(); await expect(route).toHaveAttribute('aria-busy', 'true');
+  await route.locator('[data-yours-proposal-row="receipt"]').click();
   const television = route.getByRole('article').filter({ has: page.getByRole('heading', { name: 'LG television', exact: true }) });
   await television.getByRole('button', { name: 'Review change', exact: true }).click();
   const name = route.locator('[data-yours-editor]').getByLabel('Name', { exact: true }); await name.fill('My TV');
@@ -116,8 +121,10 @@ test('Refresh and a pending editor give feedback while another selection can sti
 });
 
 test('Episode history leads with its full span, people and inspectable evidence', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 720 });
   await page.goto(`${HARNESS_URL}?yours=demo&contact_history&occasion_history#yours/episodes`);
   const route = page.locator('[data-recued-yours]'); const episode = route.locator('[data-yours-episode="museum"]');
+  await route.getByRole('group', { name: 'Episode timeline', exact: true }).getByRole('button', { name: 'Museum afternoon', exact: true }).click();
   await expect(episode).toContainText('2025'); await expect(episode).toContainText(' – '); await expect(episode).toContainText('With Ana');
   await expect(episode.getByRole('link', { name: 'Open source record', exact: true })).toHaveAttribute('href', /personal.*flowers/u);
   expect(await route.evaluate(root => {

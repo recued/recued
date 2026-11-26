@@ -36,6 +36,8 @@
  *  `handover_contracts_list_detail_NEXT.md` (delta 3). */
 
 import {
+  BROWSER_JOB_TOOLS,
+  keyChecklistFromAgreementGrants,
   KERNEL_OP_REGISTRY,
   isGrantableKernelOp,
   isRegisteredKernelOp,
@@ -465,6 +467,16 @@ export const CONTRACT_GRANTS_OLDER_KEY_NOTE =
   'This contract was made before a contract could hold its own key. Its key keeps the '
   + 'AI tools it was made with, so switching one on here does not give it to the key. '
   + 'To give an app another AI tool, make a new contract.';
+/** D-402 (2026-11-23) — what an agreement's key gets with its browser tools: starting and ending a job, which have no
+ *  switch of their own (the owner: "recued_startJob/recued_endJob should be just another tool in contracts required to be
+ *  enabled if any browser tool is enabled"; then: show them). Shown in the Ops and Recipes tabs, where the browser tools
+ *  are, only for an agreement that is its key's authority ({@link MountContractGrantsPanelOptions.keyAgreement}) and only
+ *  while one is on: decided by the server's own rule over the same rows (`keyChecklistFromAgreementGrants`). */
+export const CONTRACT_GRANTS_JOB_TOOLS_NOTE_ATTR = 'data-recued-contract-grants-job-tools-note';
+export const CONTRACT_GRANTS_JOB_TOOLS_NOTE =
+  'With a browser tool switched on, the app can also start and end a job around its work in your browser, and '
+  + 'Make a recipe from a job can turn that job into a recipe. Starting and ending a job have no switch of their own: '
+  + 'they come with the browser tools.';
 
 // ════════════════════════════════════════════════════════════════
 // Helpers
@@ -711,6 +723,9 @@ export const mountContractGrantsPanel = (
   const opsRoot = doc.createElement('div');
   opsRoot.setAttribute(CONTRACT_GRANTS_HOST_ATTR, '');
   opsRoot.setAttribute('data-grant-view', 'ops');
+  const opsSidebar = doc.createElement('div');
+  opsSidebar.className = 'cg-ops-sidebar';
+  opsRoot.appendChild(opsSidebar);
   const opsToolbar = doc.createElement('div');
   opsToolbar.className = 'cg-filter-bar';
   const operationFilterInput = doc.createElement('input');
@@ -725,7 +740,29 @@ export const mountContractGrantsPanel = (
   operationFilterStatus.setAttribute('aria-live', 'polite');
   operationFilterStatus.className = 'cg-filter-status';
   opsToolbar.appendChild(operationFilterStatus);
-  opsRoot.appendChild(opsToolbar);
+  opsSidebar.appendChild(opsToolbar);
+  const opsNavigation = doc.createElement('nav');
+  opsNavigation.className = 'cg-ops-navigation';
+  opsNavigation.setAttribute('aria-label', 'Jump to grant section');
+  const opsTargets = new Map<string, HTMLElement>();
+  const opsJumpButtons = new Map<string, HTMLButtonElement>();
+  for (const name of [CONTRACT_GRANTS_AI_TOOLS_GROUP, KIND_TITLE.op, KIND_TITLE.collection]) {
+    const button = doc.createElement('button');
+    button.setAttribute('type', 'button');
+    button.textContent = name;
+    button.addEventListener('click', () => {
+      const target = opsTargets.get(name);
+      if (target === undefined) return;
+      target.focus({ preventScroll: true });
+      target.scrollIntoView({ block: 'start', inline: 'nearest' });
+    });
+    opsJumpButtons.set(name, button);
+    opsNavigation.appendChild(button);
+  }
+  opsSidebar.appendChild(opsNavigation);
+  const opsOverview = doc.createElement('div');
+  opsOverview.className = 'cg-ops-overview';
+  opsSidebar.appendChild(opsOverview);
   const opsResults = doc.createElement('div');
   opsResults.className = 'cg-filter-results';
   opsRoot.appendChild(opsResults);
@@ -768,6 +805,10 @@ export const mountContractGrantsPanel = (
     if (entry === undefined) return state.grants.has(entryKey);
     return hasExplicitGrant(entry, state.grants, state.cliRows);
   };
+  /** D-402 — whether this agreement's key starts and ends jobs: the server's rule over this agreement's rows, so the
+   *  note says what the key holds. An older contract's key keeps the tools it was issued with, so it never says it. */
+  const agreementGivesJobTools = (): boolean => opts.keyAgreement === true
+    && keyChecklistFromAgreementGrants([...state.grants].map(([entry_key, granted]) => ({ entry_key, granted })))[BROWSER_JOB_TOOLS[0]] === true;
   /** D-327 — the recipes named in `could` that this agreement allows, by row. */
   const allowedRecipesAmong = (ids: readonly string[]): GrantUniverseEntry[] => {
     const out: GrantUniverseEntry[] = [];
@@ -1119,6 +1160,14 @@ export const mountContractGrantsPanel = (
     return line;
   };
 
+  const registerOpsTarget = (name: string, heading: HTMLElement): void => {
+    if (opsTargets.has(name)) return;
+    heading.setAttribute('role', 'heading');
+    heading.setAttribute('aria-level', '3');
+    heading.setAttribute('tabindex', '-1');
+    opsTargets.set(name, heading);
+  };
+
   // ── render: a kind sub-group ────────────────────────────────────────
   const renderKindGroup = (
     parent: HTMLElement,
@@ -1137,6 +1186,7 @@ export const mountContractGrantsPanel = (
     heading.className = 'cg-kind-name';
     heading.textContent = KIND_TITLE[kind];
     group.appendChild(heading);
+    if (parent === opsResults && kind === 'collection') registerOpsTarget(KIND_TITLE.collection, heading);
 
     if (kind === 'op' || kind === 'collection') {
       // Ops AND collection fences nest under their ENTITY group.
@@ -1151,6 +1201,10 @@ export const mountContractGrantsPanel = (
           subName.className = 'cg-op-ingredient-name';
           subName.textContent = entry.group;
           sub.appendChild(subName);
+          if (parent === opsResults && kind === 'op') {
+            const section = entry.group === CONTRACT_GRANTS_AI_TOOLS_GROUP ? CONTRACT_GRANTS_AI_TOOLS_GROUP : KIND_TITLE.op;
+            registerOpsTarget(section, subName);
+          }
           if (entry.group === CONTRACT_GRANTS_AI_TOOLS_GROUP) {
             appendLine(sub, CONTRACT_GRANTS_AI_TOOLS_NOTE_ATTR, 'cg-ai-tools-note', CONTRACT_GRANTS_AI_TOOLS_NOTE);
             if (opts.keyKeepsItsTools === true) {
@@ -1173,15 +1227,17 @@ export const mountContractGrantsPanel = (
     root: HTMLElement,
     kinds: readonly GrantEntryKind[],
     emptyNote: string,
-    /** Ops only — the two-axis note. Absent for the entities root. */
+    /** The two-axis note for Ops and Recipes. */
     axisNote?: string,
-    filterOperations = false,
   ): void => {
     clearChildren(root);
+    const filterOperations = root === opsResults;
+    const overview = filterOperations ? opsOverview : root;
+    if (filterOperations) clearChildren(overview);
 
     if (state.error !== null) {
       appendLine(
-        root,
+        overview,
         CONTRACT_GRANTS_ERROR_ATTR,
         'cg-error',
         `Recued could not load what you have said yes to: ${state.error}`,
@@ -1189,7 +1245,7 @@ export const mountContractGrantsPanel = (
     }
 
     if (state.phase === 'loading' && state.universe.length === 0) {
-      appendLine(root, CONTRACT_GRANTS_LOADING_ATTR, 'cg-loading', 'Loading what you have said yes to…');
+      appendLine(overview, CONTRACT_GRANTS_LOADING_ATTR, 'cg-loading', 'Loading what you have said yes to…');
       return;
     }
 
@@ -1209,10 +1265,14 @@ export const mountContractGrantsPanel = (
     summary.textContent = filterOperations && operationFilter.length > 0
       ? `${on} of ${total} granted · ${scoped.length} matching`
       : `${on} of ${total} granted`;
-    root.appendChild(summary);
+    overview.appendChild(summary);
 
     if (axisNote !== undefined) {
-      appendLine(root, CONTRACT_GRANTS_AXIS_NOTE_ATTR, 'cg-axis-note', axisNote);
+      appendLine(overview, CONTRACT_GRANTS_AXIS_NOTE_ATTR, 'cg-axis-note', axisNote);
+      // D-402 — the Ops and Recipes tabs hold the browser tools, which bring the job tools with them.
+      if (agreementGivesJobTools()) {
+        appendLine(overview, CONTRACT_GRANTS_JOB_TOOLS_NOTE_ATTR, 'cg-axis-note', CONTRACT_GRANTS_JOB_TOOLS_NOTE);
+      }
     }
 
     if (scoped.length === 0) {
@@ -1241,6 +1301,8 @@ export const mountContractGrantsPanel = (
     const focusedNeed = activeElement?.hasAttribute?.(CONTRACT_GRANTS_NEED_ATTR) === true
       ? `${activeElement.getAttribute('data-tool') ?? ''}::${activeElement.getAttribute('data-entry') ?? ''}`
       : null;
+    const focusedSection = [...opsTargets].find(([, target]) => target === activeElement)?.[0];
+    opsTargets.clear();
     entryByKey = new Map(state.universe.map((e) => [e.entry_key, e]));
     renderedNeedButtons.clear();
     const totalOps = entriesOfKinds(OPS_KINDS).length;
@@ -1257,8 +1319,15 @@ export const mountContractGrantsPanel = (
       OPS_KINDS,
       'This server has no operations yet.',
       CONTRACT_GRANTS_AXIS_NOTE,
-      true,
     );
+    opsNavigation.hidden = opsTargets.size === 0;
+    for (const [name, button] of opsJumpButtons) {
+      button.hidden = !opsTargets.has(name);
+      if (button.hidden && button === activeElement) operationFilterInput.focus();
+    }
+    if (focusedSection !== undefined) {
+      (opsTargets.get(focusedSection) ?? operationFilterInput).focus();
+    }
     if (contractId !== OWNER_CONTRACT_ID) {
       const labelForm = doc.createElement('div');
       labelForm.className = 'cg-peer-label-form';
@@ -1332,7 +1401,12 @@ export const mountContractGrantsPanel = (
   const applyOperationFilter = (): void => {
     operationFilterTimer = null;
     operationFilter = operationFilterDraft.trim().toLowerCase();
+    // Bring filtered results into view when the sidebar is pinned down the list.
+    const showResults = doc.activeElement === operationFilterInput && opsSidebar.isConnected
+      && opsSidebar.getClientRects().length > 0
+      && opsResults.getBoundingClientRect().top < opsSidebar.getBoundingClientRect().top;
     render();
+    if (showResults) opsResults.scrollIntoView({ block: 'start', inline: 'nearest' });
   };
   operationFilterInput.addEventListener('input', () => {
     operationFilterDraft = operationFilterInput.value;

@@ -392,6 +392,7 @@ export type RecipeErrorCode =
    *  missing `gmail.modify` / `Mail.ReadWrite`. ⚠ A DIFFERENT capability from
    *  sending — a mailbox may do either, both or neither. */
   | 'MAIL_DRAFT_NOT_CAPABLE'
+  | 'MAIL_FOLLOW_UP_CONDITION_STOPPED'
   /** D-264 — IMAP only. The mailbox published no `\Drafts` special-use folder
    *  and none of the known fallback names exists. Nothing was written. */
   | 'MAIL_DRAFT_FOLDER_NOT_FOUND'
@@ -651,6 +652,8 @@ export const ERR: Record<RecipeErrorCode, ErrorSeverity> = {
   // per-call refusal is an `error`, a transient one is an `error` the caller
   // may retry, and the two-copies outcome is a `warn` because the draft SAVED.
   MAIL_DRAFT_NOT_CAPABLE: 'error',
+  // A conditional follow-up its condition stopped (a recipient replied): by design, like a guard (26.11.26 cut).
+  MAIL_FOLLOW_UP_CONDITION_STOPPED: 'warn',
   MAIL_DRAFT_FOLDER_NOT_FOUND: 'error',
   MAIL_DRAFT_WRITE_FAILED: 'error',
   MAIL_DRAFT_AUTH_FAILED: 'error',
@@ -833,6 +836,7 @@ export const ERROR_MESSAGES: Record<RecipeErrorCode, string> = {
   MAIL_SEND_APPEND_FAILED: 'The mail was sent but Recued could not save a copy to your Sent folder. The recipient still received it; your Sent folder will reconcile on the next sync.',
   // D-264 — saved-draft taxonomy.
   MAIL_DRAFT_NOT_CAPABLE: 'This mail account cannot save drafts to your mailbox. Re-enroll it with write access from Settings → Connections, or keep the draft in Recued.',
+  MAIL_FOLLOW_UP_CONDITION_STOPPED: 'Skipped because its condition stopped it, for example a recipient replied. No follow-up was sent.',
   MAIL_DRAFT_FOLDER_NOT_FOUND: 'Recued could not find a Drafts folder in this mailbox, so nothing was saved there. Your draft is still safe in Recued.',
   MAIL_DRAFT_WRITE_FAILED: 'The mail provider refused to save this draft. Your draft is still safe in Recued.',
   MAIL_DRAFT_AUTH_FAILED: 'The mail account refused the draft save. Reconnect the account from Settings → Connections.',
@@ -1037,6 +1041,8 @@ export const ERROR_ATTRIBUTION: Record<RecipeErrorCode, ErrorAttribution> = {
   MAIL_SEND_SELF_LOOP_TO: 'choice',
   MAIL_SEND_APPEND_FAILED: 'environment',
   MAIL_DRAFT_NOT_CAPABLE: 'choice',
+  // The recipe decided not to send, and was right to: never a lesson against it.
+  MAIL_FOLLOW_UP_CONDITION_STOPPED: 'conditional',
   MAIL_DRAFT_FOLDER_NOT_FOUND: 'environment',
   MAIL_DRAFT_WRITE_FAILED: 'choice',
   MAIL_DRAFT_AUTH_FAILED: 'environment',

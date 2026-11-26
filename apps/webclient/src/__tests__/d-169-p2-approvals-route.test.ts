@@ -337,6 +337,9 @@ const mountFor = (
     withSubscriber?: boolean;
     reconnect?: ReturnType<typeof makeFakeReconnect>;
     initialFocusId?: string;
+    initialDecisionKind?: 'gate' | 'ask' | 'plan';
+    initialDecisionQuery?: string;
+    searchReturnHash?: string;
     doc?: FakeDoc;
   } = {},
 ) => {
@@ -379,6 +382,9 @@ const mountFor = (
     ...(opts.initialFocusId !== undefined
       ? { initialFocusId: opts.initialFocusId }
       : {}),
+    ...(opts.initialDecisionKind ? { initialDecisionKind: opts.initialDecisionKind } : {}),
+    ...(opts.initialDecisionQuery !== undefined ? { initialDecisionQuery: opts.initialDecisionQuery } : {}),
+    ...(opts.searchReturnHash ? { searchReturnHash: opts.searchReturnHash } : {}),
     now: () => 1_700_000_100_000,
   });
   return {
@@ -1908,6 +1914,64 @@ describe('bootstrapApprovalsRoute: re-arms approval.subscribe on reconnect', () 
     approvalChanged!.fire(1, 0); // seq 1 must still be accepted
     await tick();
     expect(runApprovalList.mock.calls.length).toBeGreaterThan(listBefore);
+    route.dispose();
+  });
+});
+
+describe('Search matching decision review', () => {
+  const navigation = (root: FakeEl): FakeEl => collectByAttr(root, 'aria-label')
+    .find(node => node.getAttribute('aria-label') === 'Matching decision navigation')!;
+
+  it('keeps kind identity when stepping and resolving matching rows with the same raw id', async () => {
+    const gates = [approval('shared', { description: 'Budget action', created_at: 500 }), approval('unrelated')];
+    let asks = [ask('shared', { title: 'Budget question' }), ask('last', { title: 'Budget follow-up', created_at: 2000 })];
+    const runSubmitAnswer = vi.fn(async (args: { ask_id: string }) => {
+      asks = asks.filter(row => row.ask_id !== args.ask_id); return { ok: true as const };
+    });
+    const { doc, root, route, runApprovalResolve } = mountFor({
+      runApprovalList: async () => ({ approvals: gates }),
+      runApprovalSubscribe: async () => ({ approvals: gates, seq: 0 }),
+      runList: async () => ({ asks }), runSubmitAnswer,
+      initialFocusId: 'shared', initialDecisionKind: 'ask', initialDecisionQuery: 'budget', searchReturnHash: '#data/search',
+    });
+    await route.whenLoaded();
+    const nav = navigation(root), [count, previous, next] = nav.children;
+    expect(count!.textContent).toBe('3 matching decisions remaining. Reviewing 2 of 3.');
+    expect(doc.activeElement).toBe(collectByAttr(root, ASK_CARD_ATTR).find(card => card.getAttribute(APPROVALS_ROUTE_FOCUS_ATTR) === 'shared'));
+    previous!.click();
+    expect(doc.activeElement).toBe(collectByAttr(root, APPROVAL_CARD_ATTR).find(card => card.getAttribute(APPROVALS_ROUTE_FOCUS_ATTR) === 'shared'));
+    next!.click();
+    const question = collectByAttr(root, ASK_CARD_ATTR).find(card => card.getAttribute(APPROVALS_ROUTE_FOCUS_ATTR) === 'shared')!;
+    expect(doc.activeElement).toBe(question);
+    optionButton(question, 'yes')!.focus(); optionButton(question, 'yes')!.click();
+    await tick(20);
+    expect(runSubmitAnswer).toHaveBeenCalledWith({ ask_id: 'shared', option_id: 'yes' });
+    expect(runApprovalResolve).not.toHaveBeenCalled();
+    expect(collectByAttr(root, APPROVAL_CARD_ATTR).find(card => card.getAttribute(APPROVALS_ROUTE_FOCUS_ATTR) === 'shared')).toBeDefined();
+    expect(doc.activeElement?.getAttribute(APPROVALS_ROUTE_FOCUS_ATTR)).toBe('last');
+    expect(count!.textContent).toBe('2 matching decisions remaining. Reviewing 2 of 2.');
+    route.dispose();
+  });
+
+  it('waits for readable display names before declaring the exact arrival no longer matches', async () => {
+    let finishNames!: (value: { recipes: Array<{ recipe_id: string; name: string }> }) => void;
+    const names = new Promise<{ recipes: Array<{ recipe_id: string; name: string }> }>(resolve => { finishNames = resolve; });
+    const gates = [approval('target')];
+    const { doc, root, route } = mountFor({
+      runApprovalList: async () => ({ approvals: gates }),
+      runApprovalSubscribe: async () => ({ approvals: gates, seq: 0 }), runList: async () => ({ asks: [] }),
+      recipeNamesCaller: () => names,
+      initialFocusId: 'target', initialDecisionKind: 'gate', initialDecisionQuery: 'Field review', searchReturnHash: '#data/search',
+    });
+    await route.whenLoaded();
+    const landing = firstByAttr(root, 'data-decision-search-landing')!;
+    expect(landing.textContent).toContain('has not been confirmed');
+    expect(doc.activeElement).not.toBe(landing);
+    finishNames({ recipes: [{ recipe_id: 'recipe-target', name: 'Field review' }] });
+    await tick();
+    expect(doc.activeElement?.getAttribute(APPROVALS_ROUTE_FOCUS_ATTR)).toBe('target');
+    expect(landing.hidden).toBe(true);
+    expect(navigation(root).children[0]!.textContent).toBe('1 matching decision remaining. Reviewing 1 of 1.');
     route.dispose();
   });
 });

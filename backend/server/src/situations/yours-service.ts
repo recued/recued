@@ -1263,6 +1263,8 @@ export const createYoursService = (deps: YoursServiceDeps) => {
     if (input.contact_id !== undefined && (typeof input.contact_id !== 'string' || !input.contact_id || input.contact_id.length > 2000)) throw new Error('Choose the contact for this history');
     if (input.proposal_kind !== undefined && !PROACTIVE_PROPOSAL_KINDS.includes(input.proposal_kind)) throw new Error('Unknown proposal kind');
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > 200 || !Number.isSafeInteger(offset) || offset < 0) throw new Error('Invalid Yours page');
+    if (input.episode_anchor !== undefined && (typeof input.episode_anchor !== 'string' || !input.episode_anchor.trim() || input.episode_anchor.length > 2000
+      || input.asset_id || input.occasion_id || input.episode_id || input.contact_id || input.trace_id || input.include_derived)) throw new Error('An episode anchor applies to the Episodes list');
     if (input.asset_filter !== undefined && !['missing_facts', 'overdue'].includes(input.asset_filter)) throw new Error('Unknown asset filter');
     if (input.asset_sphere !== undefined && !['personal', 'professional', 'unsorted'].includes(input.asset_sphere)) throw new Error('Unknown asset sphere');
     if (input.pursuits !== undefined && input.pursuits !== 'only' && input.pursuits !== 'exclude') throw new Error('Unknown pursuits filter');
@@ -1503,6 +1505,14 @@ export const createYoursService = (deps: YoursServiceDeps) => {
     let episodes = input.episode_id ? [history.episode(input.episode_id)].filter((value): value is NonNullable<typeof value> => !!value)
       : history.listedEpisodes({ ...(input.contact_id ? { person: input.contact_id } : {}), ...(input.occasion_id ? { occasion: input.occasion_id } : {}),
         ...(input.asset_id ? { subject: { collection: 'asset', id: input.asset_id } } : {}) }, limit, offset);
+    let episodePageOffset = offset;
+    if (input.episode_anchor && !episodes.some(episode => episode.id === input.episode_anchor)) {
+      const position = history.listedEpisodeOffset(input.episode_anchor);
+      if (position !== null) {
+        episodePageOffset = Math.floor(position / limit) * limit;
+        episodes = history.listedEpisodes({}, limit, episodePageOffset);
+      }
+    }
     // D-343 slice 5 (D-342 §7) — a pursuit's activity, from the owner's closing records: the day they
     // last did it, and on how many of the last 30 days, on the server's clock. For the Pursuits tab
     // and a pursuit's own page.
@@ -1661,6 +1671,7 @@ export const createYoursService = (deps: YoursServiceDeps) => {
       // D-407 slice 4 — and an occasion's own calendar event, in the calendar chosen once.
       ...(deps.occasionEvents ? { occasion_calendar_events: true as const, occasion_events: deps.occasionEvents() } : {}),
       episodes,
+      ...(episodePageOffset !== offset ? { episode_page_offset: episodePageOffset } : {}),
       ...(deps.episodeRuntime ? { recall_rates: deps.episodeRuntime.rates(), history_receipts: deps.episodeRuntime.receipts(),
         history_evidence: input.trace_id ? [deps.episodeRuntime.trace(input.trace_id)].filter((value): value is NonNullable<typeof value> => !!value) : [],
         ...(derived ? { derived_episodes: derived } : {}) } : {}),

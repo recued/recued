@@ -23,7 +23,7 @@
  */
 
 export const BRIDGE_RESERVATION_MARKER = 'recued.bridge.p3.thin-executor' as const;
-export const BRIDGE_VERSION = '0.0.14' as const;
+export const BRIDGE_VERSION = '0.0.15' as const;
 
 export {
   type BridgeLocalState,

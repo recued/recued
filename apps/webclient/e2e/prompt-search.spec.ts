@@ -1,7 +1,7 @@
 import { expect, test, type Page } from '@playwright/test';
 import { HARNESS_URL, installFullAppHooks } from './helpers/full-app.js';
 import { installPromptRecoveryFixture, PROMPT_RECOVERY_NOW as NOW } from './helpers/prompt-recovery-fixture.js';
-import type { PromptSchedule } from '@recued/contracts';
+import type { PromptSchedule, ServerSchedule } from '@recued/contracts';
 
 installFullAppHooks();
 test.use({ timezoneId: 'America/New_York' });
@@ -32,23 +32,76 @@ const scrollAt = (page: Page, id: string) => comingDetails(page, id).evaluate(el
   return document.scrollingElement?.scrollTop ?? 0;
 });
 
-test('Coming up opens the exact schedule, returns to its scroll and focus, and keeps a separate conversation link', async ({ page }, info) => {
-  const f = await prepare(page);
-  try {
-    const saved = await f.seed({ title: 'Shared <briefing>', prompt: 'Read this exact saved request.', cron_expression: '15 9 * * 2,4', time_zone: 'Asia/Tokyo' });
-    f.overlay(saved.schedule_id, { next_run_at: NOW + 2 * 86400000, skip_state: undefined });
-    for (let i = 0; i < 18; i++) { const other = await f.seed({ title: 'Shared <briefing>', prompt: 'Another request.' });f.overlay(other.schedule_id, { next_run_at: NOW + (i + 1) * 3600000, skip_state: undefined }); }
-    await page.setViewportSize({ width: 390, height: 900 });await go(page, '#automation/coming-up');
-    const link = comingDetails(page, saved.schedule_id);await expect(link).toHaveAccessibleName('Schedule details for Shared <briefing>');await expect(link).toHaveAttribute('href', detailHash(saved));
-    const row = link.locator('xpath=ancestor::li[1]');await expect(row).toContainText('Tuesday, Thursday at 09:15');await expect(row).toContainText('Asia/Tokyo');
-    await expect(row.getByRole('link', { name: 'Open conversation for Shared <briefing>', exact: true })).toHaveAttribute('href', '#chat/session/' + saved.session_id);
-    await link.scrollIntoViewIfNeeded();await link.focus();const top = await scrollAt(page, saved.schedule_id);expect(top).toBeGreaterThan(0);
-    await page.screenshot({ path: info.outputPath('coming-up-prompt-phone.png'), fullPage: true, animations: 'disabled' });await page.keyboard.press('Enter');
-    await expect(page).toHaveURL(new RegExp(detailHash(saved) + '$'));await expect(card(page, saved.schedule_id).getByRole('heading', { name: saved.title, exact: true })).toBeFocused();await expect(panel(page).getByRole('article')).toHaveCount(1);await expect(panel(page)).toContainText(saved.prompt);
-    await page.getByRole('button', { name: 'Back to Coming up', exact: true }).click();await expect(link).toBeFocused();await expect.poll(async () => Math.abs(await scrollAt(page, saved.schedule_id) - top)).toBeLessThanOrEqual(2);
-    await row.getByRole('link', { name: 'Open conversation for Shared <briefing>', exact: true }).click();await expect(page).toHaveURL(new RegExp('#chat/session/' + saved.session_id + '$'));expect(mutations(f)).toEqual([]);expect(f.runs()).toBe(0);
-  } finally { f.dispose(); }
-});
+for (const width of [390, 1440]) {
+  test(`Coming up opens the exact schedule, returns to its scroll and focus, and keeps a separate conversation link at ${width}px`, async ({ page }, info) => {
+    const f = await prepare(page);
+    const recipes = coming(page).getByRole('link', { name: 'Open recipe for agenda-recipe', exact: true });
+    try {
+      const saved = await f.seed({ title: 'Shared <briefing>', prompt: 'Read this exact saved request.', cron_expression: '15 9 * * 2,4', time_zone: 'Asia/Tokyo' });
+      f.overlay(saved.schedule_id, { next_run_at: NOW + 2 * 86_400_000, skip_state: undefined });
+      for (let i = 0; i < (width === 390 ? 18 : 2); i++) {
+        const other = await f.seed({ title: 'Shared <briefing>', prompt: 'Another request.' });
+        f.overlay(other.schedule_id, { next_run_at: NOW + (i + 1) * 3_600_000, skip_state: undefined });
+      }
+      await page.setViewportSize({ width, height: 900 });
+      if (width === 390) {
+        await go(page, '#automation/coming-up');
+      } else {
+        const schedules: ServerSchedule[] = Array.from({ length: 24 }, (_, i) => ({
+          schedule_id: `agenda-recipe-${i}`, recipe_id: 'agenda-recipe', publisher_id: 'core',
+          cron_expression: '0 9 * * *', enabled: true, created_at: NOW, last_run_at: null,
+          last_status: null, last_error: null, next_run_at: NOW + (i + 3) * 3_600_000,
+        }));
+        await page.goto(`${HARNESS_URL}?automation=rules&chat=session&review_clock=browser#chat`);
+        await page.waitForFunction(() => window.__app?.ready === true);
+        await page.evaluate(schedules => {
+          const readPromptFixture = window.__connectionsFixture;
+          window.__connectionsFixture = async (method, args) => method === 'schedules.list'
+            ? { result: { schedules } } : readPromptFixture?.(method, args);
+        }, schedules);
+        await hash(page, '#automation/coming-up');
+        await expect(recipes).toHaveCount(24);
+      }
+      const link = comingDetails(page, saved.schedule_id);
+      await expect(link).toHaveAccessibleName('Schedule details for Shared <briefing>');
+      await expect(link).toHaveAttribute('href', detailHash(saved));
+      const row = link.locator('xpath=ancestor::li[1]');
+      await expect(row).toContainText('Tuesday, Thursday at 09:15');
+      await expect(row).toContainText('Asia/Tokyo');
+      const conversation = row.getByRole('link', { name: 'Open conversation for Shared <briefing>', exact: true });
+      await expect(conversation).toHaveAttribute('href', '#chat/session/' + saved.session_id);
+      await link.scrollIntoViewIfNeeded();
+      await link.focus();
+      const top = await scrollAt(page, saved.schedule_id);
+      expect(top).toBeGreaterThan(0);
+      if (width === 390) {
+        await page.screenshot({ path: info.outputPath('coming-up-prompt-phone.png'), fullPage: true, animations: 'disabled' });
+      }
+      await page.keyboard.press('Enter');
+      await expect(page).toHaveURL(new RegExp(detailHash(saved) + '$'));
+      await expect(card(page, saved.schedule_id).getByRole('heading', { name: saved.title, exact: true })).toBeFocused();
+      await expect(panel(page).getByRole('article')).toHaveCount(1);
+      await expect(panel(page)).toContainText(saved.prompt);
+      if (width === 390) {
+        await page.getByRole('button', { name: 'Back to Coming up', exact: true }).click();
+      } else {
+        await page.evaluate(() => window.__app.holdRpcResponses!('schedules.list'));
+        await page.goBack();
+        await expect(link).toBeFocused();
+        await expect(recipes).toHaveCount(0);
+        expect(await scrollAt(page, saved.schedule_id)).toBeLessThan(top);
+        expect(await page.evaluate(() => window.__app.releaseRpcResponses!('schedules.list'))).toBeGreaterThan(0);
+        await expect(recipes).toHaveCount(24);
+      }
+      await expect(link).toBeFocused();
+      await expect.poll(async () => Math.abs(await scrollAt(page, saved.schedule_id) - top)).toBeLessThanOrEqual(2);
+      await conversation.click();
+      await expect(page).toHaveURL(new RegExp('#chat/session/' + saved.session_id + '$'));
+      expect(mutations(f)).toEqual([]);
+      expect(f.runs()).toBe(0);
+    } finally { f.dispose(); }
+  });
+}
 
 test('Coming up refreshes a changed selection and focuses its explanation before allowing a new selection', async ({ page }) => {
   const f = await prepare(page);

@@ -12,6 +12,9 @@ export const AGENDA_FOCUS = 'data-calendar-agenda-focus';
 export const AGENDA_SOURCE = 'data-calendar-agenda-source';
 export const AGENDA_FIELD = 'data-calendar-agenda-field';
 export const AGENDA_ACTION = 'calendar-agenda-';
+export const CALENDAR_MONTH_WIDE_MEDIA = '(min-width: 1280px) and (hover: hover) and (pointer: fine)';
+export const CALENDAR_MONTH_WORKSPACE_ATTR = 'data-calendar-month-workspace';
+export const CALENDAR_MONTH_DAY_SCROLL_ATTR = 'data-calendar-month-day-scroll';
 const PAGE_SIZE = 100;
 const MAX_PAGES = 100;
 const searchText = (text: string): string => text.normalize('NFC').toLowerCase().replace(/\s+/gu, ' ').trim();
@@ -89,12 +92,18 @@ export const calendarMonthWindow = (day: string, zone: string): AgendaWindow => 
   return calendarAgendaWindow(first, zone, days);
 };
 
+export interface CalendarAgendaPosition {
+  key: string;
+  scrollTop: number;
+  sourcesOpen?: boolean;
+  dayScroll?: { day: string; scrollTop: number };
+}
 export interface CalendarAgendaPreferences {
   view?: 'agenda' | 'month';
   day?: string;
   sources?: string[] | null;
   query?: string;
-  returnTo?: { key: string; scrollTop: number; hash: string; sourcesOpen: boolean };
+  returnTo?: CalendarAgendaPosition & { hash: string };
 }
 const preferences = new WeakMap<object, CalendarAgendaPreferences>();
 /** Navigation preferences belong to one paired bootstrap, without event data. */
@@ -148,7 +157,7 @@ export interface CalendarAgenda {
   record(slug: string, id: string): CollectionRecord | undefined;
   replace(slug: string, record: CollectionRecord): void;
   remove(slug: string, id: string): void;
-  handleAction(action: string, target: HTMLElement): boolean;
+  handleAction(action: string, target: HTMLElement, keyboardActivation?: boolean): boolean;
   handleInput(target: HTMLElement): boolean;
   handleChange(target: HTMLElement): boolean;
   handleKeyDown(event: KeyboardEvent): boolean;
@@ -166,6 +175,7 @@ export const createCalendarAgenda = (deps: {
   newEventButton?(): string;
   createForm?(): string;
   onSearchEverywhere?(query: string): void;
+  wideMonth?(): boolean;
   continuity?: CalendarAgendaPreferences;
 }): CalendarAgenda => {
   const now = deps.now ?? Date.now;
@@ -188,6 +198,7 @@ export const createCalendarAgenda = (deps: {
   const retries = new Set<Promise<void>>();
   let queued = false;
   const currentSelection = () => selection ?? new Set(sources.map(source => source.instance.slug));
+  const hasDayAgenda = () => loaded && sources.some(source => selection === null || selection.has(source.instance.slug));
   const remember = () => {
     if (deps.continuity) Object.assign(deps.continuity, { view, day: selectedDay, query, sources: selection ? [...selection] : null });
   };
@@ -342,6 +353,7 @@ export const createCalendarAgenda = (deps: {
   };
   const render = (): string => {
     const matches = matchingEvents(), selected = currentSelection(), searching = Boolean(searchText(query));
+    const splitMonth = view === 'month' && !searching && deps.wideMonth?.() === true;
     const visible = sources.filter(source => selected.has(source.instance.slug));
     const missing = [...selected].filter(slug => !sources.some(source => source.instance.slug === slug));
     const incomplete = error !== undefined || missing.length > 0 || visible.some(source => source.error !== undefined || source.loading || !source.loaded);
@@ -357,11 +369,17 @@ export const createCalendarAgenda = (deps: {
     const renderDays = (days: readonly AgendaDay[], selectedDayOnly = false) => days.map(day => {
       const rows = matches.filter(event => event.start < day.before && event.end > day.from)
         .sort((a, b) => Number(b.allDay) - Number(a.allDay) || a.start - b.start || a.key.localeCompare(b.key));
-      return `<section class="calendar-agenda-day"${selectedDayOnly ? ' data-calendar-month-selection' : ''} aria-label="${e(dateLabel(day.from, { weekday: 'long', month: 'long', day: 'numeric' }))}">
+      const splitDay = splitMonth && selectedDayOnly;
+      const dayHeading = `
         <h3${selectedDayOnly || searching ? ` tabindex="-1" ${AGENDA_FOCUS}="${selectedDayOnly ? 'selected-day' : 'search-day:' + day.day}"` : ''}>${e(dateLabel(day.from, { weekday: 'long', month: 'short', day: 'numeric' }))}</h3>
-        ${selectedDayOnly ? button('back-to-month', 'Back to month') : ''}
-        ${rows.length ? `<ul>${rows.map(event => renderEvent(event, day)).join('')}</ul>`
-          : `<p class="calendar-agenda-muted">${incomplete || waiting ? 'Events may still be missing.' : 'No saved events.'}</p>`}</section>`;
+        ${selectedDayOnly ? button('back-to-month', 'Back to month', splitDay ? 'chevron-left' : undefined) : ''}`;
+      const dayEvents = rows.length ? `<ul>${rows.map(event => renderEvent(event, day)).join('')}</ul>`
+        : `<p class="calendar-agenda-muted">${incomplete || waiting ? 'Events may still be missing.' : 'No saved events.'}</p>`;
+      return `<section class="calendar-agenda-day${splitDay ? ' calendar-month-day-panel' : ''}"${selectedDayOnly ? ' data-calendar-month-selection' : ''} aria-label="${e(dateLabel(day.from, { weekday: 'long', month: 'long', day: 'numeric' }))}">
+        ${splitDay ? `<header class="calendar-month-day-header">${dayHeading}</header>
+          <div class="calendar-month-day-scroll" ${CALENDAR_MONTH_DAY_SCROLL_ATTR}="${e(day.day)}">${dayEvents}</div>`
+          : dayHeading + dayEvents}
+      </section>`;
     }).join('');
     let content: string;
     if (!loaded) content = error ? '' : '<p role="status">Loading calendars…</p>';
@@ -370,6 +388,7 @@ export const createCalendarAgenda = (deps: {
     else if (!matches.length) content = waiting ? '<p role="status">Loading events…</p>'
       : incomplete ? '<p>Calendar results are incomplete. Check your calendars and try again.</p>'
       : searching ? `<p>No matching saved events in this ${scope}.</p>` : '<p>No saved events in this date range.</p>';
+    else if (view === 'month' && !searching) content = '';
     else content = renderDays(searching ? window.days.filter(day => matches.some(event => event.start < day.before && event.end > day.from)) : window.days);
     if (view === 'month') {
       const month = renderCalendarMonth({ window, selectedDay, today: calendarDateIn(now(), zone), events: matches,
@@ -378,8 +397,13 @@ export const createCalendarAgenda = (deps: {
         actionAttr: deps.actionAttr, actionPrefix: AGENDA_ACTION, focusAttr: AGENDA_FOCUS, sourceAttr: AGENDA_SOURCE,
         sourceLabels: new Map(sources.map(source => [source.instance.slug, sourceLabel(source.instance)])), dateLabel, timeLabel,
       });
-      content = searching ? content + month : month + (loaded && sources.length && visible.length
-        ? renderDays(window.days.filter(day => day.day === selectedDay), true) : content);
+      if (searching) content += month;
+      else {
+        const dayAgenda = loaded && visible.length
+          ? renderDays(window.days.filter(day => day.day === selectedDay), true)
+          : splitMonth && content ? `<div class="calendar-month-day-panel calendar-month-day-status">${content}</div>` : content;
+        content = splitMonth ? `<div class="calendar-month-workspace" ${CALENDAR_MONTH_WORKSPACE_ATTR}>${month}${dayAgenda}</div>` : month + dayAgenda;
+      }
     }
     return `<section class="calendar-agenda" data-calendar-agenda aria-label="Calendar agenda">
       <div class="calendar-agenda-heading"><div class="calendar-agenda-title"><h2>Calendar</h2><p class="calendar-agenda-range">${e(heading)}</p></div>
@@ -445,7 +469,7 @@ export const createCalendarAgenda = (deps: {
     },
     remove: (slug, id) => { const source = sources.find(source => source.instance.slug === slug); if (source) source.records = source.records.filter(record => record.record_id !== id); },
     isBusy: () => loading || sources.some(source => source.loading),
-    handleAction: (action, target) => {
+    handleAction: (action, target, keyboardActivation) => {
       if (!action.startsWith(AGENDA_ACTION)) return false;
       const name = action.slice(AGENDA_ACTION.length);
       if (name === 'search-everywhere') {
@@ -462,9 +486,14 @@ export const createCalendarAgenda = (deps: {
       } else if (name === 'day') {
         const day = target.getAttribute(MONTH_DAY_ATTR);
         if (view === 'month' && day) {
-          const targetDay = window.days.find(value => value.day === day);
-          const hasMatch = targetDay && matchingEvents().some(event => event.start < targetDay.before && event.end > targetDay.from);
-          pendingFocus = !searchText(query) ? 'selected-day' : hasMatch ? 'search-day:' + day : 'day:' + day;
+          if (searchText(query)) {
+            const targetDay = window.days.find(value => value.day === day);
+            const hasMatch = targetDay && matchingEvents().some(event => event.start < targetDay.before && event.end > targetDay.from);
+            pendingFocus = hasMatch ? 'search-day:' + day : 'day:' + day;
+          } else {
+            const openAgenda = keyboardActivation || target.getAttribute(AGENDA_FOCUS)?.startsWith('more:');
+            pendingFocus = deps.wideMonth?.() === true && (!openAgenda || !hasDayAgenda()) ? 'day:' + day : 'selected-day';
+          }
           chooseDay(day);
         }
       } else if (name === 'back-to-month' && view === 'month') { pendingFocus = 'day:' + selectedDay; paint(); }
@@ -560,7 +589,7 @@ ${CALENDAR_MONTH_STYLES}
 .calendar-agenda .calendar-agenda-view > .data-button[data-calendar-view][aria-pressed="true"] { background:var(--surface); border-color:var(--border); color:var(--fg); }
 .calendar-agenda-dates { flex:1 1 29rem; min-width:0; justify-content:flex-end; align-items:end; }
 .calendar-agenda-stepper { display:flex; align-items:center; gap:4px; }
-.calendar-agenda :is(.calendar-agenda-stepper,.calendar-agenda-search-field) .data-button.calendar-agenda-icon-button { flex:none; width:var(--wc-control-h,44px); min-width:var(--wc-control-h,44px); padding:0; }
+.calendar-agenda :is(.calendar-agenda-stepper,.calendar-agenda-search-field,.calendar-month-day-header) .data-button.calendar-agenda-icon-button { flex:none; width:var(--wc-control-h,44px); min-width:var(--wc-control-h,44px); padding:0; }
 .calendar-agenda-dates label { display:grid; flex:1 1 10rem; gap:4px; min-width:0; max-width:12.5rem; font-size:12px; color:var(--fg-muted); }
 .calendar-agenda-dates input { box-sizing:border-box; width:100%; min-width:0; min-height:var(--wc-control-h,44px); }
 .calendar-agenda-search { display:flex; flex-wrap:wrap; align-items:end; gap:8px; }
@@ -590,6 +619,21 @@ ${CALENDAR_MONTH_STYLES}
 .calendar-agenda-source { padding:.6rem 0; display:flex; flex-direction:column; gap:.3rem; }
 .calendar-agenda-source label { display:flex; flex-direction:row; align-items:center; gap:.6rem; min-height:2.75rem; }
 .calendar-agenda-source-controls { padding-top:.75rem; }
+.calendar-month-workspace {
+  display:grid; grid-template-columns:minmax(0,1fr) clamp(220px,29%,312px); align-items:start; gap:16px; min-width:0;
+}
+.calendar-agenda .calendar-month-day-panel {
+  position:sticky; inset-block-start:16px; display:flex; flex-direction:column; min-width:0;
+  max-height:clamp(180px,50dvh,560px); padding:0; border:1px solid var(--border);
+  border-radius:var(--wc-radius-lg,12px); background:var(--surface);
+}
+.calendar-month-day-header { display:flex; align-items:center; justify-content:space-between; gap:8px; padding:8px 12px; border-bottom:1px solid var(--border); }
+.calendar-month-day-panel .calendar-month-day-header h3 { min-width:0; margin:0; font-size:14px; overflow-wrap:anywhere; }
+.calendar-month-day-scroll { min-height:0; overflow:auto; overscroll-behavior:contain; scrollbar-width:thin; padding:10px; }
+.calendar-month-day-panel .calendar-agenda-event { grid-template-columns:minmax(0,1fr); gap:4px; padding:8px 10px; }
+.calendar-month-day-panel .calendar-agenda-time, .calendar-month-day-panel .calendar-agenda-muted { font-size:12px; }
+.calendar-month-day-panel .calendar-agenda-event:focus-visible { outline-offset:-2px; }
+.calendar-agenda .calendar-month-day-status { padding:12px; }
 @media(max-width:600px) {
   .calendar-agenda-event { grid-template-columns:minmax(0,1fr); gap:.4rem; }
 }

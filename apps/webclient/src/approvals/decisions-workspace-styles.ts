@@ -67,6 +67,10 @@ export const APPROVALS_ROUTE_CHROME_STYLES = `
 [data-recued-approvals-route] .approvals-filter-button { display: inline-flex; align-items: center; justify-content: center; min-width: 0; max-width: 100%; min-height: var(--wc-control-h); padding: 6px 12px; font: inherit; font-size: 12px; line-height: 1.4; white-space: normal; overflow-wrap: anywhere;
   border: 1px solid var(--border-strong); border-radius: var(--wc-radius, 9px); color: var(--fg); background: var(--surface); cursor: pointer; }
 [data-recued-approvals-route] .approvals-filter-button[aria-pressed=true] { border-color:var(--accent); background:var(--surface-sunk); font-weight:600; }
+[data-recued-approvals-route] .approvals-review-navigation { display:flex; flex-wrap:wrap; align-items:center; gap:8px; margin:0 0 16px; }
+[data-recued-approvals-route] .approvals-review-count { flex:1 1 100%; margin:0; color:var(--muted); }
+[data-recued-approvals-route] .approvals-review-navigation .approvals-filter-button { flex:1 1 12rem; }
+[data-recued-approvals-route] .approvals-review-navigation [aria-disabled=true] { cursor:not-allowed; opacity:.65; }
 [data-recued-approvals-route] :is(.approvals-filter-button,.approvals-search-input):focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
 [data-recued-approvals-route] .approvals-filter-empty { margin:0; padding:16px; color:var(--muted); border:1px dashed var(--border); border-radius:8px; }
 [data-recued-approvals-route] [data-recued-approvals-focus][hidden],
@@ -165,6 +169,73 @@ export const APPROVALS_ROUTE_CHROME_STYLES = `
 [data-recued-approvals-route] .approvals-list {
   display: grid;
   gap: 16px;
+}
+[data-recued-approvals-route] :is(.approvals-workspace, .approvals-review-pane) { display: contents; }
+[data-recued-approvals-route] .approvals-queue[hidden] { display: none; }
+[data-recued-approvals-route] [data-approvals-queue-layout] {
+  display: grid;
+  grid-template-columns: minmax(240px, 288px) minmax(0, 1fr);
+  align-items: start;
+  gap: 24px;
+}
+[data-recued-approvals-route] [data-approvals-queue-layout] .approvals-review-pane {
+  display: block;
+  min-width: 0;
+}
+[data-recued-approvals-route] [data-approvals-queue-layout] .approvals-list > [data-recued-approvals-focus]:not([data-approvals-queue-selected]) {
+  display: none;
+}
+[data-recued-approvals-route] .approvals-queue {
+  position: sticky;
+  top: 16px;
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  max-height: calc(100dvh - 104px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--wc-radius-lg, 12px);
+  background: var(--surface);
+}
+[data-recued-approvals-route] .approvals-queue > button {
+  display: grid;
+  min-width: 0;
+  min-height: 60px;
+  align-content: center;
+  gap: 3px;
+  padding: 8px 10px;
+  border: 1px solid transparent;
+  border-radius: var(--wc-radius, 9px);
+  background: transparent;
+  color: var(--fg);
+  font: inherit;
+  text-align: start;
+  cursor: pointer;
+}
+[data-recued-approvals-route] .approvals-queue > button:hover { background: var(--surface-sunk); }
+[data-recued-approvals-route] .approvals-queue > button[aria-selected="true"] {
+  border-color: var(--accent);
+  background: var(--accent-weak);
+}
+[data-recued-approvals-route] .approvals-queue > button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -3px;
+}
+[data-recued-approvals-route] .approvals-queue-title {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  font-size: 13px;
+  font-weight: 600;
+}
+[data-recued-approvals-route] .approvals-queue-meta {
+  overflow-wrap: anywhere;
+  color: var(--muted);
+  font-size: 12px;
 }
 /* The full inbox gives each shared card the same context / evidence / action
    hierarchy. Scope these rules to this route so compact consumers keep their

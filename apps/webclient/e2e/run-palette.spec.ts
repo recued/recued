@@ -28,7 +28,7 @@ test('page context ranks actual matches first and fills renamed arguments withou
   await expect(page.locator('[data-action="records-close-record"]')).toBeVisible();
   await openGlobalRunPalette(page);
   await page.getByRole('combobox', { name: 'Recipe' }).click();
-  const options = page.getByRole('option');
+  const options = page.locator(`[${RUN_PALETTE}]`).getByRole('option');
   await expect(options.first()).toContainText('Follow up on this job');
   await expect(options.first()).toContainText('Prefills 2 arguments from this page');
   const reads = await page.evaluate(() => window.__app.rpcCallCount('recipe.get'));

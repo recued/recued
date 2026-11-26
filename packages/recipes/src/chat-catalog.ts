@@ -35,7 +35,7 @@
  *  Spec: § A.1.1 (Tier 2 surface enumeration) + § P1 phase notes.
  */
 
-import { BROWSER_ACT_STEPS_ARGUMENT_SCHEMA, recipeBrowserSettings } from '@recued/contracts';
+import { BROWSER_ACT_STEPS_ARGUMENT_SCHEMA, browserStepBinding, recipeBrowserSettings } from '@recued/contracts';
 import type {
   IngredientKind,
   IngredientManifest,
@@ -721,9 +721,12 @@ export const deriveTier2ArgSchema = (
   // Derive from the actual op binding, not a recipe name or publisher. This
   // applies equally to installed Toolkit recipes and owner-authored wrappers.
   for (const step of recipe.steps ?? []) {
-    if ('op' in step && step.op === 'core.dom.inspect' && 'args' in step && step.args
-      && Object.keys(step).every(key => ['id', 'op', 'args'].includes(key))) {
-      const args = step.args as Record<string, unknown>;
+    const browser = browserStepBinding(step);
+    if (!browser) continue;
+    const { op, args } = browser;
+    const bindingKeys = 'op' in step ? ['id', 'op', 'args'] : ['id', 'ingredient', 'input'];
+    const bareStep = Object.keys(step).every(key => bindingKeys.includes(key));
+    if (op === 'core.dom.inspect' && bareStep) {
       const binding = (value: unknown) => typeof value === 'string' ? /^\{\{config\.([A-Za-z0-9_]+)\}\}$/.exec(value)?.[1] : undefined;
       const find = binding(args.find), from = binding(args.from), block = binding(args.block);
       if (find && from && browserKinds.get(find) === 'text' && properties[from]?.type === 'number') {
@@ -732,19 +735,18 @@ export const deriveTier2ArgSchema = (
         if (block && properties[block]) browserConstraints.push({ anyOf: [find, block].map(key => ({ properties: { [key]: { const: '' } } })) });
       }
     }
-    if (!('op' in step) || step.op !== 'core.dom.act' || !('args' in step) || !step.args) continue;
-    const binding = (step.args as { steps?: unknown }).steps;
+    if (op !== 'core.dom.act') continue;
+    const binding = args.steps;
     const name = typeof binding === 'string' ? /^\{\{config\.([A-Za-z0-9_]+)\}\}$/.exec(binding)?.[1] : undefined;
     if (name && browserKinds.get(name) === 'steps' && properties[name]?.type === 'array') properties[name] = { ...properties[name], ...BROWSER_ACT_STEPS_ARGUMENT_SCHEMA,
       // A direct unconditional Act wrapper can classify parser failure as
       // deterministic for unchanged-call suppression. The data DSL marker alone
       // must not grant that inference to conditional or multi-step recipes.
-      ...(recipe.steps.length === 1 && !recipe.prefetch_steps?.length && !recipe.depends_on?.length
-        && Object.keys(step).every(key => ['id', 'op', 'args'].includes(key))
+      ...(bareStep && recipe.steps.length === 1 && !recipe.prefetch_steps?.length && !recipe.depends_on?.length
         ? { 'x-recued-browser-act-direct': true } : {}),
     };
     if (name && properties[name]?.['x-recued-browser-act-direct'] === true) {
-      const pageBinding = (step.args as { page?: unknown }).page;
+      const pageBinding = args.page;
       const page = typeof pageBinding === 'string' ? /^\{\{config\.([A-Za-z0-9_]+)\}\}$/.exec(pageBinding)?.[1] : undefined;
       if (page && properties[page]?.type === 'string') browserConstraints.push({ anyOf: [
         { required: [page], properties: { [page]: { type: 'string', minLength: 1 } } },

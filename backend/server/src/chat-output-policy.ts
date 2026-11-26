@@ -30,6 +30,8 @@
  *
  *  ⚠ COSTS OUTPUT TOKENS ON EVERY TURN, including the trivial ones that need no
  *  derivation. That is the open trade — see the optimization log entry. */
+import { BROWSER_TOOLKIT_RECIPE_SLUGS } from '@recued/contracts';
+
 /** The baseline remains unchanged for on/default. Off is selected after routing. */
 export const CHAT_OUTPUT_SHAPE = `AIOutput shape:
 {
@@ -67,4 +69,4 @@ export const chatThinkingOffPrompt = (prompt: string, additionalShape: string, b
 
 export const browserActionContext = (namedPages: readonly unknown[] | undefined,
   calls: readonly { readonly tool_name: string }[] | undefined): boolean => Boolean(namedPages?.length)
-  || Boolean(calls?.some(call => /(?:^|\/)(?:act-on-web-page|inspect-web-page|open-web-page|list-browser-tabs|list-browser-bridges|read-web-text|read-web-element|read-web-table|ask-web-page|wait-for-web-element|save-web-file|screenshot-web-page|scroll-web-page|type-into-web-page|click-web-element|press-on-web-page)$/.test(call.tool_name)));
+  || Boolean(calls?.some(call => BROWSER_TOOLKIT_RECIPE_SLUGS.has(call.tool_name.slice(call.tool_name.lastIndexOf('/') + 1))));

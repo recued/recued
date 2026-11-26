@@ -41,6 +41,7 @@ import {
   type ReceptionPagePreferredContactMethod,
 } from '@recued/contracts';
 import { renderSection, type RenderContext } from '@recued/renderer';
+import { RECEPTION_PAGE_STYLE_SRC } from '../static-assets.js';
 
 // ────────────────────────────────────────────────────────────────
 // The render context every reception surface uses
@@ -186,7 +187,7 @@ const renderHead = (title: string): string => `<!DOCTYPE html>
 <meta name="robots" content="noindex,nofollow">
 <title>${htmlEscape(title)}</title>
 <link rel="icon" href="${RECEPTION_PAGE_STATIC_PATH_PREFIX}favicon.ico">
-<link rel="stylesheet" href="${RECEPTION_PAGE_STATIC_PATH_PREFIX}style.css">
+<link rel="stylesheet" href="${RECEPTION_PAGE_STYLE_SRC}">
 </head>`;
 
 /** D-149 P12 § A.20.7 — `trust_footer` is the string returned by
@@ -194,13 +195,28 @@ const renderHead = (title: string): string => `<!DOCTYPE html>
  *  interpolated value (the display name). It is already HTML-safe;
  *  interpolate it VERBATIM and do NOT re-escape — re-escaping would
  *  double-encode the display name. `null` / absent ⇒ no trust block. */
-const renderFooter = (tz_label: string, trust_footer?: string | null): string => {
+const renderFooter = (tz_label: string | null, trust_footer?: string | null): string => {
   const trustLine =
     typeof trust_footer === 'string' && trust_footer.length > 0
       ? `<p class="rcp-trust-footer">${trust_footer}</p>\n`
       : '';
-  return `<div class="rcp-footer">${trustLine}Powered by Recued · ${htmlEscape(tz_label)}</div>`;
+  const timezone = tz_label === null ? '' : ` · ${htmlEscape(tz_label)}`;
+  return `<div class="rcp-footer">${trustLine}Powered by Recued${timezone}</div>`;
 };
+
+/** A fixed page for expired and revoked links, independent of endpoint data. */
+export const renderReceptionLinkUnavailableHtml = (): string => `${renderHead('Link unavailable')}
+<body>
+<main class="rcp-shell">
+<div class="rcp-card">
+<h1 class="rcp-name">This link is unavailable</h1>
+<p class="rcp-tagline">Ask the sender for a new link.</p>
+${renderFooter(null)}
+</div>
+</main>
+</body>
+</html>
+`;
 
 /** Render the substrate placeholder body. Wrapped in the same shell as
  *  the configured render so the configured vs unconfigured surfaces
@@ -242,22 +258,15 @@ ${renderFooter(tz_label)}
 const renderLinkButtonsSection = (value: unknown): string => {
   const buttons = selectValidReceptionLinkButtons(value);
   if (buttons.length === 0) return '';
-  return `<div class="rcp-section">
-<p class="rcp-section-title">Links</p>
+  return `<section class="rcp-section" aria-labelledby="rcp-landing-link-buttons-title">
+<h2 class="rcp-section-title" id="rcp-landing-link-buttons-title">Links</h2>
 ${renderSection({ kind: 'link_button', data: buttons }, RECEPTION_RENDER_CONTEXT)}
-</div>`;
+</section>`;
 };
 
 /** Render the configured reception_page body. Packet fields arrive through
  *  the D-145 substrate (strict-pick + per-kind transformation). */
 export const renderReceptionPageHtml = (input: ReceptionPageRenderInput): string => {
-  const linkButtons = selectValidReceptionLinkButtons(input.link_buttons);
-  const sectionsEmpty =
-    input.preferred_contact_methods.length === 0 &&
-    input.cta_buttons.length === 0 &&
-    (input.custom_links?.length ?? 0) === 0 &&
-    linkButtons.length === 0;
-
   const avatarBlock = input.avatar_url
     ? `<img class="rcp-avatar" src="${htmlEscape(input.avatar_url)}" alt="">`
     : `<div class="rcp-avatar" aria-hidden="true"></div>`;
@@ -280,8 +289,8 @@ ${
 
   const methodsBlock =
     input.preferred_contact_methods.length > 0
-      ? `<div class="rcp-section">
-<p class="rcp-section-title">Reach me via</p>
+      ? `<div class="rcp-section rcp-landing-methods">
+<h2 class="rcp-section-title">Reach me via</h2>
 <div class="rcp-methods">${input.preferred_contact_methods
           .map(
             (m) =>
@@ -293,8 +302,9 @@ ${
 
   const ctaBlock =
     input.cta_buttons.length > 0
-      ? `<div class="rcp-section">
-<p class="rcp-section-title">Quick actions</p>
+      ? `<nav class="rcp-section rcp-landing-actions" aria-labelledby="rcp-landing-actions-title">
+<h2 class="rcp-section-title" id="rcp-landing-actions-title">Quick actions</h2>
+<div class="rcp-landing-action-list">
 ${input.cta_buttons
           .map(
             (b) =>
@@ -309,42 +319,52 @@ ${input.cta_buttons
               `<a class="rcp-cta" href="${htmlEscape(b.href)}" rel="noopener noreferrer">${htmlEscape(b.label)}</a>`,
           )
           .join('')}
-</div>`
+</div>
+</nav>`
       : '';
 
   const customLinksBlock =
     input.custom_links && input.custom_links.length > 0
-      ? `<div class="rcp-section">
-<p class="rcp-section-title">Other links</p>
+      ? `<section class="rcp-section" aria-labelledby="rcp-landing-custom-links-title">
+<h2 class="rcp-section-title" id="rcp-landing-custom-links-title">Other links</h2>
 ${input.custom_links
           .map(
             (l) =>
               `<a class="rcp-link" href="${htmlEscape(l.url)}" rel="noopener noreferrer">${htmlEscape(l.label)}</a>`,
           )
           .join('')}
-</div>`
+</section>`
       : '';
 
   const linkButtonsBlock = renderLinkButtonsSection(input.link_buttons);
+  const supportingLinks = customLinksBlock || linkButtonsBlock
+    ? `<div class="rcp-landing-links">
+${customLinksBlock}
+${linkButtonsBlock}
+</div>`
+    : '';
 
-  const placeholderHint = sectionsEmpty
+  const placeholderHint = !methodsBlock && !ctaBlock && !supportingLinks
     ? `<p class="rcp-placeholder">${htmlEscape(RECEPTION_PAGE_PLACEHOLDER_TEXT)}</p>`
     : '';
 
   return `${renderHead(input.display_name)}
 <body>
-<div class="rcp-shell">
+<main class="rcp-shell rcp-landing-shell">
 <div class="rcp-card">
+<div class="rcp-landing-main">
+<div class="rcp-landing-profile">
 ${headerBlock}
 ${responseTimeBlock}
 ${methodsBlock}
+</div>
 ${ctaBlock}
-${customLinksBlock}
-${linkButtonsBlock}
+</div>
+${supportingLinks}
 ${placeholderHint}
 ${renderFooter(input.tz_label, input.trust_footer ?? null)}
 </div>
-</div>
+</main>
 </body>
 </html>
 `;

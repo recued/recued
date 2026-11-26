@@ -24,6 +24,10 @@ const installSearch = async (page: Page, saved = false, capabilities = false) =>
       anchors: [], attributes: {}, settings: {}, rules: [], field_sources: {}, retirement: 'part', created_at: 1, updated_at: 1 });
     Object.assign(window, { __assetSearchDrive: drive, __connectionsFixture: async (method: string, input: unknown) => {
       const args = (input ?? {}) as YoursReadRequest & { query?: string };
+      if (method === 'approval.list') return { result: { approvals: [] } };
+      if (method === 'notification.pending_asks') return { result: { asks: [] } };
+      if (method === 'chat.plans.pending.list') return { result: { plans: [] } };
+      if (method === 'pair.list') return { result: { devices: [] } };
       if (method === 'yours.read' && args.search) {
         drive.calls.push(structuredClone(args));
         const all = args.search === 'passport' ? Array.from({ length: 17 }, (_, index) => asset(index))

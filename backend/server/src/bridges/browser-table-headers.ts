@@ -1,3 +1,4 @@
+import { isBridgeTableSort, type BridgeTableSort } from '@recued/contracts';
 import type { OutlineElement } from './page-outline.js';
 
 const role = (node: OutlineElement) => String(node.attrs.role ?? '').trim().split(/\s+/)[0];
@@ -16,7 +17,7 @@ const text = (node: OutlineElement): string => {
 /** Summarize only observed headers. The host marker proves span metadata was
  * preserved; older captures supply header texts without claiming alignment. */
 export const browserTableHeaders = (root: OutlineElement, sourceComplete: boolean): {
-  headers?: string[]; columns?: string[]; columns_complete?: boolean;
+  headers?: string[]; columns?: string[]; columns_complete?: boolean; sort?: BridgeTableSort;
 } => {
   const rows: Array<{ node: OutlineElement; inHead: boolean }> = [], pending = [{ node: root, inHead: false }];
   let visited = 0, bounded = true;
@@ -29,6 +30,7 @@ export const browserTableHeaders = (root: OutlineElement, sourceComplete: boolea
     for (const child of [...node.children].reverse()) if (child.kind === 'element') pending.push({ node: child, inHead: inHead || node.tag === 'thead' });
   }
   const headers: string[] = [], layout: string[][] = [], carried: Array<{ value: string; rows: number } | undefined> = [];
+  const sortHeaders: BridgeTableSort[] = [];
   let width = 0, body = false;
   for (const { node, inHead } of rows) {
     const cells: OutlineElement[] = [];
@@ -54,6 +56,12 @@ export const browserTableHeaders = (root: OutlineElement, sourceComplete: boolea
       fill();
       const value = header ? text(cell) : '';
       if (header) { if (headers.length < 8 && value.length <= 80) headers.push(value); else bounded = false; }
+      const direction = typeof cell.attrs['aria-sort'] === 'string' ? cell.attrs['aria-sort'].trim().toLowerCase() : undefined;
+      if (sortHeaders.length < 2 && (direction === 'ascending' || direction === 'descending' || direction === 'other')
+        && (cell.tag === 'th' || role(cell) === 'columnheader' || role(cell) === 'rowheader')) {
+        const label = (header ? value : text(cell)) || String(cell.attrs['aria-label'] ?? '').trim();
+        sortHeaders.push({ header: label, direction });
+      }
       const across = span(cell, 'colspan', 100), down = span(cell, 'rowspan', 5_000);
       for (let index = 0; index < across; index++) { row[column] = value; carried[column] = down > 1 ? { value, rows: down - 1 } : undefined; column++; }
     }
@@ -67,7 +75,8 @@ export const browserTableHeaders = (root: OutlineElement, sourceComplete: boolea
     if (columns.length === 8 || name.length > 80) { bounded = false; break; }
     columns.push(name);
   }
-  if (!headers.length && !columns.length) return {};
+  const sort = sortHeaders.length === 1 && isBridgeTableSort(sortHeaders[0]) ? sortHeaders[0] : undefined;
+  if (!headers.length && !columns.length) return sort ? { sort } : {};
   return { ...(headers.length ? { headers } : {}), ...(columns.length ? { columns } : {}),
-    columns_complete: aligned && layout.length > 0 && bounded && sourceComplete };
+    columns_complete: aligned && layout.length > 0 && bounded && sourceComplete, ...(sort ? { sort } : {}) };
 };

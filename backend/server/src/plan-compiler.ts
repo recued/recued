@@ -52,7 +52,7 @@
 import {
   BROWSER_COLLECT_MAX_ITEMS, BROWSER_COLLECT_MAX_PAGES, BROWSER_COLLECT_MAX_SECONDS,
   BROWSER_ACT_CHECK_SECONDS, BROWSER_ACT_MAX_STEPS, BROWSER_ACT_MAX_TOTAL_WAIT_SECONDS, BROWSER_ACT_MAX_WAIT_SECONDS, BROWSER_ACT_MAX_WITHIN_TEXTS, browserActStepWaitSeconds, browserAddressesMatch, parseBrowserActSteps,
-  parseBrowserCollectSelector, type BrowserActStep, type RecipeDefinition,
+  parseBrowserCollectSelector, BROWSER_TOOLKIT_RECIPE_SLUGS, type BrowserActStep, type RecipeDefinition,
 } from '@recued/contracts';
 import type { BrowserPlanActedStep, BrowserPlanCallWithSteps } from './bridges/browser-flow-record.js';
 import {
@@ -195,10 +195,8 @@ const pagesShown = (call: BrowserPlanCallWithSteps): Array<{ page?: string; url:
   return out;
 };
 
-/** The Browser Toolkit's recipes, by id. */
-const TOOLKIT = new Set(['list-browser-bridges', 'list-browser-tabs', 'open-web-page', 'inspect-web-page', 'read-web-text',
-  'read-web-element', 'wait-for-web-element', 'read-web-table', 'save-web-file', 'screenshot-web-page', 'ask-web-page',
-  'scroll-web-page', 'type-into-web-page', 'click-web-element', 'press-on-web-page', 'act-on-web-page']);
+/** The Browser Toolkit's recipes, by id: the one list, in contracts, held equal to the pack's. */
+const TOOLKIT = BROWSER_TOOLKIT_RECIPE_SLUGS;
 const READS = new Set(['inspect-web-page', 'read-web-text', 'read-web-element', 'read-web-table', 'screenshot-web-page']);
 /** Slice B3 — the HTTP Toolkit's recipes, each one `core.http.*` op. */
 const HTTP: Readonly<Record<string, string>> = { 'get-web-address': 'core.http.get', 'read-web-address': 'core.http.read',
@@ -956,7 +954,7 @@ export const compilePlan = (input: PlanCompileInput): CompiledPlanRecipe => {
         const fixedPause = (raw: unknown): boolean => record(raw) && raw.do === 'wait' && typeof raw.seconds === 'number'
           && Object.keys(raw).every((key) => ['do', 'seconds', 'page'].includes(key));
         // Rule 9 — pages turned by hand: page links ("2", "Next") clicked one after another.
-        const turns = steps.slice(0, last).filter((raw, index) => record(raw) && raw.do === 'click'
+        const turns = steps.slice(0, last).filter((raw, index) => record(raw) && raw.do === 'click' && raw.count !== 2
           && /^(\d{1,3}|next|next page|›|»|>)$/iu.test(actedAt(index + 1)?.element.label.trim() ?? '')).length;
         // Slice D5b (rule 9, task M) — pages turned by their numbers on one address, each turn followed by
         // the same waits and reads: a loop over the page links a read before the turns showed.
@@ -967,7 +965,7 @@ export const compilePlan = (input: PlanCompileInput): CompiledPlanRecipe => {
         };
         const pageLoop = ((): { from: number; to: number; unit: Record<string, unknown>[]; links: PageLinks; above: number;
           address: string; role?: string } | undefined => {
-          const at = steps.slice(0, last).flatMap((raw, index) => (record(raw) && raw.do === 'click'
+          const at = steps.slice(0, last).flatMap((raw, index) => (record(raw) && raw.do === 'click' && raw.count !== 2
             && /^\d{1,3}$/u.test(actedAt(index + 1)?.element.label.trim() ?? '') ? [index] : []));
           if (at.length < 2) return undefined;
           const labels = at.map((index) => actedAt(index + 1)!.element.label.trim());
@@ -1636,10 +1634,12 @@ export const compilePlan = (input: PlanCompileInput): CompiledPlanRecipe => {
   const answered = steps.filter((step) => step.op === 'core.ai.prompt' && String(step.id).startsWith('answer_')).length;
   // Slice E3a — and those that pick one of the items a page lists.
   const pickSteps = steps.filter((step) => step.op === 'core.ai.score').length;
-  const actions = groups.flat().filter((piece) => ['type', 'click', 'press', 'submit', 'download', 'upload'].includes(String(piece.step.do)));
+  const actions = groups.flat().filter((piece) => ['type', 'click', 'press', 'seek', 'submit', 'download', 'upload'].includes(String(piece.step.do)));
   const verbs: Record<string, string> = { type: 'type into', click: 'click', press: 'press a key in', submit: 'send',
-    download: 'save', upload: 'upload into' };
-  const summary = actions.slice(0, 3).map((piece) => `${verbs[String(piece.step.do)]!} ${quoted(piece.label
+    download: 'save', upload: 'upload into', seek: 'seek within' };
+  const summary = actions.slice(0, 3).map((piece) => `${piece.step.do === 'click' && piece.step.count === 2 ? 'double-click'
+    : piece.step.do === 'type' && piece.step.delivery === 'paste' ? 'paste into'
+    : verbs[String(piece.step.do)]!} ${quoted(piece.label
     ?? String(piece.step.text ?? piece.step.selector ?? ''))}`).join(', ');
   const name = (input.title ?? (actions.length > 0 ? `On ${site}: ${summary}${actions.length > 3 ? '…' : ''}` : `Read ${sites.join(', ') || site}`)).slice(0, 100);
   const recipe = {

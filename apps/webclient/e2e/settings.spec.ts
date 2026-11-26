@@ -1902,7 +1902,7 @@ test('Settings Account gives dashboard handoffs full mobile targets', async ({ p
 test('Settings Account Connect owns its pending command and refreshed binding', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(
-    `${HARNESS_URL}?account=unbound&account_bind_response=slow`,
+    `${HARNESS_URL}?account=unbound&hold_rpc=account.bind`,
   );
   await page.waitForFunction(() => window.__app?.ready === true);
   await page.evaluate(() => window.__app.setHash('#settings/account'));
@@ -1941,6 +1941,7 @@ test('Settings Account Connect owns its pending command and refreshed binding', 
     () => page.evaluate(() => window.__app.rpcCallCount('account.bind')),
   ).toBe(1);
 
+  expect(await page.evaluate(() => window.__app.releaseRpcResponses('account.bind'))).toBe(1);
   await expect(connect).toHaveText('Check the connection again');
   await expect(connect).not.toHaveAttribute('aria-disabled');
   await expect(connect).not.toHaveAttribute('aria-busy');
@@ -2833,6 +2834,8 @@ test('Settings Devices Retry owns recovery and advances into the roster', async 
   await page.evaluate(() => window.__app.setHash('#settings/devices'));
 
   const retry = page.locator('[data-action="retry-list"]');
+  await expect(retry).toBeVisible();
+  await page.evaluate(() => window.__app.holdRpcResponses?.('pair.list'));
   await retry.focus();
   await page.keyboard.press('Enter');
   await expect(retry).toHaveText('Retrying…');
@@ -2848,6 +2851,7 @@ test('Settings Devices Retry owns recovery and advances into the roster', async 
     () => page.evaluate(() => window.__app.rpcCallCount('pair.list')),
   ).toBe(2);
 
+  expect(await page.evaluate(() => window.__app.releaseRpcResponses('pair.list'))).toBe(1);
   await expect(retry).toHaveCount(0);
   await expect(page.locator(
     '[data-action="revoke-device"][data-instance-id="device-laptop"]',
@@ -3065,7 +3069,7 @@ test('Settings per-browser switch failures return to the exact control', async (
 test('Settings notification phrase Save retains mutation ownership', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(
-    `${HARNESS_URL}?notifications=ready&notifications_response=slow`,
+    `${HARNESS_URL}?notifications=ready&hold_rpc=notifications.set_verification_phrase`,
   );
   await page.waitForFunction(() => window.__app?.ready === true);
   await page.evaluate(() => window.__app.setHash('#settings/notifications'));
@@ -3103,6 +3107,7 @@ test('Settings notification phrase Save retains mutation ownership', async ({ pa
     )),
   ).toBe(1);
 
+  expect(await page.evaluate(() => window.__app.releaseRpcResponses('notifications.set_verification_phrase'))).toBe(1);
   await expect(input).toHaveValue('green fox');
   await expect(input).not.toBeDisabled();
   await expect(save).toHaveText('Save');

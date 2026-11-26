@@ -92,7 +92,8 @@ describe('D-335 slice F — the gate asks the host for a pass', () => {
       ['mail-send', {}],
       ['dom-click', { evaluateAdmission: () => ask({ authorization_provenance: { pre_lift_approval: 'always' } }) }],
       ['dom-click', { evaluateAdmission: () => ask({ risk_tier: 'destructive' }) }],
-      ['dom-open', { identity: undefined }],
+      // Not `dom-open`: opening a page is a read since 2026-11-23, no browser write, so it could not test this.
+      ['dom-write', { identity: undefined }],
     ];
     for (const [slug, overrides] of cases) {
       const { executor, inner, admit } = gate(overrides);

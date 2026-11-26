@@ -2531,6 +2531,86 @@ describe('after an update, the page says how it went', () => {
     });
   });
 
+  /** ⛔ 2026-11-22 — a download the server gave up showed only its own words under
+   *  the button: "This operation was aborted", twice, on the owner's Mac, whose
+   *  server cut every download off at 10 minutes. A failure before the restart is
+   *  in the server's ledger with a typed reason, as a revert after one is. */
+  describe('a failure before the restart says so, and why', () => {
+    const later: ReleaseCheckResponse = {
+      ...AVAILABLE,
+      current_version: '26.11.9',
+      available: { ...AVAILABLE.available!, version: '26.11.22' },
+    };
+    const failBeforeRestart = async (
+      detail: string,
+      runOperationStatus?: NonNullable<Parameters<typeof mountUpdatesPage>[0]['runOperationStatus']>,
+    ) => {
+      const h = host();
+      let emit!: (e: { phase: string; status?: string; operation_id?: string; detail?: string }) => void;
+      const runApply = vi.fn(async (args: { operation_id?: string }): Promise<UpdateApplyResponse> => ({
+        status: 'applying',
+        ...(args.operation_id === undefined ? {} : { operation_id: args.operation_id }),
+      }));
+      const mount = mountUpdatesPage({
+        host: h.asHost, document: fakeDoc(), runCheck: async () => later, runApply,
+        updateProgress: { subscribe: (cb) => { emit = cb as typeof emit; return () => {}; } },
+        ...(runOperationStatus === undefined ? {} : { runOperationStatus }),
+      });
+      await flush();
+      pressUpdate(h.el);
+      await flush();
+      const operationId = runApply.mock.calls[0]![0].operation_id!;
+      emit({ phase: 'result', status: 'download-failed', operation_id: operationId, detail });
+      await flush();
+      return { h, mount, operationId };
+    };
+    const reverted = (revert_reason: string) => vi.fn(async () => ({
+      status: 'reverted' as const, operation: 'update' as const, revert_reason,
+    })) as unknown as NonNullable<Parameters<typeof mountUpdatesPage>[0]['runOperationStatus']>;
+
+    it('a download that stopped receiving data is named, for this exact run', async () => {
+      const runOperationStatus = reverted('download_stalled');
+      const { h, mount, operationId } = await failBeforeRestart(
+        'no data arrived for 1 min, with 32.1 of 150.9 MB received', runOperationStatus,
+      );
+      expect(runOperationStatus).toHaveBeenCalledWith(operationId);
+      expect(find(h.el, UPDATES_APPLY_RESULT_ATTR)!.textContent).toBe(
+        'The server is still on 26.11.9. The update to 26.11.22 did not take effect: the download '
+        + "stopped, because no data arrived for a minute. Check the server's internet connection, then "
+        + 'try the update again.',
+      );
+      expect(find(h.el, UPDATES_APPLY_BTN_ATTR)!.textContent).toBe('Update to 26.11.22');
+      mount.dispose();
+    });
+
+    it('a download too slow for its 6 hours is named', async () => {
+      const { h, mount } = await failBeforeRestart(
+        'still downloading after 6 h, with 120.0 of 150.9 MB received', reverted('download_too_slow'),
+      );
+      expect(find(h.el, UPDATES_APPLY_RESULT_ATTR)!.textContent).toBe(
+        'The server is still on 26.11.9. The update to 26.11.22 did not take effect: the download was '
+        + 'still going after 6 hours, so the server gave up. Its connection is too slow for an update: '
+        + 'try again on a faster one.',
+      );
+      mount.dispose();
+    });
+
+    // A server that cannot say why (none sent, `other`, a failed read) keeps its
+    // own words in brackets — and never the restart path's advice about AI apps.
+    it.each([
+      ['no reason can be read', undefined],
+      ['the reason is other', reverted('other')],
+    ])('keeps the server\'s own words when %s', async (_why, runOperationStatus) => {
+      const { h, mount } = await failBeforeRestart('This operation was aborted', runOperationStatus);
+      expect(find(h.el, UPDATES_APPLY_RESULT_ATTR)!.textContent).toBe(
+        'The server is still on 26.11.9. The update to 26.11.22 did not take effect (This operation was '
+        + 'aborted). Try the update again. If it still does not take effect, run recued stop, then '
+        + 'recued update apply, which says what went wrong, then start the server again.',
+      );
+      mount.dispose();
+    });
+  });
+
   it('a later release that kept its version is told to try again, not to quit its AI apps', async () => {
     const later: ReleaseCheckResponse = {
       ...AVAILABLE,

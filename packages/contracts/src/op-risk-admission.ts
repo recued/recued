@@ -145,9 +145,8 @@ export const isOutboundSendSlug = (slug: string): boolean =>
 export const BROWSER_ACTION_INGREDIENT_SLUGS: ReadonlySet<string> = new Set([
   'dom-write',
   'dom-click',
-  // Slice C — opening a page asks for its address as the owner, and an
-  // address can carry data out.
-  'dom-open',
+  // ⚠ Not opening a page (`dom-open`): a read since 2026-11-23 (the owner's ruling, `kernel-op-registry.ts`), it
+  //   asks no one, so no site pass covers it and no hold names it.
   // Slice J — a sequence of typing, clicks and sends, asked once for all of them.
   'dom-act',
 ]);

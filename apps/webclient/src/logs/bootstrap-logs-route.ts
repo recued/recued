@@ -68,7 +68,9 @@ import {
   runYieldIsTotalRefusal,
   TRIGGER_PREAPPROVAL_TRIGGER_WORDS,
 } from '@recued/contracts';
-import { activeWorkGroups, historyOutcome, validRunYield } from './run-management.js';
+import { activeWorkGroups, historyOutcome, validRunYield, ERROR_CATEGORY_LABELS, CLI_FAILURE_LABELS } from './run-management.js';
+import { checkRunSearchSelection } from './run-search.js';
+import { NEXT_SEARCH_RUN, PREVIOUS_SEARCH_RUN, MORE_SEARCH_RUNS, RUN_SEARCH_REVIEW_HOST, renderRunSearchReview, type RunSearchReview } from './run-search-review.js';
 import { programDisplayName } from '../settings/pack-programs-controls.js';
 import {
   LOGS_RUN_SUMMARY_ATTR,
@@ -83,6 +85,7 @@ import {
   REFERENCE_PROVENANCE_STYLES,
   formatClientDateTime,
   renderProvenance,
+  renderActionIcon,
   renderActionLabel,
   renderReferenceIdentity,
   renderReferenceLink,
@@ -120,7 +123,7 @@ import {
   updateListContinuity,
   type ListContinuitySnapshot,
 } from '../shell/list-preview-continuity.js';
-import { humanizeRpcError } from '../shell/rpc-error-copy.js';
+import { classifyRpcError, humanizeRpcError } from '../shell/rpc-error-copy.js';
 import { runPageObject, type RunPageContext } from '../shell/run-page-context.js';
 
 export const LOGS_ROUTE_STYLES_MARKER = 'data-recued-logs-route-styles';
@@ -170,6 +173,10 @@ export const LOGS_ROUTE_CLI_FAILURE_ATTR = 'data-recued-logs-cli-failure';
 
 const LOGS_ROUTE_ACTION_ATTR = 'data-recued-logs-action';
 const LOGS_ROUTE_RUN_ID_ATTR = 'data-run-id';
+const LOGS_DESKTOP_MEDIA = '(min-width: 1280px) and (hover: hover) and (pointer: fine)';
+const LOGS_HISTORY_PREVIEW_ATTR = 'data-recued-logs-history-preview';
+const LOGS_HISTORY_PREVIEW_HEADING = 'data-recued-logs-history-preview-heading';
+const PREVIEW_RUN_ACTION = 'preview-run';
 const LOGS_ROUTE_QUEUED_CALL_ID_ATTR = 'data-queued-call-id';
 // D-186 Slice C — the session-grant id carried on the Revoke button.
 const LOGS_ROUTE_GRANT_ID_ATTR = 'data-grant-id';
@@ -324,6 +331,8 @@ export interface BootstrapLogsRouteOptions {
    *  the first feed load queries it and the ref-picker shows it selected. The
    *  shell remounts on a hash change, so it is fixed for one mount. */
   initialRecipeId?: string;
+  searchReturnHash?: string;
+  searchReview?: RunSearchReview;
   /** R17 — which view to mount. `'logs'` (default) = History table + the capped
    *  Active peek-strip; `'active'` = the full operator console (uncapped Active
    *  + lanes + passes) reached via the `#logs/active` deep link. The shell
@@ -448,6 +457,8 @@ const LOGS_ROUTE_STYLES = `
   padding: 16px;
   color: var(--fg);
 }
+/* Keep the individual header blocks in the route flow at compact widths. */
+[${LOGS_ROUTE_HOST_ATTR}] .logs-page-header { display: contents; }
 [${LOGS_ROUTE_HOST_ATTR}] .logs-header {
   display: flex;
   align-items: baseline;
@@ -479,6 +490,11 @@ const LOGS_ROUTE_STYLES = `
 [${LOGS_ROUTE_HOST_ATTR}] .logs-review-source {
   margin-left: auto;
 }
+[${LOGS_ROUTE_HOST_ATTR}] .logs-search-review {
+  min-width: 0; margin-bottom: 18px; padding: 14px; border: 1px solid var(--border); border-radius: 10px;
+}
+[${LOGS_ROUTE_HOST_ATTR}] .logs-search-review p { margin: 0 0 8px; overflow-wrap: anywhere; }
+[${LOGS_ROUTE_HOST_ATTR}] .logs-search-review-buttons { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0; }
 :is([${LOGS_ROUTE_CHAT_RETURN_ATTR}], [data-logs-workspace-return], [data-logs-reception-return]) {
   display: flex;
   align-items: center;
@@ -671,6 +687,52 @@ const LOGS_ROUTE_STYLES = `
 }
 [${LOGS_ROUTE_HOST_ATTR}] .logs-panel {
   min-width: 0;
+}
+[${LOGS_ROUTE_HOST_ATTR}] .logs-history-layout--preview {
+  grid-template-columns:minmax(0,1fr) clamp(312px,33%,372px); gap:20px;
+}
+[${LOGS_ROUTE_HOST_ATTR}] .logs-row-actions { display:inline-flex; align-items:center; gap:6px; }
+[${LOGS_ROUTE_HOST_ATTR}] .logs-preview-trigger { min-height:36px; }
+[${LOGS_ROUTE_HOST_ATTR}] .logs-preview-trigger[aria-current="true"] { color:var(--accent); background:var(--accent-weak); }
+[${LOGS_ROUTE_HOST_ATTR}] .logs-history-layout--preview .logs-table { table-layout:fixed; }
+[${LOGS_ROUTE_HOST_ATTR}] .logs-history-layout--preview th:nth-child(2) { width:24%; }
+[${LOGS_ROUTE_HOST_ATTR}] .logs-history-layout--preview th:nth-child(3) { width:27%; }
+[${LOGS_ROUTE_HOST_ATTR}] .logs-history-layout--preview th:last-child { width:136px; }
+[${LOGS_HISTORY_PREVIEW_ATTR}] {
+  position:sticky; inset-block-start:12px; min-width:0;
+  display:flex; flex-direction:column; max-block-size:clamp(220px,calc(100dvh - 104px),620px);
+  border:1px solid var(--border); border-radius:var(--wc-radius-lg,12px); background:var(--surface);
+}
+[${LOGS_HISTORY_PREVIEW_ATTR}] > :is(header,footer) {
+  display:flex; align-items:center; justify-content:space-between; gap:12px; padding:12px 14px;
+}
+[${LOGS_HISTORY_PREVIEW_ATTR}] > header { border-bottom:1px solid var(--border); }
+[${LOGS_HISTORY_PREVIEW_ATTR}] > footer { border-top:1px solid var(--border); justify-content:flex-end; }
+[${LOGS_HISTORY_PREVIEW_ATTR}] header > div { min-width:0; }
+[${LOGS_HISTORY_PREVIEW_ATTR}] h2 {
+  margin:0; font-size:16px; line-height:1.3; overflow-wrap:anywhere; overflow:hidden;
+  display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:2;
+}
+[${LOGS_HISTORY_PREVIEW_ATTR}] .logs-preview-id {
+  margin:3px 0 0; color:var(--muted); font-size:12px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+}
+[${LOGS_HISTORY_PREVIEW_ATTR}] .logs-preview-close { flex:none; display:grid; place-items:center; width:36px; min-height:36px; padding:0; }
+[${LOGS_HISTORY_PREVIEW_ATTR}] .logs-preview-close svg { width:16px; height:16px; }
+[${LOGS_HISTORY_PREVIEW_ATTR}] .logs-preview-body {
+  min-height:0; overflow:auto; padding:14px; scrollbar-width:thin; font-size:13px; line-height:1.5; overflow-wrap:anywhere;
+}
+[${LOGS_HISTORY_PREVIEW_ATTR}] .logs-preview-body p { margin:0 0 8px; }
+[${LOGS_HISTORY_PREVIEW_ATTR}] .logs-preview-outcome-title { margin:0 0 4px; font-size:14px; }
+[${LOGS_HISTORY_PREVIEW_ATTR}] .logs-preview-facts {
+  display:grid; grid-template-columns:auto minmax(0,1fr); gap:6px 12px; align-items:baseline; margin:12px 0 0;
+}
+[${LOGS_HISTORY_PREVIEW_ATTR}] dt { color:var(--muted); }
+[${LOGS_HISTORY_PREVIEW_ATTR}] dd { min-width:0; margin:0; }
+[${LOGS_HISTORY_PREVIEW_ATTR}] .logs-preview-reason { margin-top:12px; border-top:1px solid var(--border); padding-top:10px; }
+[${LOGS_HISTORY_PREVIEW_ATTR}] .logs-preview-reason p { margin:4px 0 0; color:var(--fg-muted); white-space:pre-wrap; }
+[${LOGS_HISTORY_PREVIEW_ATTR}] :is(h2,.logs-preview-body):focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+[${LOGS_HISTORY_PREVIEW_ATTR}] .logs-preview-full {
+  display:inline-flex; align-items:center; min-height:36px; text-decoration:none; color:var(--accent); font-weight:650;
 }
 [${LOGS_ROUTE_HOST_ATTR}] .logs-filters {
   display: grid;
@@ -1319,6 +1381,22 @@ const LOGS_ROUTE_STYLES = `
   padding: 12px;
   margin-bottom: 14px;
 }
+@media ${LOGS_DESKTOP_MEDIA} {
+  [${LOGS_ROUTE_HOST_ATTR}] > .logs-active-layout {
+    display: grid;
+    grid-template-columns: minmax(0, 1.75fr) minmax(0, 1fr);
+    align-items: start;
+    gap: var(--wc-space-lg, 24px);
+  }
+  [${LOGS_ROUTE_HOST_ATTR}] > .logs-active-layout > section {
+    min-width: 0;
+    padding: 16px;
+    border-radius: var(--wc-radius-lg, 14px);
+  }
+  [${LOGS_ROUTE_HOST_ATTR}] > .logs-active-layout > :only-child {
+    grid-column: 1 / -1;
+  }
+}
 [${LOGS_ROUTE_ACTIVE_ATTR}] .logs-active-head,
 [${LOGS_ROUTE_PASSES_ATTR}] .logs-active-head {
   display: flex;
@@ -1645,30 +1723,6 @@ const ACTOR_LABELS: Record<Actor, string> = {
   contracted_user: 'Connected agent',
   system: 'System',
   anonymous: 'Anonymous visitor',
-};
-
-// D-181 slice 5b — display copy for the failed/killed long-op `error_category`
-// (§12). The Runs feed + detail surface *why* a run ended without opening the
-// audit. Keep the wording neutral + lowercase to match the status glyphs.
-const ERROR_CATEGORY_LABELS: Record<HeavyOpErrorCategory, string> = {
-  timeout: 'timed out',
-  oom: 'out of memory',
-  crashed: 'crashed',
-  stalled: 'stalled',
-  killed: 'killed',
-  cancelled_before_dispatch: 'cancelled before it was sent',
-};
-
-// D-182 — display copy for a cli (local-binary) step failure (the feed chip + the
-// detail block). Neutral + lowercase to match the status glyphs.
-const CLI_FAILURE_LABELS: Record<CliFailureReason, string> = {
-  not_found: 'tool not found',
-  spawn_error: 'a tool would not start',
-  nonzero_exit: 'tool error',
-  timeout: 'tool timed out',
-  bad_output: 'bad tool output',
-  untested_version: 'tool version not tested',
-  broken: 'tool does not start',
 };
 
 const DEGRADATION_MESSAGES: Record<RunDegradation, string> = {
@@ -2688,16 +2742,19 @@ const renderHistoryStatusCell = (row: RunFeedRow): string => `
   ${row.error_category === undefined && row.cli_failure_reason !== undefined ? renderCliFailureChip(row.cli_failure_reason) : ''}
 `;
 
-// R17 — one History row. READ-ONLY: the whole row navigates to the
+// R17 — one History row. The row background and the arrow navigate to the
 // `#logs/<run_id>` detail (the ▸ button is the keyboard-reachable affordance;
 // the row carries the same `open-detail` action so a mouse click anywhere on it
-// opens the run too). Per-row provenance / recipe / approval links live in the
-// detail pane (`renderRunLinks`), not in the scannable table.
+// opens the run too). The separate Preview button keeps the history in view.
 const renderHistoryRow = (
   row: RunFeedRow,
   selected: boolean,
   opening: boolean,
+  allowPreview: boolean,
+  previewedRunId: string | undefined,
 ): string => {
+  const compact = previewedRunId !== undefined;
+  const previewed = row.run_id === previewedRunId;
   const subject = row.name || row.recipe_id;
   const actionLabel = `${opening ? 'Opening' : 'Open'} run detail for ${subject} (${row.run_id})`;
   return `
@@ -2707,17 +2764,22 @@ const renderHistoryRow = (
         <span class="logs-cell-title">${e(subject)}</span>
         <span class="logs-cell-sub">${e(row.recipe_id)}</span>
       </td>
-      <td data-label="Origin">${renderOrigin(row.origin)}</td>
+      ${compact ? '' : `<td data-label="Origin">${renderOrigin(row.origin)}</td>`}
       <td data-label="Started">${e(formatDateTime(row.started_at))}</td>
-      <td data-label="Duration">${e(formatDuration(row.duration_ms))}</td>
+      ${compact ? '' : `<td data-label="Duration">${e(formatDuration(row.duration_ms))}</td>`}
       <td data-label="Outcome" class="logs-cell-status">${renderHistoryStatusCell(row)}</td>
-      <td data-label="Policy" class="logs-cell-policy">${row.policy_result !== 'allowed' ? renderPolicy(row.policy_result) : ''}</td>
-      <td class="logs-cell-open">
+      ${compact ? '' : `<td data-label="Policy" class="logs-cell-policy">${row.policy_result !== 'allowed' ? renderPolicy(row.policy_result) : ''}</td>`}
+      <td class="logs-cell-open">${allowPreview ? `<div class="logs-row-actions">
+        <button type="button" class="logs-button logs-preview-trigger"
+          ${LOGS_ROUTE_ACTION_ATTR}="${PREVIEW_RUN_ACTION}" ${LOGS_ROUTE_RUN_ID_ATTR}="${e(row.run_id)}"
+          aria-label="${e(`Preview ${subject} (${row.run_id})`)}"${previewed
+            ? ' aria-current="true" aria-keyshortcuts="ArrowRight Escape"'
+            : ''}>Preview</button>` : ''}
         <button type="button" class="logs-button logs-row-open"
           ${LOGS_ROUTE_ACTION_ATTR}="open-detail" ${LOGS_ROUTE_RUN_ID_ATTR}="${e(row.run_id)}"
           aria-label="${e(actionLabel)}"${opening
             ? ' aria-disabled="true" aria-busy="true"'
-            : ''}>${opening ? '…' : '▸'}</button>
+            : ''}>${opening ? '…' : '▸'}</button>${allowPreview ? '</div>' : ''}
       </td>
     </tr>
   `;
@@ -2731,6 +2793,8 @@ const renderFeed = (
   error: string | undefined,
   selectedRunId: string | null,
   openingRunId: string | null,
+  allowPreview = false,
+  previewedRunId?: string,
 ): string => {
   const errorHtml = error === undefined ? '' : `<p ${LOGS_ROUTE_ERROR_ATTR} role="alert">${e(error)}</p><button type="button" class="logs-button" ${LOGS_ROUTE_ACTION_ATTR}="refresh-history">Retry history</button>`;
   if (error !== undefined && runs.length === 0) return errorHtml;
@@ -2740,6 +2804,7 @@ const renderFeed = (
   if (runs.length === 0) {
     return `<p ${LOGS_ROUTE_EMPTY_ATTR}>No runs match these filters.</p>`;
   }
+  const compact = previewedRunId !== undefined;
   // Desktop: a columnar table (Run · Origin · Started · Duration · Status ·
   // Policy · ▸). Mobile (≤860px): the same rows collapse to label-prefixed
   // cards via CSS (`td::before { content: attr(data-label) }`).
@@ -2751,12 +2816,12 @@ const renderFeed = (
       <thead>
         <tr>
           <th scope="col">Run</th>
-          <th scope="col">Origin</th>
+          ${compact ? '' : '<th scope="col">Origin</th>'}
           <th scope="col">Started</th>
-          <th scope="col">Duration</th>
+          ${compact ? '' : '<th scope="col">Duration</th>'}
           <th scope="col">Outcome</th>
-          <th scope="col">Policy</th>
-          <th scope="col"><span class="logs-sr-only">Open</span></th>
+          ${compact ? '' : '<th scope="col">Policy</th>'}
+          <th scope="col"><span class="logs-sr-only">${allowPreview ? 'Run actions' : 'Open'}</span></th>
         </tr>
       </thead>
       <tbody>
@@ -2764,6 +2829,8 @@ const renderFeed = (
           row,
           row.run_id === selectedRunId,
           row.run_id === openingRunId,
+          allowPreview,
+          previewedRunId,
         )).join('')}
       </tbody>
     </table>
@@ -3317,6 +3384,67 @@ const renderOutcome = (detail: RunDetail): string => {
   `;
 };
 
+interface HistoryRunPreview {
+  readonly row: RunFeedRow;
+  result:
+    | { phase: 'loading'; retrying: boolean }
+    | { phase: 'ready'; detail: RunDetail }
+    | { phase: 'error'; message: string };
+}
+
+type HistoryRunIdentity = Pick<RunFeedRow, 'run_id' | 'recipe_id' | 'started_at'>;
+const sameHistoryRun = (a: HistoryRunIdentity, b: HistoryRunIdentity): boolean =>
+  a.run_id === b.run_id && a.recipe_id === b.recipe_id && a.started_at === b.started_at;
+
+const previewVersion = (row: RunFeedRow): string => JSON.stringify([
+  row.status, row.policy_result, row.duration_ms, row.finished_at, row.error_category, row.cli_failure_reason,
+  row.run_yield?.items_total, row.run_yield?.items_failed, row.run_yield?.stopped_at,
+]);
+
+const renderHistoryPreviewOutcome = (detail: RunDetail): string => {
+  const summary = projectRunOutcomeSummary(detail);
+  const audit = detail.audit;
+  const recordedError = detailErrors(detail).find(error => error.severity !== 'warn' && error.message.trim())?.message.trim();
+  const reason = recordedError && (recordedError.length > 360 ? `${recordedError.slice(0, 360)}…` : recordedError);
+  return `
+    <h3 class="logs-preview-outcome-title">${e(summary.title)}</h3>
+    <p>${e(summary.detail)}</p>
+    ${summary.yieldNotice ? `<p role="note">${e(summary.yieldNotice.message)}</p>` : ''}
+    ${renderRecordWarnings(summary.recordWarnings)}
+    <dl class="logs-preview-facts">
+      <dt>Policy decision</dt><dd>${renderPolicy(detail.gateway.policy_result)}</dd>
+      <dt>Started</dt><dd>${e(formatDateTime(audit.started_at))}</dd>
+      <dt>Duration</dt><dd>${e(formatDuration(audit.duration_ms))}</dd>
+      <dt>Initiated by</dt><dd>${renderOrigin(audit.origin)}</dd>
+    </dl>
+    ${reason ? `<div class="logs-preview-reason"><strong>Recorded error</strong><p>${e(reason)}</p></div>` : ''}
+  `;
+};
+
+const renderHistoryPreview = ({ row, result }: HistoryRunPreview): string => {
+  const retrying = result.phase === 'loading' && result.retrying;
+  const title = e(row.name || row.recipe_id);
+  return `
+    <aside ${LOGS_HISTORY_PREVIEW_ATTR}="${e(row.run_id)}" role="region" aria-label="Run preview">
+      <header>
+        <div><h2 ${LOGS_HISTORY_PREVIEW_HEADING} tabindex="-1" title="${title}">${title}</h2>
+          <p class="logs-preview-id" title="${e(row.run_id)}">Run ${e(row.run_id)}</p></div>
+        <button type="button" class="logs-button logs-preview-close" ${LOGS_ROUTE_ACTION_ATTR}="close-preview"
+          aria-label="Close preview" title="Close preview">${renderActionIcon('close')}</button>
+      </header>
+      <div class="logs-preview-body" role="group" aria-label="Preview content" tabindex="0">
+        ${result.phase === 'loading' ? '<p role="status">Loading run preview…</p>' : ''}
+        ${result.phase === 'ready' ? renderHistoryPreviewOutcome(result.detail) : ''}
+        ${result.phase === 'error' ? `<p role="alert">${e(result.message)}</p>` : ''}
+        ${result.phase === 'error' || retrying ? `<button type="button" class="logs-button"
+          ${LOGS_ROUTE_ACTION_ATTR}="retry-preview"${retrying ? ' aria-disabled="true" aria-busy="true"' : ''}>Retry preview</button>` : ''}
+      </div>
+      <footer><a class="logs-button logs-preview-full" href="${e(runHref(row.run_id))}"
+        ${LOGS_ROUTE_ACTION_ATTR}="open-preview-review">Open full review</a></footer>
+    </aside>
+  `;
+};
+
 const runNeedsAffectedItemVerification = (status: RunAnchorStatus): boolean =>
   status === 'failed'
   || status === 'cancelled'
@@ -3410,12 +3538,14 @@ const renderWorkspaceReturn = (address: RunReviewWorkspace | undefined): string 
 };
 
 const renderLogNavigation = (view: 'logs' | 'active', historyHash: string): string => `
-  <header class="logs-header"><h1 class="logs-title" ${LOGS_ROUTE_HEADING_ATTR}>Logs</h1></header>
-  <p class="logs-intro">Review recorded runs or manage work happening now.</p>
-  <nav class="logs-view-nav" aria-label="Log views">
-    <a href="${e(historyHash)}" ${LOGS_ROUTE_LINK_ATTR}="view-history"${view === 'logs' ? ' aria-current="page"' : ''}>History</a>
-    <a href="${e(serializeShellRoute('logs', 'active'))}" ${LOGS_ROUTE_LINK_ATTR}="view-active"${view === 'active' ? ' aria-current="page"' : ''}>Active</a>
-  </nav>
+  <div class="logs-page-header">
+    <header class="logs-header"><h1 class="logs-title" ${LOGS_ROUTE_HEADING_ATTR}>Logs</h1></header>
+    <p class="logs-intro">Review recorded runs or manage work happening now.</p>
+    <nav class="logs-view-nav" aria-label="Log views">
+      <a href="${e(historyHash)}" ${LOGS_ROUTE_LINK_ATTR}="view-history"${view === 'logs' ? ' aria-current="page"' : ''}>History</a>
+      <a href="${e(serializeShellRoute('logs', 'active'))}" ${LOGS_ROUTE_LINK_ATTR}="view-active"${view === 'active' ? ' aria-current="page"' : ''}>Active</a>
+    </nav>
+  </div>
 `;
 
 const renderDetail = (
@@ -3570,6 +3700,7 @@ export const bootstrapLogsRoute = (
   const routeRoot = doc.createElement('div');
   routeRoot.setAttribute(LOGS_ROUTE_HOST_ATTR, '');
   opts.root.appendChild(routeRoot);
+  const previewBreakpoint = doc.defaultView?.matchMedia?.(LOGS_DESKTOP_MEDIA);
 
   // R17 — fixed for this mount; the shell remounts the route on a
   // #logs ↔ #logs/active hash change. 'active' = the full operator console;
@@ -3603,8 +3734,10 @@ export const bootstrapLogsRoute = (
     ? rememberedHistory : null;
   let returnHistory = rememberedHistory;
   let runs: ReadonlyArray<RunFeedRow> = [];
+  let historyPreview: HistoryRunPreview | null = null;
   let nextCursor: ExecutionListCursor | null = null;
   let selectedRunId: string | null = opts.initialRunId ?? null;
+  let searchReview = opts.searchReview, searchReturnHash = opts.searchReturnHash;
   // D-402 slice F5 — "Stop allowing" on the open run's page, and where focus goes once it repaints.
   let stopAllowingView: (RunStopAllowingView & { readonly run_id: string }) | null = null;
   let pendingStopAllowingFocus: { readonly key: string; readonly target: 'idle' | 'confirm' | 'note' } | null = null;
@@ -3721,6 +3854,8 @@ export const bootstrapLogsRoute = (
   let grantsSeq = 0;
   let grantsNotice: string | undefined;
   const busyGrantIds = new Set<string>();
+  const searchReviewBusy = (): boolean => loadingDetail || pendingControls.size > 0 || busyGrantIds.size > 0
+    || pendingUndoIds.size > 0 || stopAllowingView?.phase === 'busy';
   const locallyRevokedGrantIds = new Set<string>();
   const hasPassesSection = opts.grantsListCaller !== undefined;
   let grantsRefreshTimer: ReturnType<typeof setTimeout> | null = null;
@@ -3775,6 +3910,37 @@ export const bootstrapLogsRoute = (
     }
   };
 
+  const canPreviewHistory = (): boolean =>
+    view === 'logs' && selectedRunId === null && previewBreakpoint?.matches === true && opts.getCaller !== undefined;
+  const historyRunButton = (id: string | null | undefined, action = 'open-detail'): HTMLElement | undefined =>
+    id == null ? undefined : Array.from(routeRoot.querySelectorAll?.<HTMLElement>(
+      `button[${LOGS_ROUTE_ACTION_ATTR}="${action}"]`,
+    ) ?? []).find(node => node.getAttribute(LOGS_ROUTE_RUN_ID_ATTR) === id);
+  const historyHeading = (): HTMLElement | null | undefined =>
+    routeRoot.querySelector?.<HTMLElement>(`[${LOGS_ROUTE_HEADING_ATTR}]`);
+  const focusHistoryRun = (id: string | null | undefined, action = PREVIEW_RUN_ACTION): void => {
+    const runButton = historyRunButton(id, action) ?? historyRunButton(id);
+    if (!focusListTarget(runButton)) {
+      const heading = historyHeading();
+      heading?.setAttribute('tabindex', '-1');
+      focusListTarget(heading);
+    }
+  };
+  const historyPreviewElement = () => routeRoot.querySelector?.<HTMLElement>(`[${LOGS_HISTORY_PREVIEW_ATTR}]`);
+  const historyPreviewHeading = () => routeRoot.querySelector?.<HTMLElement>(`[${LOGS_HISTORY_PREVIEW_HEADING}]`);
+
+  // The table has fewer columns beside a preview, so a row's height can
+  // change. Anchor the first visible run when the history changes width.
+  const historyListAnchor = (): { id: string; top: number } | undefined => {
+    const viewport = opts.root.getBoundingClientRect();
+    for (const row of routeRoot.querySelectorAll<HTMLElement>(`[${LOGS_ROUTE_ROW_ATTR}]`)) {
+      const { top, bottom } = row.getBoundingClientRect();
+      const id = row.getAttribute(LOGS_ROUTE_ROW_ATTR);
+      if (id && bottom > viewport.top && top < viewport.bottom) return { id, top };
+    }
+    return undefined;
+  };
+
   const rememberHistory = (focusedId?: string): void => {
     const active = doc.activeElement as HTMLElement | null | undefined;
     const rowId = focusedId
@@ -3786,6 +3952,8 @@ export const bootstrapLogsRoute = (
       },
       page: Math.max(1, loadedPages),
       ...(rowId === undefined ? {} : { focusedId: rowId }),
+      focusKind: active?.getAttribute?.(LOGS_ROUTE_ACTION_ATTR) === PREVIEW_RUN_ACTION
+        && active.getAttribute(LOGS_ROUTE_RUN_ID_ATTR) === rowId ? PREVIEW_RUN_ACTION : undefined,
       scroll: readListScroll(opts.root),
     };
     returnHistory = updateListContinuity(doc, listContinuityKey(listRecipeScope), snapshot);
@@ -3798,6 +3966,25 @@ export const bootstrapLogsRoute = (
   const render = (): void => {
     routeRoot.setAttribute('data-recued-logs-history-loading', String(loadingFeed || loadingMore));
     const activeElement = doc.activeElement as HTMLElement | null | undefined;
+    const previewEnabled = canPreviewHistory();
+    const selection = historyPreview?.row;
+    if (selection && (!previewEnabled || !runs.some(row => sameHistoryRun(row, selection)))) {
+      historyPreview = null;
+    }
+    const previousPreview = historyPreviewElement();
+    const previousPreviewId = previousPreview?.getAttribute(LOGS_HISTORY_PREVIEW_ATTR);
+    const previewScroll = selectedRunId === null && view === 'logs' && (previousPreview || historyPreview)
+      ? readListScroll(opts.root) : undefined;
+    const anchor = previewScroll && previewScroll.top > 0 && Boolean(previousPreview) !== Boolean(historyPreview)
+      ? historyListAnchor() : undefined;
+    const previewBodySelector = '.logs-preview-body';
+    const previewBodyTop = previousPreviewId === historyPreview?.row.run_id
+      ? previousPreview?.querySelector<HTMLElement>(previewBodySelector)?.scrollTop : undefined;
+    const focusedPreviewAction = activeElement && previousPreview?.contains(activeElement)
+      ? activeElement.getAttribute(LOGS_ROUTE_ACTION_ATTR) ?? (activeElement.matches(previewBodySelector) ? 'body' : 'heading')
+      : null;
+    const focusedPreviewRunId = activeElement?.getAttribute?.(LOGS_ROUTE_ACTION_ATTR) === PREVIEW_RUN_ACTION
+      ? activeElement.getAttribute(LOGS_ROUTE_RUN_ID_ATTR) : null;
     const summaryRunId = selectedRun !== null && !loadingDetail
       && errors.detail === undefined && selectedRun.audit.run_id === selectedRunId
       ? selectedRunId : null;
@@ -3837,6 +4024,7 @@ export const bootstrapLogsRoute = (
     const focusedOutcome = activeElement?.hasAttribute?.(LOGS_ROUTE_OUTCOME_ATTR) === true;
     const focusedBack = activeElement?.getAttribute?.(LOGS_ROUTE_ACTION_ATTR)
       === 'back-to-history';
+    const focusedSearchNavigation = activeElement?.getAttribute?.(LOGS_ROUTE_ACTION_ATTR);
     const focusedDetailRunId = activeElement?.getAttribute?.(
       LOGS_ROUTE_DETAIL_HEADING_ATTR,
     ) ?? null;
@@ -3922,29 +4110,36 @@ export const bootstrapLogsRoute = (
     if (view === 'active') {
       // Console — the cross-session operator surface: the uncapped Active list
       // (+ lanes + controls) and the Active passes. No feed, no Recipe picker.
+      const focusedGrantRow = focusedGrantControlId === null
+        ? null
+        : activeElement?.closest?.(`[${LOGS_ROUTE_PASS_ROW_ATTR}]`);
+      const nextGrantId = focusedGrantRow?.nextElementSibling?.getAttribute(LOGS_ROUTE_PASS_ROW_ATTR);
+      const previousGrantId = focusedGrantRow?.previousElementSibling?.getAttribute(LOGS_ROUTE_PASS_ROW_ATTR);
       routeRoot.innerHTML = `
         ${renderLogNavigation(view, historyListAddress().hash)}
-        ${hasActiveSection
-          ? renderActive(
-              activeEntries,
-              lanes,
-              loadingActive,
-              errors.active,
-              activeNotice,
-              nowMs,
-              pendingControls,
-            )
-          : ''}
-        ${hasPassesSection
-          ? renderPasses(
-              sessionGrants,
-              loadingGrants,
-              errors.grants,
-              grantsNotice,
-              nowMs,
-              busyGrantIds,
-            )
-          : ''}
+        <div class="logs-active-layout">
+          ${hasActiveSection
+            ? renderActive(
+                activeEntries,
+                lanes,
+                loadingActive,
+                errors.active,
+                activeNotice,
+                nowMs,
+                pendingControls,
+              )
+            : ''}
+          ${hasPassesSection
+            ? renderPasses(
+                sessionGrants,
+                loadingGrants,
+                errors.grants,
+                grantsNotice,
+                nowMs,
+                busyGrantIds,
+              )
+            : ''}
+        </div>
       `;
       restoreViewFocus();
       if (
@@ -3971,16 +4166,17 @@ export const bootstrapLogsRoute = (
           (candidate) => candidate.getAttribute(LOGS_ROUTE_ACTION_ATTR)
             === 'revoke-grant',
         );
+        const grantControlFor = (id: string | null | undefined): HTMLElement | undefined =>
+          id == null ? undefined : grantControls.find(
+            (candidate) => candidate.getAttribute(LOGS_ROUTE_GRANT_ID_ATTR) === id,
+          );
         const exact = focusedRefreshAction !== null
           ? controls.find(
               (candidate) => candidate.getAttribute(LOGS_ROUTE_ACTION_ATTR)
                 === focusedRefreshAction,
             )
           : focusedActiveControl === null
-            ? grantControls.find(
-                (candidate) => candidate.getAttribute(LOGS_ROUTE_GRANT_ID_ATTR)
-                  === focusedGrantControlId,
-              )
+            ? grantControlFor(focusedGrantControlId)
             : activeControls.find((candidate) => {
                 if (
                   candidate.getAttribute(LOGS_ROUTE_ACTION_ATTR)
@@ -3998,7 +4194,7 @@ export const bootstrapLogsRoute = (
         const fallback = focusedRefreshAction !== null
           ? undefined
           : focusedActiveControl === null
-            ? grantControls[0]
+            ? grantControlFor(nextGrantId) ?? grantControlFor(previousGrantId) ?? grantControls[0]
             : activeControls[0];
         const focusTarget = exact ?? fallback ?? heading;
         if (focusTarget === heading) heading?.setAttribute('tabindex', '-1');
@@ -4013,11 +4209,13 @@ export const bootstrapLogsRoute = (
           <h1 class="logs-title" ${LOGS_ROUTE_HEADING_ATTR}>Run review</h1>
         </div>
         <div class="logs-review-source">
+          ${searchReturnHash && (selectedRunId === opts.initialRunId || searchReview?.search.matches.some(row => row.run_id === selectedRunId)) ? `<aside data-logs-search-return role="note"><a href="${e(searchReturnHash)}">Back to search</a></aside>` : ''}
           ${renderChatReturn(chatReturn)}
           ${renderWorkspaceReturn(workspaceReturn)}
           ${receptionReturn === undefined ? '' : `<aside data-logs-reception-return role="note"><a href="${e(receptionReturn)}">Back to customer ${receptionReturn.startsWith('#reception/jobs/') ? 'job' : receptionReturn.startsWith('#reception/signoffs/') ? 'sign-off' : 'accounts'}</a></aside>`}
         </div>
       </header>
+      ${renderRunSearchReview(searchReview, selectedRunId, LOGS_ROUTE_ACTION_ATTR, searchReviewBusy())}
       ${renderDetail(
         selectedRun, selectedRunId, loadingDetail, retryingDetail, errors.detail,
         chatReturn, receptionReturn,
@@ -4052,13 +4250,15 @@ export const bootstrapLogsRoute = (
       <p class="logs-filter-draft" data-recued-logs-filter-draft${hasFilterDraft() ? '' : ' hidden'}>Filter edits are not applied. Choose Apply to update history.</p>
       </section>
       <div class="logs-history-head"><div><h2>Run history</h2><p class="logs-history-count">${loadingFeed && runs.length === 0 ? 'Loading recorded runs…' : `${runs.length} loaded ${runs.length === 1 ? 'run' : 'runs'} · newest first${nextCursor === null ? '' : ' · more available'}`}</p></div><button type="button" class="logs-button" ${LOGS_ROUTE_ACTION_ATTR}="refresh-history" aria-label="${refreshingHistory ? 'Refreshing' : 'Refresh'} history"${loadingFeed || loadingMore ? ' aria-disabled="true"' : ''}${refreshingHistory ? ' aria-busy="true"' : ''}>${renderActionLabel('refresh', refreshingHistory ? 'Refreshing…' : 'Refresh')}</button></div>
-      <div class="logs-layout">
+      <div class="logs-layout${historyPreview ? ' logs-history-layout--preview' : ''}">
         <section class="logs-panel">
           ${renderFeed(
             runs, loadingFeed, loadingMore, nextCursor, errors.feed,
-            returnHistory?.focusedId ?? null, null,
+            historyPreview?.row.run_id ?? returnHistory?.focusedId ?? null, null,
+            previewEnabled, historyPreview?.row.run_id,
           )}
         </section>
+        ${historyPreview ? renderHistoryPreview(historyPreview) : ''}
       </div>
     `;
     // (Re-)attach the Recipe combobox to the freshly-painted shell.
@@ -4106,12 +4306,7 @@ export const bootstrapLogsRoute = (
       && (historyLoaded || errors.feed !== undefined) && pendingHistoryRestore !== null) {
       const snapshot = pendingHistoryRestore;
       pendingHistoryRestore = null;
-      const opener = Array.from(routeRoot.querySelectorAll?.<HTMLElement>(
-        `button[${LOGS_ROUTE_ACTION_ATTR}="open-detail"]`,
-      ) ?? []).find(node => node.getAttribute(LOGS_ROUTE_RUN_ID_ATTR) === snapshot.focusedId);
-      const target = opener ?? routeRoot.querySelector?.<HTMLElement>(`[${LOGS_ROUTE_HEADING_ATTR}]`);
-      target?.setAttribute('tabindex', opener === undefined ? '-1' : '0');
-      focusListTarget(target);
+      focusHistoryRun(snapshot.focusedId, snapshot.focusKind === PREVIEW_RUN_ACTION ? PREVIEW_RUN_ACTION : 'open-detail');
       restoreListScroll(opts.root, snapshot.scroll);
     }
     const replacementSummaryField = summaryViewport === null ? null
@@ -4158,6 +4353,9 @@ export const bootstrapLogsRoute = (
           focusedRecipeSelection.end,
         );
       }
+    }
+    if (pendingDetailFocusRunId === null && [PREVIOUS_SEARCH_RUN, NEXT_SEARCH_RUN, MORE_SEARCH_RUNS].includes(focusedSearchNavigation ?? '')) {
+      routeRoot.querySelector<HTMLButtonElement>(`[${LOGS_ROUTE_ACTION_ATTR}="${focusedSearchNavigation}"]:not(:disabled)`)?.focus({ preventScroll: true });
     }
     if (focusedApply || focusedClear) {
       const replacement = routeRoot.querySelector?.(
@@ -4251,6 +4449,43 @@ export const bootstrapLogsRoute = (
         target?.focus?.({ preventScroll: true });
       }
     }
+    if (selectedRunId === null && view === 'logs') {
+      const pane = historyPreviewElement();
+      const body = pane?.querySelector<HTMLElement>(previewBodySelector);
+      if (focusedPreviewAction) {
+        if (pane) {
+          const control = focusedPreviewAction === 'body' ? body
+            : pane.querySelector<HTMLElement>(`[${LOGS_ROUTE_ACTION_ATTR}="${focusedPreviewAction}"]`);
+          focusListTarget(control ?? historyPreviewHeading());
+        } else {
+          focusHistoryRun(previousPreviewId);
+        }
+      } else if (focusedPreviewRunId !== null) {
+        focusHistoryRun(focusedPreviewRunId);
+      }
+      if (body && previewBodyTop !== undefined) body.scrollTop = previewBodyTop;
+      restoreListScroll(opts.root, previewScroll);
+      if (anchor && previewScroll) {
+        const row = historyRunButton(anchor.id)?.closest<HTMLElement>(`[${LOGS_ROUTE_ROW_ATTR}]`);
+        if (row) opts.root.scrollTop += row.getBoundingClientRect().top - anchor.top;
+      }
+    }
+  };
+
+  // Paging updates only the queue. The current detail, open disclosures, text
+  // selection and unfinished local controls keep their native DOM ownership.
+  const paintSearchReview = (): void => {
+    if (disposed || !searchReview) return;
+    const host = routeRoot.querySelector<HTMLElement>(`[${RUN_SEARCH_REVIEW_HOST}]`);
+    if (!host) return;
+    const active = doc.activeElement as HTMLElement | null;
+    const action = active && host.contains(active) ? active.getAttribute(LOGS_ROUTE_ACTION_ATTR) : null;
+    host.outerHTML = renderRunSearchReview(searchReview, selectedRunId, LOGS_ROUTE_ACTION_ATTR, searchReviewBusy());
+    if (action) {
+      const replacement = routeRoot.querySelector<HTMLElement>(`[${RUN_SEARCH_REVIEW_HOST}] [${LOGS_ROUTE_ACTION_ATTR}="${action}"]:not(:disabled)`)
+        ?? routeRoot.querySelector<HTMLElement>('[data-run-review-position]');
+      replacement?.focus({ preventScroll: true });
+    }
   };
 
   const paintRunSummaryCopy = (): void => {
@@ -4342,6 +4577,32 @@ export const bootstrapLogsRoute = (
     }
   };
 
+  const readHistoryPreview = async (row: RunFeedRow, retrying = false): Promise<void> => {
+    const caller = opts.getCaller;
+    if (disposed || !canPreviewHistory() || caller === undefined) return;
+    const request: HistoryRunPreview = { row, result: { phase: 'loading', retrying } };
+    historyPreview = request;
+    render();
+    try {
+      const { run } = await caller({ run_id: row.run_id });
+      if (disposed || historyPreview !== request) return;
+      if (!run || !sameHistoryRun(row, run.audit) || !RUN_ANCHOR_STATUSES.includes(run.audit.status)) {
+        throw new Error('This run could not be confirmed. Refresh run history before trying again.');
+      }
+      request.result = { phase: 'ready', detail: run };
+    } catch (err) {
+      if (disposed || historyPreview !== request) return;
+      request.result = { phase: 'error', message: messageForError(err) };
+    }
+    if (!disposed && historyPreview === request) render();
+  };
+
+  const closeHistoryPreview = (): void => {
+    if (!historyPreview) return;
+    historyPreview = null;
+    render();
+  };
+
   const loadFeed = async (
     mode: 'replace' | 'append',
     owner: 'background' | 'filters' | 'clear-filters' | 'history-refresh' = 'background',
@@ -4414,7 +4675,13 @@ export const bootstrapLogsRoute = (
         applyingFilters = false;
         clearingFilters = false;
         refreshingHistory = false;
-        render();
+        const previousPreview = historyPreview?.row;
+        const refreshed = previousPreview && runs.find(row => sameHistoryRun(row, previousPreview));
+        if (previousPreview && refreshed && canPreviewHistory() && previewVersion(previousPreview) !== previewVersion(refreshed)) {
+          void readHistoryPreview(refreshed);
+        } else {
+          render();
+        }
         if (queuedHistoryRefresh) {
           queuedHistoryRefresh = false;
           if (errors.feed === undefined) queueMicrotask(() => { if (!disposed) void loadFeed('replace'); });
@@ -4454,6 +4721,7 @@ export const bootstrapLogsRoute = (
     ) return;
     const openingFromList = selectedRunId === null;
     if (openingFromList) rememberHistory(run_id);
+    historyPreview = null;
     localUndoControls.clear();
     resetRunSummaryCopy();
     pendingDetailFocusRunId = focusDetail ? run_id : null;
@@ -4464,6 +4732,9 @@ export const bootstrapLogsRoute = (
     if (receptionReturn !== undefined && run_id !== receptionReturnRunId) receptionReturn = undefined;
     if (workspaceReturn !== undefined && run_id !== workspaceReturnRunId) workspaceReturn = undefined;
     selectedRunId = run_id;
+    const searchRow = searchReview?.search.matches.find(row => row.run_id === run_id);
+    if (searchReview && !searchRow) { searchReview.end(); searchReview = undefined; searchReturnHash = undefined; }
+    searchReview?.select(run_id);
     syncSelectedHash(run_id, openingFromList ? 'push' : 'auto');
     if (opts.getCaller === undefined) {
       errors = { ...errors, detail: 'execution.get caller is not wired in this host.' };
@@ -4480,15 +4751,21 @@ export const bootstrapLogsRoute = (
     try {
       const response = await opts.getCaller({ run_id });
       if (disposed || seq !== detailSeq) return;
-      if (response.run == null) throw new Error('Run not found. It may no longer be available.');
+      if (response.run == null) { searchReview?.changed(); throw new Error('Run not found. It may no longer be available.'); }
       if (response.run.audit.run_id !== run_id) {
+        searchReview?.changed();
         throw new Error('The server returned a different run. Retry to load this run.');
+      }
+      if (searchReview && searchRow) {
+        try { checkRunSearchSelection(searchRow, response.run.audit, searchReview.search.scope); }
+        catch (failure) { searchReview.changed(); throw failure; }
       }
       selectedRun = response.run;
       const { detail: _detail, ...rest } = errors;
       errors = rest;
     } catch (err) {
       if (disposed || seq !== detailSeq) return;
+      if (classifyRpcError(err).code === 'not_found') searchReview?.changed();
       errors = { ...errors, detail: messageForError(err) };
     } finally {
       if (!disposed && seq === detailSeq) {
@@ -4517,6 +4794,7 @@ export const bootstrapLogsRoute = (
       } catch { /* Fall back to in-page navigation in restricted hosts. */ }
     }
     detailSeq += 1;
+    searchReview?.end(); searchReview = undefined; searchReturnHash = undefined;
     localUndoControls.clear();
     resetRunSummaryCopy();
     pendingInitialRunFocus = false;
@@ -4776,6 +5054,50 @@ export const bootstrapLogsRoute = (
     const target = targetWithAction(ev);
     if (target === null) return;
     const action = target.getAttribute(LOGS_ROUTE_ACTION_ATTR);
+    if (action === PREVIEW_RUN_ACTION && canPreviewHistory()) {
+      const row = runs.find(run => run.run_id === target.getAttribute(LOGS_ROUTE_RUN_ID_ATTR));
+      if (row) {
+        focusListTarget(target);
+        if (historyPreview?.row.run_id !== row.run_id) void readHistoryPreview(row);
+        if ((ev as MouseEvent).detail === 0) focusListTarget(historyPreviewHeading());
+      }
+      return;
+    }
+    if (action === 'close-preview') {
+      focusListTarget(target);
+      closeHistoryPreview();
+      return;
+    }
+    if (action === 'retry-preview') {
+      if (historyPreview?.result.phase === 'error') {
+        focusListTarget(target);
+        void readHistoryPreview(historyPreview.row, true);
+      }
+      return;
+    }
+    if (action === 'open-preview-review' && historyPreview) {
+      const mouse = ev as MouseEvent;
+      if (mouse.metaKey || mouse.ctrlKey || mouse.shiftKey || mouse.altKey
+        || (mouse.button !== undefined && mouse.button !== 0)) return;
+      ev.preventDefault();
+      const id = historyPreview.row.run_id;
+      focusHistoryRun(id);
+      void openRun(id, true);
+      return;
+    }
+    if (action === MORE_SEARCH_RUNS) {
+      ev.preventDefault();
+      if (searchReview && !searchReviewBusy() && !searchReview.search.loading) void searchReview.loadOlder?.();
+      return;
+    }
+    if (action === PREVIOUS_SEARCH_RUN || action === NEXT_SEARCH_RUN) {
+      ev.preventDefault();
+      if (!searchReview || searchReviewBusy() || target.hasAttribute('disabled')) return;
+      const index = searchReview.search.matches.findIndex(row => row.run_id === selectedRunId);
+      const row = index < 0 ? undefined : searchReview.search.matches[index + (action === NEXT_SEARCH_RUN ? 1 : -1)];
+      if (row) void openRun(row.run_id, true);
+      return;
+    }
     if (action === 'back-to-history') {
       const mouse = ev as MouseEvent;
       if (mouse.metaKey || mouse.ctrlKey || mouse.shiftKey || mouse.altKey
@@ -4889,10 +5211,35 @@ export const bootstrapLogsRoute = (
     paintFilterDraft();
   };
 
+  const onPreviewKeyDown = (event: KeyboardEvent): void => {
+    if (!historyPreview || event.defaultPrevented || event.isComposing || event.altKey || event.ctrlKey || event.metaKey) return;
+    const id = historyPreview.row.run_id;
+    const opener = historyRunButton(id, PREVIEW_RUN_ACTION);
+    const target = event.target as HTMLElement | null;
+    const pane = historyPreviewElement();
+    const inPreview = pane?.contains(target) === true;
+    if (event.key === 'Escape' && (inPreview || target === opener)) {
+      closeHistoryPreview();
+    } else if (event.key === 'ArrowRight' && target === opener) {
+      focusListTarget(historyPreviewHeading());
+    } else if (event.key === 'ArrowLeft' && inPreview && target?.closest('header, footer')) {
+      focusHistoryRun(id);
+    } else {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+  };
+  const onPreviewBreakpointChange = (): void => {
+    if (!disposed && view === 'logs' && selectedRunId === null) render();
+  };
   routeRoot.addEventListener('click', onClick);
   routeRoot.addEventListener('change', onChange);
+  routeRoot.addEventListener('keydown', onPreviewKeyDown);
+  previewBreakpoint?.addEventListener?.('change', onPreviewBreakpointChange);
 
   const unsubscribers: Array<() => void> = [];
+  if (searchReview) unsubscribers.push(searchReview.onChange(paintSearchReview));
   if (opts.subscribe !== undefined) {
     // The History feed + its session/ask-driven re-list only exist in the
     // default view; the console has no feed, so don't subscribe there.
@@ -5021,6 +5368,8 @@ export const bootstrapLogsRoute = (
       if (disposed) return;
       if (view === 'logs' && selectedRunId === null) rememberHistory();
       disposed = true;
+      historyPreview = null;
+      searchReview?.dispose();
       localUndoControls.clear();
       resetRunSummaryCopy();
       if (activeRefreshTimer !== null) {
@@ -5036,6 +5385,8 @@ export const bootstrapLogsRoute = (
       recipePicker = null;
       routeRoot.removeEventListener('click', onClick);
       routeRoot.removeEventListener('change', onChange);
+      routeRoot.removeEventListener('keydown', onPreviewKeyDown);
+      previewBreakpoint?.removeEventListener?.('change', onPreviewBreakpointChange);
       try {
         removeChildren(routeRoot);
         opts.root.removeChild(routeRoot);

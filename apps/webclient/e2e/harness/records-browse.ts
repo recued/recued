@@ -1,22 +1,32 @@
 /** Browser fixture for server-side filtering and pages. The real Records store
  * and saved-view persistence are covered by the server integration tests. */
-import type { RecordsFriendlyRecord, RecordsOwnerSearchRequest, RecordsSearchResult } from '@recued/contracts';
+import type {
+  RecordsFriendlyRecord, RecordsOwnerGetRequest, RecordsOwnerGetResponse, RecordsOwnerSearchRequest, RecordsSearchResult,
+} from '@recued/contracts';
+
+const recordsBrowseRows = (request: Pick<RecordsOwnerGetRequest, 'owner' | 'entity'>): RecordsFriendlyRecord[] =>
+  Array.from({ length: 240 }, (_, index) => ({
+    id: `${request.entity}-${String(index).padStart(3, '0')}`,
+    title: `${index % 2 === 0 ? 'Open' : 'Closed'} ${index}`,
+    amount: `${index}.0000`,
+    status: index % 2 === 0 ? 'open' : 'closed',
+    total: `${index}.0000`,
+    parent: request.entity === 'job' && index === 12 ? 'job/job-058' : null,
+    customer: { email: `${request.owner.publisher}@example.test` },
+    _record: { entity: request.entity, version: 3, revision: 1, created_at: index, updated_at: index },
+  }));
+
+export const recordsBrowseGetReply = (request: RecordsOwnerGetRequest): RecordsOwnerGetResponse => ({
+  record: recordsBrowseRows(request).find(row => row.id === request.id) ?? null,
+  diagnostics: null,
+});
 
 export const recordsBrowseReply = (request: RecordsOwnerSearchRequest): RecordsSearchResult => {
   const key = 'recued-test-records-searches';
   const requests = JSON.parse(sessionStorage.getItem(key) ?? '[]');
   requests.push(request);
   sessionStorage.setItem(key, JSON.stringify(requests));
-  const rows: RecordsFriendlyRecord[] = Array.from({ length: 240 }, (_, index) => ({
-    id: `${request.entity}-${String(index).padStart(3, '0')}`,
-    title: `${index % 2 === 0 ? 'Open' : 'Closed'} ${index}`,
-    amount: `${index}.0000`,
-    status: index % 2 === 0 ? 'open' : 'closed',
-    total: `${index}.0000`,
-    parent: null,
-    customer: { email: `${request.owner.publisher}@example.test` },
-    _record: { entity: request.entity, version: 3, revision: 1, created_at: index, updated_at: index },
-  }));
+  const rows = recordsBrowseRows(request);
   const get = (row: RecordsFriendlyRecord, key: string): unknown => key.split('.').reduce<unknown>((value, part) =>
     value && typeof value === 'object' ? (value as Record<string, unknown>)[part] : undefined, row);
   let matching = rows.filter(row => Object.entries(request.filters ?? {}).every(([field, raw]) => {

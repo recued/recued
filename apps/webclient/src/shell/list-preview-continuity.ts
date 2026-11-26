@@ -17,6 +17,8 @@ export interface ListContinuitySnapshot<Filter = unknown> {
   readonly focusedId?: string;
   readonly focusKind?: string;
   readonly scroll?: ListScrollPosition;
+  readonly previewId?: string | null;
+  readonly listScroll?: ListScrollPosition;
 }
 
 const continuityByDocument = new WeakMap<
@@ -31,6 +33,9 @@ const copySnapshot = <Filter>(
   ...(snapshot.scroll === undefined
     ? {}
     : { scroll: { top: snapshot.scroll.top, left: snapshot.scroll.left } }),
+  ...(snapshot.listScroll === undefined
+    ? {}
+    : { listScroll: { ...snapshot.listScroll } }),
 });
 
 export const readListContinuity = <Filter>(

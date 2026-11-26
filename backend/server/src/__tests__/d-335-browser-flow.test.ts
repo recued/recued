@@ -153,6 +153,25 @@ describe('D-335 slice W2 — the adapter takes acted_on out of what the model re
     await older.run('dom-click', { page: PAGE, ref: 'e4' });
     expect(older.steps()).toEqual([]);
   });
+
+  it('reuses an acknowledged double-click when drafting a recipe from the browser flow', async () => {
+    const t = harness(request => request.action === 'click' && request.args.click_count === 2
+      ? ok({ clicked: true, acted_on: acted('button', 'Edit', '#edit') }) : ok({}));
+    await t.run('dom-act', { page: PAGE, steps: [{ do: 'click', ref: 'e4', count: 2 }] });
+    const { recipe } = recipeFromBrowserFlow({ flow_id: 'double-click', steps: t.steps() });
+    expect(recipe.steps).toContainEqual(expect.objectContaining({ op: 'core.dom.act', args: expect.objectContaining({
+      steps: [{ do: 'click', selector: '#edit', count: 2 }],
+    }) }));
+  });
+  it('preserves paste delivery when drafting a recipe from an acknowledged browser flow', async () => {
+    const t = harness(request => request.action === 'fill' && request.args.delivery === 'paste'
+      ? ok({ pasted: true, acted_on: acted('grid', 'Import rows', '#import') }) : ok({}));
+    await t.run('dom-act', { page: PAGE, steps: [{ do: 'type', ref: 'e4', delivery: 'paste', value: 'a\tb\nc\td' }] });
+    const { recipe } = recipeFromBrowserFlow({ flow_id: 'paste', steps: t.steps() });
+    expect(recipe.steps).toContainEqual(expect.objectContaining({ op: 'core.dom.act', args: expect.objectContaining({
+      steps: [{ do: 'type', selector: '#import', value: '{{config.text_1}}', delivery: 'paste' }],
+    }) }));
+  });
 });
 
 describe('D-335 slice W4 — a kept flow made into a recipe, without a model', () => {

@@ -302,11 +302,16 @@ export const wireRunModal = (opts: WireRunModalOptions): RunModalHandle => {
     fileRefArrays = [];
     mailboxLists?.destroy();
     mailboxLists = null;
+    const body = overlay.querySelector?.<HTMLElement>('.run-modal-scroll');
+    const scroll = body?.getAttribute('data-run-modal-scroll-tab') === state.tab ? body.scrollTop : 0;
     overlay.innerHTML = renderRunModal(state, opts.recipe, caps, opts.dishes ?? []);
     mountVariablePickers();
+    const nextBody = overlay.querySelector?.<HTMLElement>('.run-modal-scroll');
+    if (nextBody) nextBody.scrollTop = scroll;
     if (restoreFocus !== null) {
       const target = focusIdentityElement(restoreFocus);
       target?.focus?.({ preventScroll: true });
+      if (target && nextBody?.contains(target)) target.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
       if (restoreFocus.kind === 'id' && target !== null) {
         const selectable = target as HTMLElement & {
           setSelectionRange?: (start: number, end: number) => void;
@@ -880,7 +885,7 @@ export const wireRunModal = (opts: WireRunModalOptions): RunModalHandle => {
     // identity before any repaint, just as keyboard activation does.
     actor.focus?.({ preventScroll: true });
     const action = actor.getAttribute(RUN_MODAL_ACTION_ATTR) ?? '';
-    if (action === 'close') {
+    if (action === 'close' || action === 'cancel') {
       close();
       return;
     }

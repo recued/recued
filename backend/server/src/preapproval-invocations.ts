@@ -111,6 +111,14 @@ function validatePreparedFutureExecutionBody(plan: PreparedFutureExecution, plan
     if (plan.request.subject.kind !== 'mail_draft' || draft.draft_id !== plan.request.subject.draft_id
       || draft.revision !== plan.request.subject.draft_revision || !draft.incarnation) return invalidGraph();
   }
+  if (plan.mail_condition !== undefined) {
+    const condition = plan.mail_condition, draft = plan.draft_snapshot;
+    if (!condition || !draft?.reply_watch_id || draft.delivery_replacement
+      || plan.request.subject.kind !== 'mail_draft' || plan.request.subject.send_if_no_reply !== true
+      || condition.draft_id !== draft.draft_id || condition.watch_id !== draft.reply_watch_id
+      || typeof condition.seed_hash !== 'string' || !/^[0-9a-f]{64}$/.test(condition.seed_hash)
+      || plan.request.activation.kind !== 'one_shot' || plan.origin.mode !== 'owner' || plan.origin.entry !== 'owner_ui') return invalidGraph();
+  }
   if (plan.recipe_snapshots.length === 0) return invalidGraph();
   const snapshotPaths = new Set<string>();
   for (const snapshot of plan.recipe_snapshots) {

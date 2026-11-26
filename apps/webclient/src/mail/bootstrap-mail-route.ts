@@ -47,8 +47,9 @@ import {
 } from './mail-compose-host.js';
 import { serializeShellRoute } from '../shell/route.js';
 import { humanizeRpcError } from '../shell/rpc-error-copy.js';
-import type { MailDraftSummary } from '@recued/contracts';
+import type { MailFollowUpAddress, MailDraftSummary } from '@recued/contracts';
 import { readMailDraftPage, mailDraftRecipients } from './mail-draft-search.js';
+import { createMailFollowUpSurface, type MailFollowUpCallers } from './mail-follow-up-surface.js';
 import { mailRecoveryStatusText } from './compose-recovery.js';
 
 export const MAIL_ROUTE_HOST_ATTR = 'data-recued-mail-route';
@@ -113,6 +114,10 @@ ${FILE_PICK_STYLES}
 `;
 
 export interface MailRouteOptions extends MailComposeDeps {
+  followUps?: MailFollowUpCallers;
+  followUpTarget?: MailFollowUpAddress;
+  invalidFollowUpTarget?: boolean;
+  openReceivedReply?(ref: import('@recued/contracts').ReminderMailReference): void;
   root: HTMLElement;
   document?: Document;
   /** `data.mirror.search` — the owner's file inventory, for the attachment
@@ -163,8 +168,10 @@ export const bootstrapMailRoute = (options: MailRouteOptions): MailRoute => {
       <header class="mail-route-header">
         <h1 class="mail-route-title">Mail</h1>
         <a href="${serializeShellRoute('mail', 'work')}">Work you’re following</a>
+        ${options.followUps ? '<button type="button" class="wc-button" data-mail-reply-watches-open>Reply watches</button>' : ''}
         <button type="button" ${MAIL_ROUTE_COMPOSE_ATTR} class="wc-button mail-route-compose">New mail</button>
       </header>
+      ${options.invalidFollowUpTarget ? '<p role="alert">This reply watch link is incomplete. Open Reply watches to choose a watch.</p>' : ''}
       <div class="mail-route-roster"></div>
       <section data-mail-compose-recoveries></section>
       <div data-mail-saved-drafts></div>
@@ -219,12 +226,37 @@ export const bootstrapMailRoute = (options: MailRouteOptions): MailRoute => {
         },
       };
 
+  let watchDraftClosed: (() => void) | undefined, watchDraftWasOpen = false;
   const compose = mountMailCompose(dialogHost, {
     ...options,
     ...fileDeps,
-    onStateChanged: () => { options.onStateChanged?.(); paintRecoveries(); },
+    onStateChanged: () => {
+      options.onStateChanged?.(); paintRecoveries();
+      if (watchDraftClosed) {
+        const open = compose.state().dialog !== null;
+        if (watchDraftWasOpen && !open) { const closed = watchDraftClosed; watchDraftClosed = undefined; closed(); }
+        watchDraftWasOpen = open;
+      }
+    },
     ...(options.drafts ? { drafts: { ...options.drafts, changed: () => { options.drafts?.changed?.(); void refreshDrafts(); } } } : {}),
   });
+  const followUps = options.followUps ? createMailFollowUpSurface({
+    document: doc, callers: options.followUps, timeZone: options.serverTimeZone,
+    openReceivedReply: options.openReceivedReply,
+    focusReturn: () => root.querySelector<HTMLElement>('[data-mail-reply-watches-open]')?.focus(),
+    openDraft: async request => {
+      if (disposed || !request.isCurrent()) return { opened: false };
+      if (compose.state().dialog) return { opened: false, error: 'Close your open email before opening another draft.' };
+      await compose.refresh();
+      if (disposed || !request.isCurrent()) return { opened: false };
+      watchDraftClosed = request.onClosed; watchDraftWasOpen = false;
+      try {
+        const opened = await compose.openSaved(request.draftId, request.isCurrent);
+        if (!opened) watchDraftClosed = undefined;
+        return { opened };
+      } catch (error) { watchDraftClosed = undefined; throw error; }
+    },
+  }) : null;
   function paintRecoveries(returnTo?: { id: string; action: string }): void {
     if (disposed || !options.recovery) return;
     recoveryHost.hidden = compose.state().dialog !== null;
@@ -535,6 +567,7 @@ export const bootstrapMailRoute = (options: MailRouteOptions): MailRoute => {
       void refresh();
       return;
     }
+    if (target.closest('[data-mail-reply-watches-open]') !== null && !compose.state().dialog) followUps?.open(null);
     if (target.closest(`[${MAIL_ROUTE_COMPOSE_ATTR}]`) !== null) compose.openCreate();
   };
   root.addEventListener('click', onClick);
@@ -553,7 +586,9 @@ export const bootstrapMailRoute = (options: MailRouteOptions): MailRoute => {
   // Render an explicit loading state immediately. An empty roster is a server
   // answer, never the placeholder for a read that has not settled yet.
   renderRoster();
-  const loaded = refresh();
+  const loaded = refresh().then(() => {
+    if (!disposed && options.followUpTarget) followUps?.openTarget(options.followUpTarget);
+  });
   // The mount must not reject; `whenLoaded` is the shell's freshness probe, not
   // an error channel (`refresh` translates a failed read into the distinct
   // unavailable state rendered above).
@@ -561,7 +596,7 @@ export const bootstrapMailRoute = (options: MailRouteOptions): MailRoute => {
 
   // The compose mount performs the check after folding the live DOM into state;
   // reading `compose.state()` here used to miss text typed since the last click.
-  const hasUnsavedChanges = (): boolean => compose.hasUnsavedChanges();
+  const hasUnsavedChanges = (): boolean => compose.hasUnsavedChanges() || followUps?.hasUnsavedChanges() === true;
 
   return {
     refresh,
@@ -572,7 +607,7 @@ export const bootstrapMailRoute = (options: MailRouteOptions): MailRoute => {
         ? options.recovery ? 'This message has unsaved changes. Any copy kept in this tab can be restored from Mail.'
           : 'This message has changes you have not saved. Leaving Mail throws them away.'
         : null,
-    hasInFlightWork: () => compose.hasInFlightWork(),
+    hasInFlightWork: () => compose.hasInFlightWork() || followUps?.hasInFlightWork() === true,
     inFlightWorkPrompt: () =>
       compose.hasInFlightWork()
         ? 'Mail is still doing something. Leave anyway?'
@@ -583,7 +618,7 @@ export const bootstrapMailRoute = (options: MailRouteOptions): MailRoute => {
       if (draftSearchTimer !== null) clearTimeout(draftSearchTimer);
       root.removeEventListener('click', onClick);
       draftsHost.removeEventListener('keydown', cancelDraftDelete);
-      compose.destroy();
+      followUps?.dispose(); watchDraftClosed = undefined; compose.destroy();
       root.innerHTML = '';
     },
   };

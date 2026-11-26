@@ -29,10 +29,11 @@ const runUpload = async (mode: Mode) => {
     set files(files: NativeFile[]) {
       this.selection = files; assignments.push({ field: this.id, files: files.map(file => file.name) });
     }
+    get ownerDocument(): object { return doc; }
     getRootNode(): object { return doc; }
     getAttribute(name: string) { return name === 'aria-label' ? `Upload ${this.id}` : null; }
     hasAttribute() { return false; }
-    matches(selector: string) { return selector === ':disabled' && mode === 'disabled'; }
+    matches(selector: string) { return selector.includes(':disabled') && mode === 'disabled'; }
     closest() { return null; }
     checkVisibility() { return true; }
     querySelector() { return null; }
@@ -42,13 +43,14 @@ const runUpload = async (mode: Mode) => {
   const first = new Input('A'); const target = new Input('B');
   let replacement: Input | undefined;
   if (mode === 'missing-ref') target.isConnected = false;
-  const doc = { title: 'Uploads', documentElement: { hasAttribute: () => owner },
+  const doc = Object.assign(new EventTarget(), { title: 'Uploads', documentElement: { hasAttribute: () => owner },
     querySelector: () => missing ? null : target,
     querySelectorAll: (selector: string) => selector === 'input' && replacement ? [replacement]
       : selector === '#upload' && !missing ? [target] : [],
-    getElementById: () => null };
+    getElementById: () => null });
   class Transfer { files: NativeFile[] = []; items = { add: (file: NativeFile) => { this.files.push(file); } }; }
   vi.stubGlobal('document', doc); vi.stubGlobal('location', { href: url });
+  vi.stubGlobal('recuedInertOf', undefined); vi.stubGlobal('recuedValidation', undefined);
   vi.stubGlobal('HTMLInputElement', Input); vi.stubGlobal('HTMLLabelElement', class {});
   vi.stubGlobal('DataTransfer', Transfer); vi.stubGlobal('File', NativeFile);
   vi.stubGlobal('recuedPageRefs', { next: 3, byRef: new Map([['e2', target]]), byElement: new WeakMap([[target, 'e2']]) });

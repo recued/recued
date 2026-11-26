@@ -16,7 +16,11 @@ describe('D-407 slice 5 — the appointment an occasion holds, in Yours', () => 
   });
 
   it('the card says it in place of "in <calendar>", and the page lists the event, its time and its booking', () => {
-    expect(route).toMatch(/: snapshot\.occasion_events\[occasion\.id\]!\.appointment\s+\? ` · \$\{occasionHeldFrom\(snapshot\.occasion_events\[occasion\.id\]!\)\}`\s+: ` · in \$\{snapshot\.occasion_events\[occasion\.id\]!\.name\}`/u);
+    // The desktop Occasions workspace (11-23) names the occasion's event `held` and builds the card's calendar
+    // words once: the appointment's origin in place of "in <calendar>", then ` · ` on the card.
+    expect(route).toMatch(/const held = result\.occasion_events\?\.\[occasion\.id\];/u);
+    expect(route).toMatch(/: held\.appointment \? occasionHeldFrom\(held\) : `in \$\{held\.name\}`\)/u);
+    expect(route).toMatch(/calendarStatus \? ` · \$\{calendarStatus\}` : ''/u);
     expect(route).toMatch(/const appointment = section\(item, 'Appointment'\); appointment\.setAttribute\(YOURS_OCCASION_APPOINTMENT_ATTR, occasion\.id\);/u);
     expect(route).toMatch(/el\('p', `\$\{held\.appointment\.title\}, \$\{at\}`, appointment\)/u);
     expect(route).toMatch(/if \(held\.appointment\.booking\) el\('p', `Its booking: \$\{held\.appointment\.booking\}`, appointment\);/u);

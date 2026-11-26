@@ -261,10 +261,11 @@ const asksAi = (slug: string | undefined, lookups: RecipeAskLookups): boolean =>
   return kind === 'ai' || kind === 'chat';
 };
 
-/** D-402 slice F1 — a browser batch (`core.dom.act`), read as the gates read it: one that only reads,
- *  on the page it names, never asks (the gate lets it through, `browserBatchReadsOnly`); one that
- *  may open a page or change one asks, as the gate decides; one that puts a file into a page asks
- *  every time. With the kinds of secret it types and whether it saves a downloaded file. */
+/** D-402 slice F1 — a browser batch (`core.dom.act`), read as the gates read it: one that only reads
+ *  never asks (the gate lets it through, `browserBatchReadsOnly`), on pages open or ones it opens, since
+ *  opening a page is a read (2026-11-23); one that changes a page asks, as the gate decides; one that puts
+ *  a file into a page asks every time. With the kinds of secret it types and whether it saves a downloaded
+ *  file. */
 const browserBatch = (call: Record<string, unknown> | undefined, gate: GateAnswer): Pick<RecipeStepAsk, 'verdict' | 'reason' | 'secrets' | 'saves_files' | 'ai'> => {
   const parsed = call === undefined ? undefined : parseBrowserActSteps(call.steps, { page: call.page });
   if (parsed === undefined || !parsed.ok) return gate.verdict === 'never' ? NEVER : UNREAD;
@@ -276,9 +277,8 @@ const browserBatch = (call: Record<string, unknown> | undefined, gate: GateAnswe
     ...(parsed.steps.some((step) => step.do === 'ask') ? { ai: true as const } : {}),
   };
   if (gate.verdict === 'never') return { verdict: 'never', ...extra };
-  // Only reads, on the page the call names, which it opens nothing to reach.
-  const page = typeof call!.page === 'string' && call!.page.trim() !== '' && !call!.page.includes('{{');
-  if (browserActReadsOnly(parsed.steps) && page && parsed.steps.every((step) => step.url === undefined)) return { verdict: 'never', ...extra };
+  // Only reads, on whichever pages it names, open or opened: opening a page is a read (2026-11-23).
+  if (browserActReadsOnly(parsed.steps)) return { verdict: 'never', ...extra };
   if (gate.verdict === 'ahead' && parsed.steps.some((step) => step.do === 'upload')) return { verdict: 'still', reason: 'upload', ...extra };
   return { verdict: gate.verdict, ...(gate.reason !== undefined ? { reason: gate.reason } : {}), ...extra };
 };

@@ -10,7 +10,7 @@ export interface BrowserControlItem {
   selected?: boolean;
   group?: string;
   owner_ref?: string;
-  options?: Array<{ label: string; value: string; selected: boolean; disabled: boolean }>;
+  options?: Array<{ label: string; value: string; selected: boolean; disabled: boolean; group?: string }>;
   options_complete?: boolean;
   action: { do: 'type' } | { do: 'click' };
   /** Describes a value to supply; never an action argument. */
@@ -46,8 +46,8 @@ export const isBrowserControlEvidence = (value: unknown): value is BrowserContro
       || !optional(item.checked, state => bool(state) || state === 'mixed') || !optional(item.expanded, bool) || !optional(item.selected, bool)
       || !optional(item.group, group => text(group, 128)) || !optional(item.owner_ref, ref) || !optional(item.options_complete, bool)) return false;
     if (!optional(item.options, options => Array.isArray(options) && options.length <= 12 && options.every(option => object(option)
-      && keys(option, ['label', 'value', 'selected', 'disabled']) && text(option.label, 160) && text(option.value, 160)
-      && bool(option.selected) && bool(option.disabled)))) return false;
+      && keys(option, ['label', 'value', 'selected', 'disabled', 'group']) && text(option.label, 160) && text(option.value, 160)
+      && bool(option.selected) && bool(option.disabled) && optional(option.group, group => text(group, 160))))) return false;
     const action = item.action;
     if (!object(action)) return false;
     if (action.do === 'type') {

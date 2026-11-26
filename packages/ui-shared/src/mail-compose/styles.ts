@@ -24,6 +24,7 @@ export const MAIL_COMPOSE_STYLES = `
   border-radius: 8px;
   width: min(960px, 90vw);
   max-height: 90vh;
+  max-height: 90dvh;
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -31,6 +32,7 @@ export const MAIL_COMPOSE_STYLES = `
 }
 
 .mail-compose-header {
+  flex: 0 0 auto;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -58,32 +60,41 @@ export const MAIL_COMPOSE_STYLES = `
 .mail-compose-close[disabled] { cursor: not-allowed; opacity: 0.55; }
 
 .mail-compose-body {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 240px;
-  gap: 16px;
   padding: 16px;
-  /* Scrolls on its own. No min-height:0 needed despite being a flex child of a
-     column parent: the usual flexbox min-height:auto trap does not apply to an
-     item whose own overflow is not visible — the automatic minimum size
-     resolves to zero. Verified by measuring the real dialog in Chromium
-     (clientHeight 757 vs scrollHeight 929, last row reachable) both with and
-     without min-height:0, which changed nothing. */
+  min-block-size: 0;
   overflow: auto;
+  overscroll-behavior: contain;
+  scroll-padding-block: 12px;
 }
 
 .mail-compose-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 240px;
+  grid-template-rows: max-content 1fr;
+  gap: 12px 16px;
+  min-width: 0;
+}
+
+.mail-compose-message,
+.mail-compose-fields,
+.mail-compose-delivery {
   display: flex;
   flex-direction: column;
   gap: 12px;
   min-width: 0;
 }
 
-.mail-compose-fields { display: flex; flex-direction: column; gap: 12px; min-width: 0; margin: 0; padding: 0; border: 0; }
+.mail-compose-message { grid-area: 1 / 1; }
+.mail-compose-fields,
+.mail-compose-delivery { margin: 0; padding: 0; border: 0; }
+.mail-compose-delivery { grid-area: 2 / 1; align-self: start; }
+.mail-compose-side { display: contents; }
 .mail-compose-copy-recipients { border: 1px solid var(--border); border-radius: 6px; padding: 0 10px; }
 .mail-compose-copy-recipients summary { padding: 10px 0; color: var(--fg-muted); font-size: 13px; cursor: pointer; }
 .mail-compose-copy-recipients[open] { padding-bottom: 12px; }
 .mail-compose-fields [data-form-field="body"] { min-height: 144px; }
-.mail-compose-fields:disabled { opacity: .75; }
+.mail-compose-fields:disabled,
+.mail-compose-delivery:disabled { opacity: .75; }
 
 .mail-compose-sender-picker,
 .mail-compose-sender-static,
@@ -118,16 +129,60 @@ export const MAIL_COMPOSE_STYLES = `
   background: var(--rx-warning-bg, var(--surface-sunk));
 }
 
-.mail-compose-actions {
-  display: flex;
-  justify-content: flex-end;
+.mail-compose-options {
+  display: grid;
   gap: 8px;
-  margin-top: 8px;
+  min-inline-size: 0;
+  margin: 0;
+  padding: 8px 12px 12px;
+  border: 1px solid var(--rx-divider, var(--border));
+  border-radius: 6px;
 }
+.mail-compose-options legend { padding-inline: 4px; font-size: 13px; font-weight: 600; }
+.mail-compose-options p { margin: 0; color: var(--rx-muted, var(--fg-muted)); font-size: 13px; }
+.mail-compose-option-check {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  overflow-wrap: anywhere;
+}
+.mail-compose-option-check input { flex: 0 0 auto; margin: 3px 0 0; }
+.mail-compose-option-field {
+  display: grid;
+  gap: 4px;
+  justify-items: start;
+  min-inline-size: 0;
+  font-size: 13px;
+}
+.mail-compose-option-field input, .mail-compose-option-field select {
+  box-sizing: border-box;
+  max-width: 100%;
+  min-height: 36px;
+  padding: 4px 8px;
+  border: 1px solid var(--rx-divider, var(--border));
+  border-radius: 4px;
+  background: var(--rx-bg, var(--surface));
+  color: inherit;
+  font: inherit;
+}
+.mail-compose-actions, .mail-compose-draft-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.mail-compose-actions {
+  flex: 0 0 auto;
+  justify-content: flex-end;
+  padding: 10px 16px;
+  border-top: 1px solid var(--rx-divider, var(--border));
+}
+[data-mail-draft-status] { margin: 0; }
+[data-mail-draft-status]:empty { display: none; }
 
 .mail-compose-cancel,
 .mail-compose-submit,
 .mail-compose-actions > button,
+.mail-compose-draft-actions > button,
 .mail-compose-attachment-add,
 .mail-compose-ai-action {
   padding: 6px 12px;
@@ -143,8 +198,8 @@ export const MAIL_COMPOSE_STYLES = `
   border-color: var(--rx-accent, var(--accent));
   color: var(--on-accent);
 }
-.mail-compose-submit[disabled],
-.mail-compose-cancel[disabled],
+.mail-compose-actions > button[disabled],
+.mail-compose-draft-actions > button[disabled],
 .mail-compose-ai-action[disabled] {
   cursor: not-allowed;
   opacity: 0.55;
@@ -159,6 +214,7 @@ export const MAIL_COMPOSE_STYLES = `
 }
 
 .mail-compose-ai-assist {
+  grid-area: 1 / 2 / span 2;
   border-left: 1px solid var(--rx-divider, var(--border));
   padding-left: 16px;
   display: flex;
@@ -309,15 +365,115 @@ export const MAIL_COMPOSE_STYLES = `
 }
 @media (max-width: 680px) {
   .mail-compose-dialog { width: calc(100vw - 24px); max-height: calc(100dvh - 24px); }
-  .mail-compose-body { grid-template-columns: minmax(0, 1fr); }
-  .mail-compose-ai-assist { grid-row: 1; border-left: 0; border-bottom: 1px solid var(--border); padding: 0 0 16px; }
-  [data-mode="forward"] .mail-compose-ai-assist { grid-row: auto; border-top: 1px solid var(--border); border-bottom: 0; padding: 16px 0 0; }
+}
+@media (max-width: 680px), (hover: none) and (pointer: coarse) {
+  .mail-compose-form { grid-template-columns: minmax(0, 1fr); grid-template-rows: none; }
+  .mail-compose-message, .mail-compose-delivery { grid-area: auto / 1; }
+  .mail-compose-ai-assist {
+    grid-area: 1 / 1;
+    margin-bottom: 4px;
+    border-left: 0;
+    border-bottom: 1px solid var(--border);
+    padding: 0 0 16px;
+  }
+  [data-mode="forward"] .mail-compose-ai-assist {
+    grid-row: auto;
+    margin: 4px 0 0;
+    border-top: 1px solid var(--border);
+    border-bottom: 0;
+    padding: 16px 0 0;
+  }
   .mail-compose-ai-actions { flex-direction: row; flex-wrap: wrap; }
   .mail-compose-ai-actions button { flex: 1 1 auto; text-align: center; }
-  .mail-compose-actions { flex-wrap: wrap; }
-  .mail-compose-actions > button { min-height: 44px; }
+  .mail-compose-actions > button, .mail-compose-draft-actions > button,
+  .mail-compose-option-field input, .mail-compose-option-field select { min-height: 44px; }
+  .mail-compose-option-check { min-height: 44px; align-items: center; }
+  .mail-compose-option-check input { margin-top: 0; }
 }
-.mail-compose-actions > button, .mail-compose-attachment-add, .mail-compose-close {
+
+@media (min-width: 1280px) and (hover: hover) and (pointer: fine) {
+  .mail-compose-dialog { width: min(1120px, 90vw); border-radius: var(--wc-radius-lg, 14px); }
+  .mail-compose-form {
+    grid-template-columns: minmax(0, 1fr) minmax(280px, 31%);
+    grid-template-rows: auto;
+    align-items: start;
+    gap: var(--wc-space-lg, 24px);
+  }
+  .mail-compose-side {
+    display: grid;
+    grid-area: 1 / 2;
+    gap: 16px;
+    min-width: 0;
+    padding-left: 16px;
+    border-left: 1px solid var(--rx-divider, var(--border));
+  }
+  .mail-compose-delivery, .mail-compose-ai-assist { grid-area: auto; }
+  .mail-compose-ai-assist { border-left: 0; padding-left: 0; }
+  .mail-compose-delivery + .mail-compose-ai-assist {
+    border-top: 1px solid var(--rx-divider, var(--border));
+    padding-top: 16px;
+  }
+  .mail-compose-delivery .mail-compose-option-field :is(input, select) { width: 100%; min-width: 0; }
+  .mail-compose-draft-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .mail-compose-draft-actions > button { padding-inline: 8px; overflow-wrap: anywhere; }
+  .mail-compose-draft-actions > button > svg { flex-shrink: 0; }
+
+  .mail-compose-fields { gap: 10px; }
+  .mail-compose-fields .form-renderer-form { gap: 8px; }
+  .mail-compose-fields :is(.mail-compose-sender-picker, .mail-compose-sender-static,
+    [data-form-row="to"], [data-form-row="subject"]):not([data-form-hidden="true"]) {
+    display: grid;
+    grid-template-columns: 5rem minmax(0, 1fr);
+    align-items: start;
+    column-gap: 12px;
+  }
+  .mail-compose-fields :is(.mail-compose-sender-picker, .mail-compose-sender-static) {
+    align-items: center;
+    padding: 0;
+    border: 0;
+    background: none;
+  }
+  .mail-compose-fields .mail-compose-sender-label {
+    color: inherit;
+    font-size: 0.85rem;
+    font-weight: 600;
+    text-transform: none;
+    letter-spacing: normal;
+  }
+  .mail-compose-fields .mail-compose-sender-select { min-width: 0; min-height: var(--wc-control-h, 40px); }
+  .mail-compose-fields .mail-compose-sender-value { overflow-wrap: anywhere; }
+  .mail-compose-fields :is([data-form-row="to"], [data-form-row="subject"]) > .form-renderer-label {
+    grid-area: 1 / 1;
+    margin-top: 8px;
+  }
+  .mail-compose-fields :is([data-form-row="to"], [data-form-row="subject"]) > :is(.form-renderer-array, .form-renderer-input) {
+    grid-area: 1 / 2;
+  }
+  .mail-compose-fields :is([data-form-row="to"], [data-form-row="subject"]) > :is(.form-renderer-help, .form-renderer-error) {
+    grid-column: 2;
+    margin: 0;
+  }
+  .mail-compose-copy-recipients > .form-renderer-form {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    align-items: start;
+    gap: 12px;
+  }
+  .mail-compose-fields .form-renderer-array {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: start;
+    padding: 0;
+    border: 0;
+  }
+  .mail-compose-fields .form-renderer-array > :is(.form-renderer-array-item, .form-renderer-array-empty) { grid-column: 1; }
+  .mail-compose-fields .form-renderer-array-add { grid-column: 2; }
+  .mail-compose-fields .form-renderer-array-empty { align-self: center; }
+  .mail-compose-fields :is(.form-renderer-array-add, .form-renderer-array-remove) { min-height: var(--wc-control-h, 40px); }
+  .mail-compose-fields .form-renderer-array-item .form-renderer-input { min-width: 0; }
+  .mail-compose-dialog .mail-compose-fields textarea[data-form-field="body"] { min-block-size: 144px; }
+}
+.mail-compose-actions > button, .mail-compose-draft-actions > button, .mail-compose-attachment-add, .mail-compose-close {
   display: inline-flex; align-items: center; justify-content: center; gap: 6px;
 }
 `;

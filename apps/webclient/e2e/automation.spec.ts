@@ -1,5 +1,6 @@
-import { expect, test } from '@playwright/test';
-import { HARNESS_URL, installFullAppHooks } from './helpers/full-app.js';
+import { expect, test, type Page } from '@playwright/test';
+import type { AutoRunStatusEntry, EventTrigger, ServerSchedule } from '@recued/contracts';
+import { FIXED_NOW, HARNESS_URL, installFullAppHooks } from './helpers/full-app.js';
 
 /**
  * Automation browser journeys against the deterministic full-app harness.
@@ -19,6 +20,434 @@ const AUTOMATION_DISH_HISTORY_ERROR = 'data-recued-dish-history-error';
 const AUTOMATION_DISH_HISTORY_RETRY = 'data-recued-dish-history-retry';
 
 installFullAppHooks();
+
+const openTriggerWorkspaceFixture = async (page: Page, mode: 'review' | 'saved' | 'refused'): Promise<void> => {
+  await page.addInitScript((scenario) => {
+    const now = Date.UTC(2026, 10, 24, 12);
+    let triggers: EventTrigger[] = Array.from({ length: scenario === 'review' ? 32 : 2 }, (_, index) => ({
+      trigger_id: `desk-trigger-${index + 1}`,
+      recipe_id: index === 1 && scenario !== 'review' ? 'autorun-live-1' : 'daily-brief',
+      publisher_id: 'recued-core',
+      pattern: `data.mail.mailbox-${index + 1}.created`,
+      enabled: scenario !== 'review' || index === 31,
+      created_at: now - 86_400_000,
+      last_fired_at: now - index * 3_600_000,
+      last_error: scenario === 'review' && index !== 31 ? `Last dispatch for mailbox ${index + 1} failed.` : null,
+      origin: index === 30 ? 'recipe' : 'user',
+    }));
+    Object.assign(window, { __connectionsFixture: async (method: string, args: { trigger_id?: string; enabled?: boolean }) => {
+      if (method === 'triggers.list') return { result: { triggers } };
+      if (method !== 'triggers.update') return undefined;
+      const original = triggers.find(row => row.trigger_id === args.trigger_id);
+      if (!original || args.enabled === undefined) {
+        return { error: { code: 'NOT_FOUND', message: 'Unknown trigger in the fixture.' } };
+      }
+      if (scenario === 'refused') return { error: { code: 'UNAVAILABLE', message: 'The trigger could not be paused.' } };
+      const trigger = { ...original, enabled: args.enabled };
+      triggers = triggers.map(row => row.trigger_id === original.trigger_id ? trigger : row);
+      return { result: { trigger } };
+    } });
+  }, mode);
+  const address = mode === 'review' ? '#automation/all' : '&hold_rpc=triggers.update#automation/triggers';
+  await page.goto(`${HARNESS_URL}?automation=rules${address}`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+};
+
+test('Automation desktop trigger review restores the filters, scroll and last row on Back', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await openTriggerWorkspaceFixture(page, 'review');
+  await page.getByRole('link', { name: 'Review triggers', exact: true }).click();
+  await expect(page).toHaveURL(/#automation\/triggers$/);
+  const workspace = page.locator('[data-recued-trigger-workspace]');
+  const rows = workspace.locator(`[${AUTOMATION_ROW}^="event_trigger:"]`);
+  const recipe = page.getByRole('combobox', { name: 'Show only one Recipe' });
+  const status = page.locator(`[${AUTOMATION_STATUS_FILTER}]`);
+  const origin = page.locator(`[${AUTOMATION_ORIGIN_FILTER}]`);
+  await expect(rows).toHaveCount(32);
+  await recipe.fill('daily');
+  await page.getByRole('option', { name: 'daily-brief', exact: true }).click();
+  await status.selectOption('tripped');
+  await origin.selectOption('user');
+  await expect(rows).toHaveCount(30);
+  const first = workspace.locator(`[${AUTOMATION_ROW}="event_trigger:desk-trigger-24"] button`);
+  const selected = workspace.locator(`[${AUTOMATION_ROW}="event_trigger:desk-trigger-25"] button`);
+  await first.click();
+  await expect(page).toHaveURL(/#automation\/triggers\/desk-trigger-24$/);
+  await selected.click();
+  await expect(page).toHaveURL(/#automation\/triggers\/desk-trigger-25$/);
+  const inspector = workspace.getByRole('region', { name: 'Trigger details', exact: true });
+  await expect(inspector.getByRole('heading', { name: 'What starts it' })).toBeVisible();
+  await expect(inspector.getByRole('region', { name: 'What starts it' })).toContainText('Last dispatch for mailbox 25 failed.');
+  await expect(inspector.getByRole('button', { name: 'Resume', exact: true })).toBeVisible();
+  await inspector.getByText('Matching rules', { exact: true }).click();
+  await expect(inspector.getByText('data.mail.mailbox-25.created', { exact: true })).toBeVisible();
+  await expect(selected).toHaveAttribute('aria-current', 'true');
+  const scrollPosition = () => workspace.evaluate(root => ({
+    list: root.querySelector('.automation-list')?.scrollTop,
+    page: root.closest('[data-recued-webclient-content]')?.scrollTop,
+  }));
+  const savedScroll = await scrollPosition();
+  expect(savedScroll.list).toBeGreaterThan(0);
+  const reads = await page.evaluate(() => window.__app.rpcCallCount('triggers.list'));
+  await page.goBack();
+  await expect(page).toHaveURL(/#automation\/triggers$/);
+  await expect(inspector).toHaveCount(0);
+  await expect(selected).toBeFocused();
+  await expect(recipe).toHaveValue('daily-brief');
+  await expect(status).toHaveValue('tripped');
+  await expect(origin).toHaveValue('user');
+  await expect(rows).toHaveCount(30);
+  await expect.poll(scrollPosition).toEqual(savedScroll);
+  expect(await page.evaluate(() => window.__app.rpcCallCount('triggers.list'))).toBe(reads);
+
+  await page.goForward();
+  await expect(page).toHaveURL(/#automation\/triggers\/desk-trigger-25$/);
+  await expect(inspector.getByText('data.mail.mailbox-25.created', { exact: true })).toBeVisible();
+  await inspector.getByRole('button', { name: 'Close details', exact: true }).click();
+  await expect(selected).toBeFocused();
+  await expect(page).toHaveURL(/#automation\/triggers$/);
+
+  // A new entry with the same rule address opens the standalone page.
+  await page.evaluate(() => { window.location.hash = '#automation/triggers/desk-trigger-25'; });
+  await expect(page.getByRole('button', { name: 'Back to Triggers', exact: true })).toBeVisible();
+  await expect(workspace).toHaveCount(0);
+});
+
+for (const result of ['saved', 'refused'] as const) {
+  test(`Automation desktop trigger review keeps a ${result} Pause with its original rule`, async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await openTriggerWorkspaceFixture(page, result);
+    const workspace = page.locator('[data-recued-trigger-workspace]');
+    const paused = workspace.locator(`[${AUTOMATION_ROW}="event_trigger:desk-trigger-1"]`);
+    const other = workspace.locator(`[${AUTOMATION_ROW}="event_trigger:desk-trigger-2"] button`);
+    const inspector = workspace.getByRole('region', { name: 'Trigger details', exact: true });
+    const heading = inspector.locator('[data-recued-automation-detail-heading]');
+    await paused.getByRole('button').click();
+    const pause = inspector.getByRole('button', { name: 'Pause', exact: true });
+    await pause.press('Enter');
+    const pending = inspector.getByRole('button', { name: 'Pausing…', exact: true });
+    await expect(pending).toHaveAttribute('aria-busy', 'true');
+    await pending.dispatchEvent('click');
+    await other.click();
+    await expect(other).toHaveAttribute('aria-current', 'true');
+    await expect(heading).toBeFocused();
+    await expect(paused).toContainText('Pausing…');
+    await expect(pause).not.toHaveAttribute('aria-busy');
+    if (result === 'saved') {
+      await page.goBack();
+      await expect(inspector).toHaveCount(0);
+      await expect(other).toBeFocused();
+      await expect(paused).toContainText('Pausing…');
+      await page.goForward();
+      await expect(other).toHaveAttribute('aria-current', 'true');
+    }
+    expect(await page.evaluate(() => window.__app.releaseRpcResponses!('triggers.update'))).toBe(1);
+    if (result === 'saved') {
+      await expect(paused.locator('[data-recued-automation-state]')).toHaveText('Paused');
+    } else {
+      await expect(paused.getByRole('alert')).toHaveText('The trigger could not be paused.');
+    }
+    await expect(paused).not.toContainText('Pausing…');
+    await expect(pause).toBeVisible();
+    await expect(heading).toBeFocused();
+    await expect(inspector).not.toContainText('The trigger could not be paused.');
+    expect(await page.evaluate(() => window.__app.rpcCallCount('triggers.update'))).toBe(1);
+    await paused.getByRole('button').click();
+    if (result === 'saved') await expect(inspector.getByRole('button', { name: 'Resume', exact: true })).toBeVisible();
+    else await expect(inspector.getByRole('region', { name: 'What starts it' })).toContainText('The trigger could not be paused.');
+  });
+}
+
+const openScheduleWorkspaceFixture = async (page: Page, mode: 'review' | 'saved' | 'refused'): Promise<void> => {
+  await page.addInitScript(({ mode, now }) => {
+    const size = mode === 'review' ? 36 : 2;
+    let schedules: ServerSchedule[] = Array.from({ length: size }, (_, index) => ({
+      schedule_id: `desk-schedule-${index + 1}`,
+      recipe_id: index === size - 2 && mode === 'review' ? 'weekly-report' : 'daily-brief',
+      publisher_id: 'recued-core',
+      cron_expression: `0 ${index % 24} * * *`,
+      time_zone: index === 24 ? 'Asia/Tokyo' : 'America/New_York',
+      enabled: mode !== 'review' || index < size - 1,
+      created_at: now - 86_400_000,
+      next_run_at: now + (index + 1) * 3_600_000,
+      last_run_at: null,
+      last_status: null,
+      last_error: null,
+    }));
+    window.__connectionsFixture = async (method, raw) => {
+      if (method === 'schedules.list') return { result: { schedules } };
+      if (method !== 'schedules.update') return undefined;
+      const args = raw as { schedule_id?: string; enabled?: boolean };
+      const original = schedules.find(row => row.schedule_id === args.schedule_id);
+      if (!original || args.enabled === undefined) {
+        return { error: { code: 'NOT_FOUND', message: 'Unknown schedule in the fixture.' } };
+      }
+      if (mode === 'refused') return { error: { code: 'UNAVAILABLE', message: 'The schedule could not be paused.' } };
+      const schedule = { ...original, enabled: args.enabled };
+      schedules = schedules.map(row => row.schedule_id === schedule.schedule_id ? schedule : row);
+      return { result: { schedule } };
+    };
+  }, { mode, now: FIXED_NOW });
+  const address = mode === 'review' ? '#automation/all' : '&hold_rpc=schedules.update#automation/schedules';
+  await page.goto(`${HARNESS_URL}?automation=rules${address}`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+};
+const scheduleWorkspace = (page: Page) => page.locator('[data-recued-schedule-workspace]');
+const scheduleWorkspaceRow = (page: Page, id: number) =>
+  scheduleWorkspace(page).locator(`[${AUTOMATION_ROW}="schedule:desk-schedule-${id}"]`);
+const scheduleInspector = (page: Page) => scheduleWorkspace(page).getByRole('region', { name: 'Schedule details', exact: true });
+
+test('Automation desktop schedule review keeps the filtered list and exact selected row through switching and Back', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await openScheduleWorkspaceFixture(page, 'review');
+  await page.getByRole('link', { name: 'Review schedules', exact: true }).click();
+  await expect(page).toHaveURL(/#automation\/schedules$/);
+  const workspace = scheduleWorkspace(page);
+  const rows = workspace.locator(`[${AUTOMATION_ROW}^="schedule:"]`);
+  const recipe = page.getByRole('combobox', { name: 'Show only one Recipe' });
+  const status = page.locator(`[${AUTOMATION_STATUS_FILTER}]`);
+  await expect(rows).toHaveCount(36);
+  await recipe.fill('daily');
+  await page.getByRole('option', { name: 'daily-brief', exact: true }).click();
+  await status.selectOption('on');
+  await expect(rows).toHaveCount(34);
+
+  const first = scheduleWorkspaceRow(page, 24).getByRole('button');
+  const selected = scheduleWorkspaceRow(page, 25).getByRole('button');
+  const inspector = scheduleInspector(page);
+  const scrollPosition = () => workspace.evaluate(root => ({
+    list: root.querySelector('.automation-list')?.scrollTop,
+    page: root.closest('[data-recued-webclient-content]')?.scrollTop,
+  }));
+  await first.scrollIntoViewIfNeeded();
+  await first.press('Enter');
+  await expect(inspector.getByRole('region', { name: 'Timing' })).toContainText('America/New_York');
+  await selected.scrollIntoViewIfNeeded();
+  await selected.focus();
+  const savedScroll = await scrollPosition();
+  expect(savedScroll.list).toBeGreaterThan(0);
+  await page.keyboard.press('Enter');
+  await expect(page).toHaveURL(/#automation\/schedules\/desk-schedule-25$/);
+  await expect(selected).toHaveAttribute('aria-current', 'true');
+  await expect(inspector.getByRole('heading', { name: 'daily-brief', exact: true })).toBeFocused();
+  await expect(inspector.getByRole('region', { name: 'Timing' })).toContainText('Asia/Tokyo');
+  await expect(inspector.getByRole('region', { name: 'Recent activity' })).toBeVisible();
+  await expect.poll(scrollPosition).toEqual(savedScroll);
+  const reads = await page.evaluate(() => window.__app.rpcCallCount('schedules.list'));
+
+  await page.goBack();
+  await expect(page).toHaveURL(/#automation\/schedules$/);
+  await expect(inspector).toHaveCount(0);
+  await expect(selected).toBeFocused();
+  await expect(recipe).toHaveValue('daily-brief');
+  await expect(status).toHaveValue('on');
+  await expect(rows).toHaveCount(34);
+  await expect.poll(scrollPosition).toEqual(savedScroll);
+  expect(await page.evaluate(() => window.__app.rpcCallCount('schedules.list'))).toBe(reads);
+
+  await page.goForward();
+  await expect(selected).toHaveAttribute('aria-current', 'true');
+  await expect.poll(scrollPosition).toEqual(savedScroll);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(workspace).toHaveCount(0);
+  await page.getByRole('button', { name: 'Back to Schedules', exact: true }).press('Enter');
+  const phoneRow = page.getByRole('button', { name: 'Details daily-brief (desk-schedule-25)', exact: true });
+  await expect(phoneRow).toBeFocused();
+  await expect(phoneRow).toBeInViewport();
+  await expect(status).toHaveValue('on');
+});
+
+for (const result of ['saved', 'refused'] as const) {
+  test(`Automation desktop schedule review keeps a ${result} Pause with its original schedule`, async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await openScheduleWorkspaceFixture(page, result);
+    const original = scheduleWorkspaceRow(page, 1);
+    const other = scheduleWorkspaceRow(page, 2);
+    const inspector = scheduleInspector(page);
+    const heading = inspector.getByRole('heading', { name: 'daily-brief', exact: true });
+    await original.getByRole('button').click();
+    const pause = inspector.getByRole('button', { name: 'Pause', exact: true });
+    await pause.press('Enter');
+    await expect(inspector.getByRole('button', { name: 'Pausing…', exact: true })).toHaveAttribute('aria-busy', 'true');
+    await other.getByRole('button').click();
+    await expect(other.getByRole('button')).toHaveAttribute('aria-current', 'true');
+    await expect(heading).toBeFocused();
+    await expect(original).toContainText('Pausing…');
+    await expect(pause).toBeEnabled();
+    expect(await page.evaluate(() => window.__app.releaseRpcResponses!('schedules.update'))).toBe(1);
+    if (result === 'saved') {
+      await expect(original.locator('[data-recued-automation-state]')).toHaveText('Paused');
+    } else {
+      await expect(original.getByRole('alert')).toHaveText('The schedule could not be paused.');
+    }
+    await expect(original).not.toContainText('Pausing…');
+    await expect(other.locator('[data-recued-automation-state]')).toHaveText('On');
+    await expect(inspector).not.toContainText('The schedule could not be paused.');
+    await expect(heading).toBeFocused();
+    expect(await page.evaluate(() => window.__app.rpcCallCount('schedules.update'))).toBe(1);
+    await original.getByRole('button').click();
+    if (result === 'saved') await expect(inspector.getByRole('button', { name: 'Resume', exact: true })).toBeVisible();
+    else await expect(inspector.getByRole('region', { name: 'Controls' })).toContainText('The schedule could not be paused.');
+  });
+}
+
+const openAutoRunWorkspaceFixture = async (page: Page, mode: 'review' | 'saved' | 'refused'): Promise<void> => {
+  await page.addInitScript(({ mode, now }) => {
+    const count = mode === 'review' ? 36 : 2;
+    let entries: AutoRunStatusEntry[] = Array.from({ length: count }, (_, index) => {
+      const enabled = mode !== 'review' || index !== 35;
+      const tripped = enabled && (mode !== 'review' || index !== 33);
+      return {
+        dish_id: `desk-timer-${index + 1}`,
+        dish_name: `Timer ${index + 1}`,
+        recipe_id: index === 34 ? 'weekly-report' : 'daily-brief',
+        recipe_name: index === 34 ? 'Weekly report' : 'Daily brief',
+        publisher_id: 'recued-core',
+        interval_ms: 900_000,
+        dynamic: false,
+        enabled,
+        auto_disabled: tripped,
+        consecutive_failures: tripped ? 3 : 0,
+        last_failure_at: tripped ? now - 900_000 : null,
+        last_failure_reason: tripped ? `Source ${index + 1} did not answer.` : null,
+        next_run_at: enabled && !tripped ? now + 900_000 : null,
+        last_started_at: now - 901_000,
+        last_finished_at: now - 900_000,
+        config_overlay: {},
+        variables: {},
+      };
+    });
+    window.__connectionsFixture = async (method, raw) => {
+      if (method === 'auto_run.list') return { result: { entries } };
+      if (method !== 'auto_run.update') return undefined;
+      const args = raw as { dish_id?: string; enabled?: boolean };
+      const original = entries.find(row => row.dish_id === args.dish_id);
+      if (!original || args.enabled !== true) {
+        return { error: { code: 'BAD_REQUEST', message: 'Expected an exact timer to re-arm.' } };
+      }
+      if (mode === 'refused') return { error: { code: 'UNAVAILABLE', message: 'The timer could not be re-armed.' } };
+      const entry = { ...original, auto_disabled: false, consecutive_failures: 0,
+        last_failure_at: null, last_failure_reason: null, next_run_at: now + 900_000 };
+      entries = entries.map(row => row.dish_id === entry.dish_id ? entry : row);
+      return { result: { entry } };
+    };
+  }, { mode, now: FIXED_NOW });
+  const address = mode === 'review' ? '#automation/all' : '&hold_rpc=auto_run.update#automation/auto-run';
+  await page.goto(`${HARNESS_URL}?automation=rules${address}`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+};
+
+const autoRunWorkspace = (page: Page) => page.locator('[data-recued-auto-run-workspace]');
+const autoRunWorkspaceRow = (page: Page, id: number) =>
+  autoRunWorkspace(page).locator(`[${AUTOMATION_ROW}="auto_run:desk-timer-${id}"]`);
+const autoRunInspector = (page: Page) => autoRunWorkspace(page).getByRole('region', { name: 'Auto-run details', exact: true });
+
+test('Automation desktop Auto-run restores the filters, exact timer, focus and scroll on Back', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await openAutoRunWorkspaceFixture(page, 'review');
+  await page.getByRole('link', { name: 'Review auto-run', exact: true }).click();
+  const workspace = autoRunWorkspace(page);
+  const index = workspace.locator('[data-recued-automation-section="auto_run"]');
+  const rows = index.locator(`[${AUTOMATION_ROW}]`);
+  const recipe = index.getByRole('combobox', { name: 'Show only one Recipe' });
+  const status = index.getByLabel('Status', { exact: true });
+  await expect(rows).toHaveCount(36);
+  await expect(autoRunWorkspaceRow(page, 34)).toContainText('On');
+  await expect(autoRunWorkspaceRow(page, 36)).toContainText('Paused');
+  await recipe.fill('daily');
+  await page.getByRole('option', { name: 'daily-brief', exact: true }).click();
+  await status.selectOption('tripped');
+  await expect(rows).toHaveCount(33);
+
+  const inspector = autoRunInspector(page);
+  const first = autoRunWorkspaceRow(page, 24).getByRole('button');
+  const selected = autoRunWorkspaceRow(page, 25).getByRole('button');
+  const heading = inspector.getByRole('heading', { name: 'Daily brief — Timer 25', exact: true });
+  const scrollPosition = () => workspace.evaluate(root => ({
+    list: root.querySelector('.automation-list')?.scrollTop,
+    page: root.closest('[data-recued-webclient-content]')?.scrollTop,
+  }));
+  await first.scrollIntoViewIfNeeded();
+  await first.press('Enter');
+  await expect(inspector.getByRole('heading', { name: 'Daily brief — Timer 24', exact: true })).toBeFocused();
+  await selected.scrollIntoViewIfNeeded();
+  await selected.focus();
+  const savedScroll = await scrollPosition();
+  expect(savedScroll.list).toBeGreaterThan(0);
+  await page.keyboard.press('Enter');
+  await expect(page).toHaveURL(/#automation\/auto-run\/desk-timer-25$/);
+  await expect(selected).toHaveAttribute('aria-current', 'true');
+  await expect(heading).toBeFocused();
+  const activity = inspector.getByRole('region', { name: 'Recent activity' });
+  await expect(activity).toContainText('Last failure');
+  await expect(activity).toContainText('Source 25 did not answer.');
+  await expect(selected).not.toContainText('Source 25 did not answer.');
+  await expect.poll(scrollPosition).toEqual(savedScroll);
+  const reads = await page.evaluate(() => window.__app.rpcCallCount('auto_run.list'));
+
+  await page.goBack();
+  await expect(page).toHaveURL(/#automation\/auto-run$/);
+  await expect(inspector).toHaveCount(0);
+  await expect(selected).toBeFocused();
+  await expect(recipe).toHaveValue('daily-brief');
+  await expect(status).toHaveValue('tripped');
+  await expect(rows).toHaveCount(33);
+  await expect.poll(scrollPosition).toEqual(savedScroll);
+  expect(await page.evaluate(() => window.__app.rpcCallCount('auto_run.list'))).toBe(reads);
+
+  await page.goForward();
+  await expect(selected).toHaveAttribute('aria-current', 'true');
+  await expect(heading).toBeFocused();
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(workspace).toHaveCount(0);
+  await page.getByRole('button', { name: 'Back to Auto-run', exact: true }).press('Enter');
+  const phoneRow = page.getByRole('button', { name: 'Details Daily brief — Timer 25 (desk-timer-25)', exact: true });
+  await expect(phoneRow).toBeFocused();
+  await expect(phoneRow).toBeInViewport();
+  await expect(page.getByLabel('Status', { exact: true })).toHaveValue('tripped');
+});
+
+for (const result of ['saved', 'refused'] as const) {
+  test(`Automation desktop Auto-run keeps a ${result} Re-arm with the timer that started it`, async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await openAutoRunWorkspaceFixture(page, result);
+    const original = autoRunWorkspaceRow(page, 1);
+    const other = autoRunWorkspaceRow(page, 2);
+    const inspector = autoRunInspector(page);
+    const otherHeading = inspector.getByRole('heading', { name: 'Daily brief — Timer 2', exact: true });
+    const rearm = inspector.getByRole('button', { name: 'Re-arm', exact: true });
+    await original.getByRole('button').click();
+    await rearm.press('Enter');
+    await expect(inspector.getByRole('button', { name: 'Re-arming…', exact: true })).toHaveAttribute('aria-busy', 'true');
+
+    await other.getByRole('button').click();
+    await expect(other.getByRole('button')).toHaveAttribute('aria-current', 'true');
+    await expect(otherHeading).toBeFocused();
+    await expect(original).toContainText('Re-arming…');
+    await expect(rearm).toBeEnabled();
+    expect(await page.evaluate(() => window.__app.releaseRpcResponses!('auto_run.update'))).toBe(1);
+    if (result === 'saved') {
+      await expect(original.locator('[data-recued-automation-state]')).toHaveText('On');
+    } else {
+      await expect(original.getByRole('alert')).toHaveText('The timer could not be re-armed.');
+    }
+    await expect(original).not.toContainText('Re-arming…');
+    await expect(other.locator('[data-recued-automation-state]')).toHaveText('Tripped (3 failures)');
+    await expect(inspector.getByRole('alert')).toHaveCount(0);
+    await expect(otherHeading).toBeFocused();
+    expect(await page.evaluate(() => window.__app.rpcCallCount('auto_run.update'))).toBe(1);
+
+    await original.getByRole('button').click();
+    if (result === 'saved') {
+      await expect(inspector.getByRole('button', { name: 'Pause', exact: true })).toBeVisible();
+      const nextRun = inspector.getByRole('region', { name: 'Timing' }).getByText('Next run', { exact: true });
+      await expect(nextRun.locator('+ dd')).toHaveText(/\d/);
+    } else {
+      await expect(inspector.getByRole('region', { name: 'Controls' }).getByRole('alert')).toHaveText('The timer could not be re-armed.');
+      await expect(rearm).toBeEnabled();
+    }
+  });
+}
 
 test('Automation keeps keyboard focus on a view tab through its repaint', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
@@ -122,6 +551,49 @@ test('Automation is one list by recipe and dish, with filters and a way back fro
   await back.click();
   await expect(page).toHaveURL(/#automation\/all$/);
   await expect(details).toBeFocused();
+});
+
+test('Schedule Details returns to the filtered Overview and its exact keyboard stop on desktop', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto(`${HARNESS_URL}?automation=rules#automation/all`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+
+  const overview = page.getByRole('tab', { name: /^Overview/ });
+  const recipe = page.getByRole('combobox', { name: 'Show only one Recipe' });
+  const on = page.locator('[data-recued-automation-chip="on"]');
+  const opener = page.locator('[data-recued-automation-action="detail:schedule"][data-rule-id="schedule-e2e-1"]');
+  const back = page.getByRole('button', { name: 'Back to Overview', exact: true });
+  await expect(opener).toBeVisible();
+  await recipe.fill('daily');
+  await page.getByRole('option', { name: 'daily-brief', exact: true }).click();
+  await on.press('Enter');
+
+  const openSchedule = async () => {
+    await opener.press('Enter');
+    await expect(page).toHaveURL(/#automation\/schedules\/schedule-e2e-1$/);
+    await expect(back).toBeVisible();
+  };
+  const expectOverview = async () => {
+    await expect(page).toHaveURL(/#automation\/all$/);
+    await expect(overview).toHaveAttribute('aria-selected', 'true');
+    await expect(recipe).toHaveValue('daily-brief');
+    await expect(on).toHaveAttribute('aria-pressed', 'true');
+    await expect(opener).toBeFocused();
+    await expect(opener).toBeInViewport();
+  };
+
+  await openSchedule();
+  await back.press('Enter');
+  await expectOverview();
+
+  await openSchedule();
+  await page.goBack();
+  await expectOverview();
+
+  await page.goForward();
+  await expect(back).toBeVisible();
+  await back.press('Enter');
+  await expectOverview();
 });
 
 test('Automation contains long rule facts in narrow detail views', async ({ page }) => {
@@ -777,7 +1249,7 @@ test('Automation returns schedule-modal focus to its Add trigger', async ({ page
 
 test('Automation keeps its create modal owned until the command settles', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.goto(`${HARNESS_URL}?automation=rules`);
+  await page.goto(`${HARNESS_URL}?automation=rules&hold_rpc=triggers.create`);
   await page.waitForFunction(() => window.__app?.ready === true);
   await page.evaluate(() => window.__app.setHash('#automation/triggers'));
 
@@ -831,6 +1303,7 @@ test('Automation keeps its create modal owned until the command settles', async 
     () => page.evaluate(() => window.__app.rpcCallCount('triggers.create')),
   ).toBe(1);
 
+  expect(await page.evaluate(() => window.__app.releaseRpcResponses!('triggers.create'))).toBe(1);
   await expect(dialog.locator('.run-modal-rule-row')).toHaveCount(1);
   await expect(close).not.toHaveAttribute('aria-disabled');
   await close.focus();

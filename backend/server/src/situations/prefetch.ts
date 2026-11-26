@@ -1,5 +1,6 @@
 import type { Middleware, TurnContext } from '@recued/middleware';
-import { SITUATION_CONTEXT_MAX_BYTES, type SituationItem } from '@recued/contracts';
+import { PROSE_FUNCTION_WORDS } from '@recued/middleware-prompt-cache';
+import { SITUATION_CONTEXT_MAX_BYTES, type SituationItem, type SituationRef, type SituationResult } from '@recued/contracts';
 import type { SituationAccess } from './access.js';
 import { situationItemForModel } from './model-projection.js';
 import { chatTurnTimeZoneOf } from '../chat-clock.js';
@@ -70,6 +71,46 @@ export const renderSituationPrefetch = (payload: readonly Record<string, unknown
   }
   return rows.length ? headerFor(rows) + coverage(rows.length, matched, partial) + rows.map(lineOf).join('\n') : '';
 };
+const refKeyOf = (ref: SituationRef): string => JSON.stringify([ref.collection, ref.id]);
+const wordsOf = (value: string): string[] => value.toLocaleLowerCase('en').match(/[\p{L}\p{N}]+/gu) ?? [];
+/** The records "Add records" names by the id their items carry: it sends a task as `{"kind":"task","id":"<id>"}`,
+ * and the lookup keys its item `{"collection":"task","id":"<id>"}`. */
+const PICKED_RECORD_COLLECTIONS: ReadonlySet<string> = new Set(['task', 'note']);
+/** D-406 follow-up (2026-11-22) — a task or note the owner picked settles its own name, as a picked contact does
+ * (`createSituationPickSettlement`). The message names the pick by its id, as a JSON string (the references block
+ * "Add records" adds). Another record of the same title is its namesake, reached through the pick's own title: it
+ * is left out, unless the owner's words reach it another way, by a word outside that title in the name of a person
+ * or place on it; one the lookup did not bring, which shows nothing to check, is left out of its ambiguity and its
+ * count. Measured live: beside a namesake, both rows `ambiguous` under "ask which one before acting" cost about 30%
+ * more reasoning and 3 s a turn, and once in 24 turns a read of the namesake too. */
+const pickedRecordNamesakes = (message: string, result: Pick<SituationResult, 'clusters' | 'ambiguous'>,
+  personName?: (id: string) => string | undefined): { picked: (ref: SituationRef) => boolean; namesakes: ReadonlySet<string> } => {
+  const picked = (ref: SituationRef): boolean => PICKED_RECORD_COLLECTIONS.has(ref.collection) && message.includes(JSON.stringify(ref.id));
+  const items = result.clusters.flatMap(cluster => cluster.items);
+  const byKey = new Map(items.map(item => [refKeyOf(item.ref), item]));
+  const titleOf = (item: SituationItem): string => (item.what.value ?? '').toLocaleLowerCase('en');
+  // An `ambiguous` entry names a title in lower case, or the people a message named. It is a title's when a record
+  // the lookup brought among its choices has that title. The chat's lookup brings two groups at most, so a pick it
+  // did not bring is known by its title's entry.
+  const titleEntry = (entry: SituationResult['ambiguous'][number]): boolean => entry.choices.some(choice => {
+    const item = byKey.get(refKeyOf(choice)); return item !== undefined && titleOf(item) === entry.name;
+  });
+  const titles = new Set([...items.filter(item => picked(item.ref)).map(titleOf),
+    ...result.ambiguous.filter(entry => entry.choices.some(picked) && titleEntry(entry)).map(entry => entry.name)].filter(Boolean));
+  const namesakes = new Set<string>();
+  if (!titles.size) return { picked, namesakes };
+  const tokens = new Set(wordsOf(message).filter(word => [...word].length >= 2 && !PROSE_FUNCTION_WORDS.has(word)));
+  for (const ref of [...items.filter(item => titles.has(titleOf(item))).map(item => item.ref),
+    ...result.ambiguous.filter(entry => titles.has(entry.name)).flatMap(entry => entry.choices)]) {
+    if (picked(ref)) continue;
+    const item = byKey.get(refKeyOf(ref));
+    const title = new Set(wordsOf(item === undefined ? '' : titleOf(item)));
+    const anotherWay = [...(item?.who.value ?? []).flatMap(id => wordsOf(personName?.(id) ?? '')), ...wordsOf(item?.where.value?.name ?? '')]
+      .some(word => tokens.has(word) && !title.has(word));
+    if (!anotherWay) namesakes.add(refKeyOf(ref));
+  }
+  return { picked, namesakes };
+};
 export const createSituationPrefetch = (deps: {
   getAccess: () => SituationAccess | undefined;
   /** A contact's name by an id an item's `who` carries (`situationPersonName`). */
@@ -102,17 +143,23 @@ export const createSituationPrefetch = (deps: {
       // left out, and an ambiguity only between them is none. Before, the pick's own title brought both people's
       // birthdays, each `ambiguous`, under "ask which one before acting" (`chat-picked-contacts.ts`).
       const settles = deps.settledByPick?.(message) ?? null;
-      const settledAway = (item: SituationItem): boolean => settles !== null && Boolean(item.who.value?.length) && item.who.value!.every(settles);
-      const clusters = settles === null ? result.clusters
+      // D-406 follow-up (2026-11-22) — so does a task or note the owner picked (`pickedRecordNamesakes`).
+      const { picked, namesakes } = pickedRecordNamesakes(message, result, deps.personName);
+      const settledAway = (item: SituationItem): boolean => namesakes.has(refKeyOf(item.ref))
+        || settles !== null && Boolean(item.who.value?.length) && item.who.value!.every(settles);
+      const clusters = settles === null && namesakes.size === 0 ? result.clusters
         : result.clusters.map(cluster => ({ ...cluster, items: cluster.items.filter(item => !settledAway(item)) })).filter(cluster => cluster.items.length > 0);
-      const refKeyOf = (ref: { collection: string; id: string }): string => JSON.stringify([ref.collection, ref.id]);
-      const leftOut = new Set(settles === null ? [] : result.clusters.flatMap(cluster => cluster.items.filter(settledAway).map(item => refKeyOf(item.ref))));
-      // Everything the message matched, shown or not; the rows below are at most three of it.
-      const matched = result.omitted + clusters.reduce((sum, cluster) => sum + cluster.items.length, 0);
+      const brought = new Set(result.clusters.flatMap(cluster => cluster.items.map(item => refKeyOf(item.ref))));
+      const leftOut = new Set([...namesakes, ...result.clusters.flatMap(cluster => cluster.items.filter(settledAway).map(item => refKeyOf(item.ref)))]);
+      // Everything the message matched, shown or not; the rows below are at most three of it. A namesake left out
+      // that the lookup did not bring is among its `omitted`, and no longer a match.
+      const matched = result.omitted - [...namesakes].filter(key => !brought.has(key)).length
+        + clusters.reduce((sum, cluster) => sum + cluster.items.length, 0);
       const partial = Boolean(result.partial?.length);
+      // Records the owner picked, every one of them, are no ambiguity: the owner said which.
       const ambiguous = new Set(result.ambiguous.flatMap(entry => {
-        const choices = entry.choices.map(refKeyOf).filter(key => !leftOut.has(key));
-        return choices.length > 1 ? choices : [];
+        const choices = entry.choices.filter(choice => !leftOut.has(refKeyOf(choice)));
+        return choices.length > 1 && !choices.every(picked) ? choices.map(refKeyOf) : [];
       }));
       const payload: Record<string, unknown>[] = [];
       // Keep the query's consequence/person/name priorities across groups, too.

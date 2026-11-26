@@ -469,6 +469,7 @@ export const composeNotificationBlock = (
           case 'notification.notify':
             eventBus.emit({
               kind: 'notification.notify',
+              ...(event.persisted_activity_id ? { activity_id: event.persisted_activity_id } : {}),
               ...(event.message.title !== undefined
                 ? { title: event.message.title }
                 : {}),

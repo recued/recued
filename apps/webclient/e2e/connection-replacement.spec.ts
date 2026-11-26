@@ -16,6 +16,7 @@ for (const width of [280, 1280]) {
   test(`reviews account identities, shared sign-ins and automation at ${width}px`, async ({ page }) => {
     await open(page, width);await select(page);await expect(page.locator('[data-connection-replacement]')).toContainText('fixture-new-lineage');
     await expect(page.locator('[data-connection-replacement]')).toContainText('2 schedules, 1 trigger, 1 timer affected');
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
     await expect(control(page, 'confirm')).toBeDisabled();expect((await state(page)).writes).toBe(0);await control(page, 'ack').check();await control(page, 'confirm').click();
     await expect(page.locator('[data-connection-replacement]')).toContainText('Replacement completed');expect((await state(page)).writes).toBe(1);
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
